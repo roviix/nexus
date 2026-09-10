@@ -1,0 +1,22 @@
+[package]
+name = "nexus-switcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+nexus-store.workspace = true
+nexus-cursor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+
+# 注意：**不依赖 nexus-accounts**。切号本与我的账号互不相通是编译期约束（ARCHITECTURE R1）。
+
+[dev-dependencies]
+nexus-cursor = { workspace = true, features = ["testing"] }
+tempfile = "3"

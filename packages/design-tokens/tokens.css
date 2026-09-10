@@ -1,0 +1,395 @@
+/* ============================================================
+   Nexus 设计 token —— 桌面端与配套网站共享的那一层。
+   来源是上游那个网站的 `globals.css` 的 `:root`（`shop/…` 这类路径指向未公开的上游
+   仓库，是出处标注，不是本仓库里缺了文件；见 CONTRIBUTING）。**只放变量，不放组件
+   样式**：两边的组件各自实现（桌面是 SPA，网站是 Next.js），共享 token 零成本，
+   又足以保证观感是一家人（ARCHITECTURE D2）。
+
+   改配色先改这里。
+
+   两套主题：`:root` 是暗色（默认，没打 data-theme 也成立），
+   `:root[data-theme="light"]` 是亮色。组件样式**只许引用变量**，不许写死颜色 ——
+   任何一个 `#1a2024` 都会在亮色里变成一块黑斑。
+   变量按「说的是什么」命名而不是按颜色：`--field-bg` 而不是 `--gray-800`，
+   两套主题各自决定它长什么样。
+   ============================================================ */
+:root {
+  color-scheme: dark;
+
+  /* ── 底 ─────────────────────────────────────────────────────────────── */
+  /* 层级只有三种底，都是实色。别往上叠半透明玻璃——玻璃拟态正是上一版暗色
+     被判「廉价」的地方。 */
+  --color-paper: #0a0c0d;   /* 页面底 */
+  --color-surface: #111517; /* 卡片、浮层 */
+  --color-canvas: #171b1e;  /* 内嵌槽位：输入框、代码块 */
+  --color-sidebar: #111517; /* 应用侧栏 */
+  --color-sunken: #0d1114;  /* 比页面底还低半档：游乐场的会话列表 */
+  /* 直接摊在页面上、又要比卡片再「浮」一档的面板（密钥表）。深底靠更亮，白底就是白。 */
+  --color-raised: #171b1e;
+  --surface-hover: #131819; /* 整卡可点时 hover 的底 */
+
+  /* ── 字 ─────────────────────────────────────────────────────────────── */
+  --color-ink: #e9eef0;     /* 主文本 */
+  --color-ink-2: #b9c2c5;
+  --color-muted: #8a9499;   /* 说明文字（对卡片底 5.1:1） */
+  --color-faint: #626d72;
+  --color-dim: #4c585e;     /* 最弱的一档：日志 scope、禁用的文字链 */
+
+  /* ── 线 ─────────────────────────────────────────────────────────────── */
+  --color-line: #232a2e;    /* 发丝描边 */
+  --line-soft: rgba(35, 42, 46, 0.6); /* 行与行之间：比描边再退半档 */
+  --line-strong: #313a3f;   /* hover 时提亮的描边、句中的「·」 */
+  --pop-line: #2b3338;      /* 浮层（弹窗 / 抽屉 / 下拉）的描边，要比卡片实一点 */
+
+  /* ── 品牌色 ─────────────────────────────────────────────────────────── */
+  --accent: #2dd4a0;
+  --accent-dim: #16b489;
+  --accent-soft: rgba(45, 212, 160, 0.1);
+  --accent-line: rgba(45, 212, 160, 0.32);
+  /* 当前导航项的描边。深底上淡底不够显，要一圈线；白底上淡底本身就够了，再画线就成了按钮。 */
+  --nav-ring: rgba(45, 212, 160, 0.32);
+  /* 主渐变：薄荷 → 翠 → 青。跨度别拉太大，从绿一路冲到蓝就成了「彩虹按钮」。 */
+  --accent-grad: linear-gradient(135deg, #5ce8b8 0%, #2dd4a0 45%, #12b3a6 100%);
+  /* 填充按钮上的字色：亮薄荷底上白字只有 1.9:1，近黑字有 9:1。 */
+  --accent-ink: #04241c;
+
+  --ok: #2dd4a0;
+  --warn: #e0a44a;
+  --bad: #f2716b;
+  --bad-ink: #2b0c09;
+  --bad-soft: rgba(242, 113, 107, 0.12);
+  --warn-soft: rgba(224, 164, 74, 0.12);
+  /* Auto 档的紫、Team 档的青：实心用 --info / --team，压在深底上的字用 *-text。 */
+  --info: #7b7ef0;
+  --info-text: #a3a5f5;
+  --team: #22a8c8;
+  --team-text: #7fd1e8;
+
+  /* ── 材质 ───────────────────────────────────────────────────────────── */
+  /* 深底上阴影几乎不可见，层级主要靠描边和底色深浅给；
+     投影只负责让浮层脱离背景。 */
+  --lift-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --lift-2: 0 2px 6px rgba(0, 0, 0, 0.45), 0 16px 32px -12px rgba(0, 0, 0, 0.6);
+  --lift-3: 0 4px 12px rgba(0, 0, 0, 0.5), 0 32px 64px -16px rgba(0, 0, 0, 0.7);
+  --glow: 0 0 0 1px rgba(45, 212, 160, 0.14), 0 24px 64px -28px rgba(45, 212, 160, 0.55);
+  /* 卡片顶边那道 1px 内高光 —— 深色界面里唯一值得保留的「材质」。亮色里它是透明的：
+     白底上再压一道白没有意义，厚度改由投影给。 */
+  --hi: rgba(255, 255, 255, 0.045);
+  /* hover 洗一层：三档，列表行 / 导航与菜单 / 按住。 */
+  --wash-1: rgba(255, 255, 255, 0.025);
+  --wash-2: rgba(255, 255, 255, 0.045);
+  --wash-3: rgba(255, 255, 255, 0.06);
+  /* 页面顶部那团环境光。只此一处。 */
+  --ambient:
+    radial-gradient(900px 380px at 42% -12%, rgba(45, 212, 160, 0.1), transparent 64%),
+    radial-gradient(620px 300px at 92% -6%, rgba(123, 126, 240, 0.07), transparent 62%);
+  --ambient-small: radial-gradient(620px 200px at 50% -55%, rgba(45, 212, 160, 0.075), transparent 70%);
+  /* 主区纸面顶部那一点提亮，往下 300px 化进页面底。深色里很轻——环境光已经在那儿了。 */
+  --main-top: rgba(255, 255, 255, 0.018);
+
+  /* ── 控件 ───────────────────────────────────────────────────────────── */
+  --field-bg: #1a2024;
+  --field-bg-focus: #1c2429;
+  --field-line: #2f393f;
+  --field-line-hover: #3a454c;
+  --field-inset: inset 0 1px 2px rgba(0, 0, 0, 0.18);
+  --placeholder: #5b666c;
+
+  --btn-bg: linear-gradient(#232b30, #1b2226);
+  --btn-bg-hover: linear-gradient(#2a3338, #212a2e);
+  --btn-line: #39444a;
+  --btn-line-hover: #4d5a61;
+  --btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --btn-shadow-active: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+  --btn-off-bg: #181e21;
+  --btn-off-line: #232a2e;
+  --btn-off-ink: #55636a;
+  --btn-soft-bg: #171b1e;
+  --btn-soft-bg-hover: #212a2e;
+  --btn-soft-line: #2f393f;
+  --btn-soft-line-hover: #3f4a51;
+  /* 主 CTA 的投影带品牌色 —— 纯黑投影配亮薄荷底会在交界处发脏。 */
+  --cta-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(4, 36, 28, 0.18),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 6px 16px -8px rgba(45, 212, 160, 0.5);
+  --cta-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    0 10px 24px -10px rgba(45, 212, 160, 0.62);
+  --cta-shadow-active:
+    inset 0 1px 3px rgba(4, 36, 28, 0.3),
+    0 2px 6px -4px rgba(45, 212, 160, 0.4);
+
+  /* 分段控件：槽、槽的描边、选中的那一格；中性的小块（匿名头像、清除键）；进度槽。 */
+  /* 分段控件：一条比周围低半档的槽 + 一格抬起来的滑块。槽只要「凹」得出来就够，
+     压得太深就成了一块灰砖，那是「粗糙」的来源。 */
+  --seg-bg: #14181b;
+  --seg-line: #232a2e;
+  --seg-on: #262e33;
+  --seg-on-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+
+  /* 提示气泡：反相的一小块。图标键把文案交给它，鼠标停下来才出现。 */
+  --tip-bg: #2b3439;
+  --tip-ink: #e9eef0;
+  --chip: #262e33;
+  --chip-hover: #354046;
+  --track: #283238;
+  --track-fill: #4a575e;
+  --dot-off: #3a464c;
+  /**
+   * 可点的小芯片（档位、示例提示语）。
+   * 深底上「比底亮一档的实色」就读得出是个键；白底上没有「更亮」可用，
+   * 所以亮色那套改成「白 + 发丝线 + 一点点投影」—— 像一枚小键帽，而不是一块灰渍。
+   */
+  --chip-bg: var(--color-canvas);
+  --chip-line: #2a3339;
+  /* 顶边一道内高光 = 深色界面里的「厚度」。芯片小，给到 1px 就够。 */
+  --chip-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --chip-bg-hover: #1c2226;
+  --chip-line-hover: #3a454c;
+
+  --switch-off: #171b1e; /* 开关关着时的槽 */
+  /* 空态里那枚标的底：要比它坐着的那块底再亮一档（亮色里是白，深色里是更浅的灰），
+     不然它读成一个洞而不是一枚章。 */
+  --empty-mark: #1e2429;
+  --knob: #626d72; /* 开关关着时的圆钮 */
+  --knob-shadow: none;
+  /* 嵌进卡片里的一格「井」：接入页的目标栏、密钥本体。 */
+  --well-bg: rgba(8, 12, 14, 0.32);
+  --well-line: #2b3439;
+
+  --scrim: rgba(4, 6, 7, 0.52);
+  --scrim-heavy: rgba(4, 6, 7, 0.66);
+  --thumb: #262e33;
+  --thumb-hover: #354046;
+  --skeleton: linear-gradient(90deg, #171c1f 25%, #1f262a 50%, #171c1f 75%);
+  --float-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.9);
+
+  /* ── 代码 ───────────────────────────────────────────────────────────── */
+  --code-bg: #0c1114;
+  --code-head: #151b1f;
+  --code-line: #29343a;
+  --code-glyph: #526069;
+  /* 四种低饱和的颜色 + 两档灰，薄荷只给字符串一种。代码块是拿来读的，不是彩虹。 */
+  --hl-str: #8fd9bf;
+  --hl-kw: #a493d8;
+  --hl-num: #c9a06a;
+  --hl-type: #7fa8c9;
+  /* 用量柱：深底上往下渐淡，柱子才有从底部长出来的感觉。 */
+  --chart-ok: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 95%, transparent),
+    color-mix(in srgb, var(--accent) 55%, transparent)
+  );
+
+  /* ── 游乐场 ─────────────────────────────────────────────────────────── */
+  --bubble: #16221f; /* 用户气泡：带一点品牌色的实底 */
+
+  /**
+   * 字体栈的顺序**很要紧，别照「中文优先」的直觉排**。
+   *
+   * 浏览器是逐字符回退的：排在前面的字体有这个字就用它。原先把 "PingFang SC" 放第一位，
+   * 于是所有拉丁字符 —— 邮箱、BOT/API、每一个百分比数字 —— 都用了苹方自带的拉丁字形。
+   * 苹方的拉丁部分窄、字重对比弱、字距偏紧，是给中文正文陪衬用的，单独拿来排一屏英文和
+   * 数字就显得糙。界面上英文和数字恰恰占了绝大多数。
+   *
+   * 所以拉丁字体排前面（macOS 上是 SF Pro，Windows 上是 Segoe UI），中文字体跟在后面
+   * 接住汉字。两边各用各的最优字形，一行里混排也对得齐。这比内置一套字体省事得多，
+   * 也不用背 CJK 字体那几 MB 的体积。
+   */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text",
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei",
+    system-ui, sans-serif;
+  /* 等宽字用在眉标、单位、ID、档位标签上。开发者产品里 mono 是一种身份信号，
+     成本为零却立刻把界面从「网页」拉到「控制台」。
+     同理：等宽栈里也不放中文字体，让汉字回退到 --font-sans 的中文部分去。 */
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", "JetBrains Mono", Menlo,
+    "PingFang SC", monospace;
+
+  /**
+   * 控件只有三种高度。**这条比配色更能决定「精致」与否**：一条工具条上按钮 34、输入框 36、
+   * 搜索 33、分段控件 36，四个控件四个高度，边缘参差不齐 —— 那正是「没打磨过」的样子。
+   * 所有横向排在一起的控件都必须落在同一档上。
+   */
+  --h-control: 32px; /* 默认：按钮、输入框、下拉、搜索、分段控件 */
+  --h-sm: 26px;      /* 挤在一行里的小键、行内动作 */
+  --h-lg: 40px;      /* 弹窗里的主 CTA、登录表单那种一屏只有几个的大控件 */
+
+  /* 圆角也成阶：控件 → 容器 → 卡片 → 浮层。同一层级的东西圆角必须一样。 */
+  --radius-sm: 6px;
+  --radius-control: 8px;
+  --radius: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+}
+
+/* ============================================================
+   亮色。
+
+   不是把暗色反个相：亮色界面的层级语言不一样 ——
+   - 深底靠「底色深浅」分层，亮底靠「白 + 发丝线 + 投影」分层。
+     **大块的面一律是白的，灰只留给真正凹进去的小槽。** 侧栏、会话列表、卡片全白，
+     彼此只用一道发丝线隔开；页面底 #fafafa 比卡片低一丝，卡片才浮得起来。
+     第一版给页面、侧栏、槽位、井、代码块各配了一个略带蓝的灰；第二版收成一种中性灰，
+     但侧栏 + 会话列表 + 一屏的芯片全用它，加起来近三成屏幕是同一块灰板 —— 还是「后台系统」。
+     **面积决定观感**：同一个 #f4f4f5，铺 20px 的进度槽是质感，铺 220px 的侧栏就是廉价。
+   - 描边退到几乎看不见（#ebebed，约 8% 黑），层级改由投影给：卡片下面一层很近的硬影 +
+     一层很远的软影，才有「纸」的厚度。描边深了就是画框，处处画框就是粗糙。
+   - 顶上那团环境光在亮色里**没有**。白纸上任何一团色雾都读作脏。
+   - 薄荷 #2dd4a0 在白底上只有 1.9:1，当字用看不见。亮色的品牌色收成翠绿 #0a8f6a（4.1:1），
+     填充按钮改压白字。Logo 的渐变不动 —— 它是标，不是字。
+   - 三种语义色（琥珀 / 红 / 紫）都压深一档，同样是为了在白底上当字用。
+   ============================================================ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-paper: #fafafa;
+  --color-surface: #ffffff;
+  /* 内嵌槽位：进度槽、井、图标底座这种小面积的凹。大面不许用它。 */
+  --color-canvas: #f5f5f6;
+  --color-sidebar: #ffffff;
+  --color-sunken: #ffffff;
+  --color-raised: #ffffff;
+  --surface-hover: #fafafa;
+
+  /* 中性灰，不带蓝：蓝灰的字压在中性白上会显得「冷、旧」。 */
+  --color-ink: #18181b;
+  --color-ink-2: #3f3f46;
+  --color-muted: #6b6b74;
+  --color-faint: #8a8a93;
+  --color-dim: #adadb5;
+
+  --color-line: #ebebed;
+  --line-soft: #f1f1f3;
+  --line-strong: #d6d6db;
+  --pop-line: #e4e4e7;
+
+  --accent: #0a8f6a;
+  --accent-dim: #077a5a;
+  --accent-soft: rgba(10, 143, 106, 0.08);
+  --accent-line: rgba(10, 143, 106, 0.3);
+  --nav-ring: transparent;
+  --accent-grad: linear-gradient(135deg, #14ad86 0%, #0a8f6a 55%, #0b8672 100%);
+  --accent-ink: #ffffff;
+
+  --ok: #0a8f6a;
+  --warn: #a8690f;
+  --bad: #d2403a;
+  --bad-ink: #ffffff;
+  --bad-soft: rgba(210, 64, 58, 0.08);
+  --warn-soft: rgba(168, 105, 15, 0.1);
+  --info: #6366f1;
+  --info-text: #4f52c9;
+  --team: #1a9dbf;
+  --team-text: #0e7590;
+
+  /* 近处一层硬影给边缘，远处一层软影给体积；两层都很淡、都是中性黑。 */
+  --lift-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 2px 8px -2px rgba(0, 0, 0, 0.05);
+  --lift-2: 0 2px 6px rgba(0, 0, 0, 0.06), 0 16px 40px -12px rgba(0, 0, 0, 0.16);
+  --lift-3: 0 6px 16px rgba(0, 0, 0, 0.08), 0 40px 80px -20px rgba(0, 0, 0, 0.28);
+  --glow: 0 0 0 1px rgba(10, 143, 106, 0.16), 0 24px 64px -28px rgba(10, 143, 106, 0.3);
+  --hi: transparent;
+  --wash-1: rgba(0, 0, 0, 0.025);
+  --wash-2: rgba(0, 0, 0, 0.045);
+  --wash-3: rgba(0, 0, 0, 0.07);
+  --ambient: none;
+  --ambient-small: none;
+  /* 亮色没有环境光，纸面顶部这一层白→灰的过渡就是它唯一的纵深。 */
+  --main-top: #ffffff;
+
+  --field-bg: #ffffff;
+  --field-bg-focus: #ffffff;
+  --field-line: #dcdce0;
+  --field-line-hover: #c6c6cc;
+  --field-inset: inset 0 1px 2px rgba(0, 0, 0, 0.03);
+  --placeholder: #9c9ca4;
+
+  --btn-bg: linear-gradient(#ffffff, #f8f8f9);
+  --btn-bg-hover: linear-gradient(#ffffff, #f1f1f3);
+  --btn-line: #dcdce0;
+  --btn-line-hover: #c6c6cc;
+  --btn-shadow: inset 0 1px 0 #ffffff, 0 1px 2px rgba(0, 0, 0, 0.05);
+  --btn-shadow-active: inset 0 1px 3px rgba(0, 0, 0, 0.08);
+  --btn-off-bg: #f4f4f5;
+  --btn-off-line: #ebebed;
+  --btn-off-ink: #a8a8b0;
+  --btn-soft-bg: #f4f4f5;
+  --btn-soft-bg-hover: #ececee;
+  --btn-soft-line: #e4e4e7;
+  --btn-soft-line-hover: #d6d6db;
+  --cta-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 1px 2px rgba(10, 143, 106, 0.24),
+    0 6px 16px -8px rgba(10, 143, 106, 0.55);
+  --cta-shadow-hover:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 2px 4px rgba(10, 143, 106, 0.2),
+    0 10px 24px -10px rgba(10, 143, 106, 0.6);
+  --cta-shadow-active:
+    inset 0 1px 3px rgba(4, 36, 28, 0.25),
+    0 2px 6px -4px rgba(10, 143, 106, 0.4);
+
+  /* 白底上的分段控件不描边：槽比页面深一档就够把它围出来，再加一圈线就是画框。
+     槽要明显比 #f4f4f5 深 —— 直接摊在纸面上时（商城、订单）它得和页面分得开，
+     选中的白格才有东西可衬。 */
+  /* 亮色的槽只比纸低一档（#f1f1f3），再深就是一块灰砖压在白纸上。层级交给滑块的投影。 */
+  --seg-bg: #f1f1f3;
+  --seg-line: #e8e8eb;
+  --seg-on: #ffffff;
+  --seg-on-shadow: 0 1px 2px rgba(0, 0, 0, 0.07), 0 0 0 1px rgba(0, 0, 0, 0.045);
+
+  --tip-bg: #24242a;
+  --tip-ink: #ffffff;
+  --chip: #ececee;
+  --chip-hover: #e0e0e4;
+  --track: #ececee;
+  --track-fill: #b9b9c0;
+  --dot-off: #d0d0d5;
+  --chip-bg: #ffffff;
+  --chip-line: #dcdce1;
+  /* 键帽：底下一道**实的** 1px 暗边 + 一层很浅的散影。散影单独用会发虚，
+     实边那一道才是「这块是硬的、能按下去」的来源。 */
+  --chip-shadow:
+    0 1px 0 rgba(16, 16, 20, 0.055),
+    0 1px 2px rgba(16, 16, 20, 0.045);
+  --chip-bg-hover: #ffffff;
+  --chip-line-hover: #ccccd2;
+
+  --switch-off: #e4e4e7;
+  --empty-mark: #ffffff;
+  --knob: #ffffff;
+  --knob-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --well-bg: #f4f4f5;
+  --well-line: #ebebed;
+
+  --scrim: rgba(24, 24, 27, 0.24);
+  --scrim-heavy: rgba(24, 24, 27, 0.36);
+  --thumb: #d4d4d8;
+  --thumb-hover: #bcbcc3;
+  --skeleton: linear-gradient(90deg, #f0f0f2 25%, #f8f8f9 50%, #f0f0f2 75%);
+  --float-shadow: 0 12px 32px -16px rgba(0, 0, 0, 0.18);
+
+  /* 代码块也是白的。一段配置能有二三十行，铺成灰板就是整页最大的一块灰；
+     围一圈发丝线、头一条浅带，"这是一份文件" 已经说清楚了。 */
+  --code-bg: #ffffff;
+  --code-head: #fafafa;
+  --code-line: #e6e6e9;
+  --code-glyph: #9c9ca4;
+  --hl-str: #0a7a5c;
+  --hl-kw: #7a3fbf;
+  --hl-num: #9c6212;
+  --hl-type: #1f6fa3;
+  /* 柱子用实色：白底上再渐到半透明，下半截就成了泛白的一片。 */
+  --chart-ok: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 84%, transparent));
+
+  --bubble: #eaf5f0;
+}

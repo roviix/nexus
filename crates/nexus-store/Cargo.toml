@@ -1,0 +1,20 @@
+[package]
+name = "nexus-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+# 测试里要实现 `Clock`（返回 `time::OffsetDateTime`），把备份文件名里的时间钉死。
+time.workspace = true

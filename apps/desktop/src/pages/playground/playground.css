@@ -1,0 +1,1761 @@
+/* ============================================================
+   游乐场。只用 tokens.css 的变量与 styles.css / framework.css 已有的基元
+   （.btn、.search、.tier、.ibtn、.skeleton、.banner、.mpick-*），自己的类一律 `pg-` 前缀。
+
+   这一页是拿来反复操作的（改一句、发一次、看结果、再改），所以它不是一张摊在页面上的卡片，
+   而是**铺满整块内容区的工作台**：三根柱子从窗口顶通到底，滚动只发生在柱子内部，
+   输入区永远浮在同一个位置，眼睛不用重新找。
+
+   层级全靠实色底的深浅，不靠边框和阴影（颜色一律走 tokens 的变量，两套主题各给各的值）：
+     应用侧栏 --color-sidebar → 会话列表 --color-sunken → 工作台 --color-surface / 资产墙 --color-paper。
+   留下的几处 rgba 都压在图片上（题注渐变、看大图的黑幕与翻页键）——那是相对于照片的，不随主题变。
+   整页只留一条发丝线（列表与工作台之间），头部、工具条、行与行之间一概不画线，靠间距分。
+   间距走 8 的倍数，控件统一 30px 高、8px 圆角。
+   ============================================================ */
+
+.pg,
+.pg-light {
+  /* macOS 上窗口顶部那条 34px 的拖拽带是透明的、而且会吃掉点击。所有柱子的内容都从它下面
+     开始，那条带子才读作「刻意留出的标题栏」，而不是内容被截掉了一截。
+     Windows / Linux 有原生标题栏，这里就是 0。 */
+  --pg-top: 0px;
+  /* 工作台左右的页边距。左栏的行内边距（8 + 10）与它对齐。 */
+  --pg-pad: 20px;
+  /**
+   * **一条阅读列，标题 / 消息 / 输入框共用。**
+   *
+   * 之前三者各管各的：标题贴工作台最左、消息居中在 880 的列里、输入框占满整宽。
+   * 窗口一拉宽，输入框比消息宽出一大截，三条左边缘、两条右边缘对不上，就是「别扭」的来源。
+   * 现在只有一条列：宽度写在这里，谁要对齐谁引用它。
+   *
+   * 840 是按正文 13px 定的（中文约 55 字一行）—— 再宽眼睛回行会丢行。
+   */
+  --pg-col: 840px;
+  /* 带页边距的整体宽度。容器用它做 max-width，自己再补 --pg-pad 的内边距。 */
+  --pg-wide: calc(var(--pg-col) + var(--pg-pad) * 2);
+}
+
+/* 图片会话的列宽一档：出图是这一页的主角，840 里塞一张 16:9 就只剩一条窄带。 */
+.pg.is-image {
+  --pg-col: 940px;
+}
+
+:root[data-platform="macos"] .pg,
+:root[data-platform="macos"] .pg-light {
+  --pg-top: 34px;
+}
+
+.pg {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+/* 预览区打开时多一根柱子：对话留在原地，宽度让出来，不盖在消息上。 */
+.pg.has-art {
+  grid-template-columns: 256px minmax(0, 1fr) auto;
+}
+
+/* 窄窗（940 最小窗）：列表收到和应用侧栏同宽，把省下的都给消息流。 */
+@media (max-width: 1100px) {
+  .pg {
+    grid-template-columns: 216px minmax(0, 1fr);
+    --pg-pad: 16px;
+  }
+
+  .pg.has-art {
+    grid-template-columns: 216px minmax(0, 1fr) auto;
+  }
+}
+
+/* ── 左栏 ───────────────────────────────────────────────────────────────── */
+
+.pg-rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  /* 比应用侧栏暗半档：三根柱子并排时靠这半档读出层级。 */
+  background: var(--color-sunken);
+  /* 整页唯一的一条发丝线。 */
+  border-right: 1px solid var(--color-line);
+}
+
+/**
+ * 左栏的头：标题行 + 搜索，底下一条发丝线跟列表分开。
+ *
+ * 上一版是三层摞着 —— 标题、一整行的「新对话」实底按钮、再一个搜索框 —— 两块横条把列表
+ * 往下顶了一大截，搜索夹在中间既不属于头也不属于列表，读起来就是「别扭」。现在新建收进
+ * 标题行（它是这一栏唯一的动作，但不该比被它服务的列表还占地方），搜索紧贴列表：
+ * 它是列表的筛子，该挨着被筛的东西。
+ */
+.pg-rail-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: calc(var(--pg-top) + 14px) 8px 8px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.pg-rail-cap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 0 6px;
+}
+
+.pg-rail-n {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+/* 新建：一枚幽灵图标键，和消息上那排动作键同一副长相。 */
+.pg-new {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.pg-new:hover {
+  border-color: var(--color-line);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+/* 已经在新会话上：品牌色的淡底 + 描边，跟「选中了某一条」是同一种语气。 */
+.pg-new.is-on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 搜索框：不用工具条上那身 32px 的 `.search`，那是给页面顶栏的。这里矮一档、
+   底色比栏底亮半档，聚焦时才描一圈品牌色 —— 常态它该是安静的。 */
+.pg-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 7px 0 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--color-canvas);
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.pg-search:hover {
+  background: var(--field-bg);
+}
+
+.pg-search:focus-within {
+  border-color: var(--accent-line);
+  background: var(--field-bg-focus);
+}
+
+.pg-search-ico {
+  flex: none;
+  color: var(--color-faint);
+}
+
+.pg-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.pg-search input::placeholder {
+  color: var(--placeholder);
+}
+
+.pg-search-x {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.pg-search-x:hover {
+  background: var(--chip-hover);
+  color: var(--color-ink);
+}
+
+.pg-rail-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px 12px;
+}
+
+.pg-rail-empty {
+  margin: 0;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--color-faint);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.pg-row-skeleton {
+  height: 44px;
+  margin: 0 0 4px;
+}
+
+.pg-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  transition: background 0.12s ease;
+}
+
+.pg-row + .pg-row {
+  margin-top: 2px;
+}
+
+.pg-row:hover {
+  background: var(--wash-2);
+}
+
+/* 当前项：左边一道品牌色 + 一层很淡的底，和列表页的 .list-row.is-current 同一种说法。
+   **不把标题也染成品牌色** —— 底色已经说完了，再染字这一行就比正文还抢。 */
+.pg-row.is-on,
+.pg-row.is-on:hover {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.pg-row-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  text-align: left;
+}
+
+/* hover 出删除键时给它腾位置，标题不会被盖住半个字。 */
+.pg-row:hover .pg-row-main,
+.pg-row:focus-within .pg-row-main {
+  padding-right: 36px;
+}
+
+.pg-row-cover {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--color-canvas);
+  color: var(--color-faint);
+}
+
+.pg-row-cover img,
+.pg-row-cover video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pg-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.pg-row-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pg-row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.pg-row.is-on .pg-row-title {
+  color: var(--color-ink);
+}
+
+/* 时间用等宽：一列时间上下对着看，位数要对齐。 */
+.pg-row-time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-faint);
+}
+
+.pg-row:hover .pg-row-time,
+.pg-row:focus-within .pg-row-time {
+  display: none;
+}
+
+.pg-row-sub {
+  font-size: 11px;
+  color: var(--color-faint);
+  line-height: 1.4;
+}
+
+.pg-row-sub.is-live {
+  color: var(--accent);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.pg-row-del {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.pg-row:hover .pg-row-del,
+.pg-row:focus-within .pg-row-del {
+  opacity: 1;
+}
+
+.pg-row-confirm {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  padding-right: 6px;
+  animation: fade 0.14s ease-out;
+}
+
+/* ── 右栏：头、工具条 ──────────────────────────────────────────────────── */
+
+.pg-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 顶部一团很淡的品牌光，和外壳的环境光同族，只是小一号 —— 铺满之后 .main 那团被关掉了
+   （见 framework.css 的 .main-flush），整页的渐变就只剩这一处。 */
+.pg-main::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 200px;
+  pointer-events: none;
+  background: var(--ambient-small);
+}
+
+.pg-main > * {
+  position: relative;
+}
+
+/**
+ * 标题行。
+ *
+ * 不画底边线：头和下面的内容靠留白分。行高把内容压在 macOS 拖拽带下面，
+ * 左栏的眉标也落在同一条水平线上（见 .pg-rail-head 的上内边距）。
+ */
+.pg-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  width: 100%;
+  max-width: var(--pg-wide);
+  margin-inline: auto;
+  min-height: calc(var(--pg-top) + 46px);
+  padding: var(--pg-top) var(--pg-pad) 0;
+}
+
+.pg-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.pg-title-btn {
+  min-width: 0;
+  margin-left: -8px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  transition: background 0.12s ease;
+}
+
+.pg-title-btn:hover {
+  background: var(--wash-2);
+}
+
+.pg-title-input {
+  width: min(420px, 60%);
+  height: 30px;
+  padding: 0 9px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* 计数：小字靠右。它是背景信息，不该和标题抢。 */
+.pg-head-meta {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+.pg-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: none;
+  width: 100%;
+  max-width: var(--pg-wide);
+  margin-inline: auto;
+  padding: 8px var(--pg-pad) 4px;
+}
+
+.pg-tools:empty {
+  display: none;
+}
+
+.pg-tools-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* 分段控件：号源。暗槽 + 亮滑块，圆角跟别的控件对齐，不做成药丸。 */
+.pg-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--color-canvas);
+  box-shadow: inset 0 0 0 1px var(--color-line);
+}
+
+.pg-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 11px 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 500;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.pg-seg-btn:hover:not(:disabled) {
+  color: var(--color-ink);
+}
+
+.pg-seg-btn[aria-selected="true"] {
+  color: var(--color-ink);
+  background: var(--seg-on);
+  box-shadow: var(--seg-on-shadow);
+}
+
+.pg-seg-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 分段后面的计数：弱一档，选中时跟着字色亮起来。 */
+.pg-seg-n {
+  margin-left: -1px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--color-faint);
+}
+
+.pg-seg-btn[aria-selected="true"] .pg-seg-n {
+  color: var(--color-muted);
+}
+
+.pg-seg-btn > svg {
+  color: var(--color-faint);
+}
+
+.pg-seg-btn[aria-selected="true"] > svg {
+  color: var(--color-ink-2);
+}
+
+.pg-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--dot-off);
+}
+
+.pg-dot.is-ok {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* 模型选择器占一段固定宽：它是工具条上最常动的控件，位置要稳。 */
+.pg-model {
+  width: 248px;
+  min-width: 0;
+}
+
+.pg-model .input {
+  height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.pg-model .mpick-toggle {
+  right: 4px;
+}
+
+.pg-model .mpick-pop {
+  min-width: 320px;
+}
+
+.mpick-meta {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-faint);
+}
+
+/* 下拉：一个「标签：当前值 ▾」的键。和搜索框同高同圆角，一排控件才像一家人。 */
+.pg-pill {
+  position: relative;
+  flex: none;
+}
+
+.pg-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  max-width: 260px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--field-line);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-size: 12px;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.pg-pill-btn:hover:not(:disabled),
+.pg-pill.is-open .pg-pill-btn {
+  border-color: var(--field-line-hover);
+  background: var(--field-bg);
+}
+
+.pg-pill-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.pg-pill-k {
+  color: var(--color-faint);
+}
+
+.pg-pill-v {
+  min-width: 0;
+  font-weight: 500;
+}
+
+.pg-pill-chev {
+  flex: none;
+  color: var(--color-faint);
+  transform: rotate(90deg);
+}
+
+.pg-pill-pop {
+  left: 0;
+  right: auto;
+  min-width: 100%;
+  width: max-content;
+  max-width: 360px;
+}
+
+.pg-pill-pop.is-right {
+  left: auto;
+  right: 0;
+}
+
+.pg-price {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.pg-price-unit {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+/* 错误：跟着标题行的左右边距走，自己不再套一层框。 */
+.pg-note {
+  flex: none;
+  width: 100%;
+  max-width: var(--pg-wide);
+  margin-inline: auto;
+  padding: 4px var(--pg-pad) 8px;
+}
+
+.pg-note > div {
+  margin-bottom: 0 !important;
+}
+
+/* ── 消息流 ─────────────────────────────────────────────────────────────── */
+
+.pg-feed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pg-feed-in {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: var(--pg-wide);
+  margin: 0 auto;
+  padding: 16px var(--pg-pad) 8px;
+}
+
+.pg-msg.is-user {
+  display: flex;
+  justify-content: flex-end;
+  animation: rise 0.16s ease-out;
+}
+
+/* 用户这一侧：随话发上去的图排在气泡上面一排，和气泡一起靠右。 */
+.pg-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 76%;
+  min-width: 0;
+}
+
+.pg-user > .pg-bubble {
+  max-width: 100%;
+}
+
+.pg-user-imgs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.pg-user-img {
+  display: block;
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-canvas);
+  overflow: hidden;
+}
+
+button.pg-user-img {
+  cursor: zoom-in;
+  transition:
+    border-color 0.12s ease,
+    transform 0.12s ease;
+}
+
+button.pg-user-img:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.pg-user-img img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 用户气泡：一块实底 + 顶边内高光。带一点品牌色好认出「这句是我说的」，
+   但不铺渐变 —— 渐变留给主 CTA 和顶部那团光。 */
+.pg-bubble {
+  max-width: 76%;
+  padding: 8px 14px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--bubble);
+  box-shadow: inset 0 1px 0 var(--hi);
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 回复：左边一枚标，右边正文。 */
+.pg-msg.is-reply {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  animation: rise 0.16s ease-out;
+}
+
+.pg-avatar {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-top: -1px;
+  border-radius: 8px;
+  background: var(--color-canvas);
+  box-shadow: inset 0 1px 0 var(--hi);
+}
+
+.pg-avatar.is-live {
+  box-shadow:
+    inset 0 1px 0 var(--hi),
+    0 0 0 3px var(--accent-soft);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+.pg-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pg-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-height: 16px;
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+.pg-meta-model {
+  font-size: 11.5px;
+  color: var(--color-ink-2);
+}
+
+.pg-meta-routed .mono {
+  color: var(--color-ink-2);
+}
+
+.pg-meta-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+}
+
+/**
+ * 思考过程。
+ *
+ * 上一版是裸的 `<details>` + `<pre>` 压在一块方底上：浏览器自带的三角标、等宽字，
+ * 读起来像在正文中间贴了一段日志。现在标题行是一枚安静的折叠键（自己画标，展开转 90°），
+ * 正文不套底、只靠一条左界线说明「这是旁白不是回答」。
+ */
+.pg-think {
+  margin: 2px 0;
+}
+
+.pg-think-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  /* 负边距把这枚键的内边距吃掉，标题文字仍与正文左对齐。 */
+  margin-left: -7px;
+  padding: 0 9px 0 7px;
+  border-radius: 7px;
+  color: var(--color-faint);
+  font-size: 11.5px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+/* 自带的那个折叠三角：Safari 认 ::-webkit-details-marker，其余认 list-style。 */
+.pg-think-head::-webkit-details-marker {
+  display: none;
+}
+
+.pg-think-head:hover {
+  background: var(--wash-2);
+  color: var(--color-ink-2);
+}
+
+.pg-think-chev {
+  flex: none;
+  color: var(--color-dim);
+  transition: transform 0.15s ease;
+}
+
+.pg-think[open] .pg-think-chev {
+  transform: rotate(90deg);
+}
+
+.pg-think-k {
+  font-weight: 500;
+}
+
+.pg-think-n {
+  color: var(--color-dim);
+}
+
+/* 正在思考：一颗呼吸的点，比再写一行「思考中」安静。 */
+.pg-think-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+}
+
+.pg-think-live::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: breathe 1s ease-in-out infinite;
+}
+
+/**
+ * 一条左界线就够说明「这是旁白」，不用再套一块底。
+ * 高度封顶：带思考的模型能吐几千字，一展开就把正文顶出屏幕。
+ */
+.pg-think-body {
+  max-height: 300px;
+  margin-top: 6px;
+  padding: 1px 0 1px 13px;
+  overflow-y: auto;
+  border-left: 2px solid var(--color-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--color-faint);
+}
+
+.pg-stream {
+  position: relative;
+}
+
+.pg-caret {
+  color: var(--accent);
+  animation: breathe 1s ease-in-out infinite;
+}
+
+/* 首字之前：三颗起伏的点 + 一句话，几秒后带上秒数，再久一点解释一句。 */
+.pg-waiting {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-height: 24px;
+  color: var(--color-muted);
+  font-size: 12.5px;
+}
+
+.pg-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: var(--color-canvas);
+}
+
+.pg-typing > i {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0.35;
+  animation: pg-typing 1.2s ease-in-out infinite;
+}
+
+.pg-typing > i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.pg-typing > i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes pg-typing {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+.pg-waiting-s {
+  color: var(--color-faint);
+}
+
+.pg-waiting-hint {
+  flex-basis: 100%;
+  color: var(--color-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  animation: fade 0.2s ease-out;
+}
+
+.pg-error {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--bad);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* 基准宽给 0：长句子才会留在圆点那一行里收窄折行，而不是整句掉到下一行、圆点孤零零悬着。 */
+.pg-error-text {
+  flex: 1 1 0;
+  min-width: 16ch;
+  overflow-wrap: anywhere;
+}
+
+/* 错误行上的出口（重试 / 切号源）：紧跟在那句话后面，字色回到正常，别整行都红。 */
+.pg-error-act {
+  color: var(--color-ink-2);
+  transform: translateY(1px);
+}
+
+.pg-error-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(-1px);
+}
+
+/* 消息末行：成绩单在左，动作在右。两样都是脚注，共用一行才不会各占一条。 */
+.pg-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 24px;
+  margin-top: 2px;
+}
+
+/**
+ * 一条回复的成绩单：首字 / 总计 / token / 吞吐。
+ *
+ * 从消息头上挪到了末尾 —— 这是读完之后才回头看的东西，压在正文前面等于每读一条
+ * 都要先跨过一串跟内容无关的数字。整体压到最弱一档：它是脚注，不是内容。
+ */
+.pg-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--color-dim);
+}
+
+.pg-stat + .pg-stat::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--line-strong);
+}
+
+.pg-msg-acts {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/* 失败那条的动作常亮：「重新生成」正是用户看到红字后的下一步，不该藏在 hover 里。 */
+.pg-msg:hover .pg-msg-acts,
+.pg-msg:focus-within .pg-msg-acts,
+.pg-msg.has-error .pg-msg-acts {
+  opacity: 1;
+}
+
+/**
+ * 消息动作键：24px 见方的幽灵键。
+ *
+ * 上一版是三枚带字的 `.btn-quiet`，一排字压在正文下面比正文还抢眼。收成图标 + 悬停提示
+ * （§14.33）：常态几乎看不见，hover 整条消息才浮出来，指到哪一枚才给它一层实底和描边。
+ */
+.pg-act {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-dim);
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.pg-act:hover {
+  border-color: var(--color-line);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+.pg-act:active {
+  transform: translateY(1px);
+}
+
+/* 刚复制完的那一秒。 */
+.pg-act.is-on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.pg-act.is-danger:hover {
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+/* 翻页键到了头：淡下去，别再给 hover 的实底。 */
+.pg-act:disabled,
+.pg-act:disabled:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-dim);
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 图片格子：两张起两列，格子按图片比例定高、图 contain 在里面。
+   上限跟着 --pg-col 走而不是写死 640/480：出图是这一页的主角，列宽给到了就该用上。 */
+.pg-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-width: min(100%, 780px);
+}
+
+.pg-grid.n1 {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: min(100%, 560px);
+}
+
+/* 高度按视口收：一张 1:1 的图不该独占整个消息流，提示词和元信息得留在视线里。 */
+/* 描边用 outline 不用 border：图片是 cover / contain 的，border 会被图盖住，
+   outline 画在内容之上，任何一张图上都看得见。 */
+.pg-fig {
+  position: relative;
+  margin: 0;
+  border-radius: 12px;
+  background: var(--color-canvas);
+  overflow: hidden;
+  max-height: min(480px, 44vh);
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+  transition: outline-color 0.16s ease;
+}
+
+.pg-fig:hover,
+.pg-fig:focus-within {
+  outline-color: var(--accent-line);
+}
+
+.pg-fig-btn {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.pg-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* 视频直接放在格子里带控件；深底衬着黑边不突兀。 */
+video.pg-img {
+  background: #000;
+}
+
+.pg-fig-wait {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.pg-fig-wait-hint {
+  color: var(--color-faint);
+  font-size: 11px;
+}
+
+/* 说明性的药丸（本地出图固定规格）：长得和别的药丸一家，但不可点。 */
+.pg-pill-static {
+  cursor: default;
+  color: var(--color-muted);
+}
+
+.pg-pill-static:hover {
+  border-color: var(--color-line);
+  background: var(--color-canvas);
+}
+
+.pg-fig-gone {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  min-height: 140px;
+  color: var(--color-faint);
+  font-size: 11.5px;
+}
+
+.pg-fig-cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 6px 6px 10px;
+  /* 压在照片上的题注：底是黑色渐变，字就固定用白，不跟主题走。 */
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 10.5px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.pg-fig:hover .pg-fig-cap,
+.pg-fig:focus-within .pg-fig-cap {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pg-fig-cap .ibtn {
+  width: 24px;
+  height: 24px;
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.pg-fig-cap .ibtn:hover:not(:disabled) {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.pg-sep {
+  margin: 0 5px;
+  opacity: 0.6;
+}
+
+.pg-revised {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* ── 空态 ───────────────────────────────────────────────────────────────── */
+
+.pg-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+}
+
+.pg-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 10px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.pg-empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+
+.pg-empty-sub {
+  max-width: 46ch;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* ── 看大图 ─────────────────────────────────────────────────────────────── */
+
+.pg-light {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(272px, 26vw, 340px);
+  /* 一块几乎不透的实底，不做磨砂：这一屏要的是让图独处，不是让底下的墙若隐若现。 */
+  background: rgba(6, 8, 9, 0.96);
+  animation: fade 0.14s ease-out;
+}
+
+.pg-light-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  padding: calc(var(--pg-top) + 28px) 60px 40px;
+}
+
+.pg-light-img {
+  max-width: 100%;
+  max-height: calc(100vh - var(--pg-top) - 68px);
+  border-radius: 10px;
+  box-shadow: var(--lift-3);
+  animation: rise 0.16s ease-out;
+}
+
+.pg-light-nav {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 999px;
+  /* 看大图那一屏两套主题都是黑幕，键上的字固定白。 */
+  background: rgba(30, 37, 41, 0.9);
+  color: #fff;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.pg-light-nav:hover {
+  background: #fff;
+  color: #0f1419;
+}
+
+.pg-light-nav.is-prev {
+  left: 16px;
+}
+
+.pg-light-nav.is-next {
+  right: 16px;
+}
+
+.pg-light-count {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(30, 37, 41, 0.9);
+  color: rgba(255, 255, 255, 0.7);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.pg-light-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  padding: calc(var(--pg-top) + 16px) 18px 20px;
+  border-left: 1px solid var(--color-line);
+  background: var(--color-surface);
+  overflow-y: auto;
+  animation: slide-in 0.16s ease-out;
+}
+
+.pg-light-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pg-light-prompt {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 元信息和提示词之间一条线：它们是两类东西（一句话 vs 一组事实）。其余靠间距分。 */
+.pg-light-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px 14px;
+  margin: 0;
+  padding: 14px 0 2px;
+  border-top: 1px solid var(--color-line);
+  font-size: 12px;
+}
+
+.pg-light-meta dt {
+  color: var(--color-faint);
+}
+
+.pg-light-meta dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--color-ink-2);
+}
+
+.pg-light-acts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 14px;
+}
+
+/* ── artifact 预览区 ────────────────────────────────────────────────────────
+   对话里点开一张 artifact 卡片，右边并排出这根柱子 —— 不是弹层：对话留在原地，
+   点另一张卡片这里换一块，关掉之后眼睛还落在刚才那条消息上。
+   与会话列表共用同一条发丝线的规矩（一条 border-left），头部第一行与工作台的
+   标题行落在同一条水平线上。 */
+
+.pg-art {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: clamp(420px, 44vw, 780px);
+  border-left: 1px solid var(--color-line);
+  background: var(--color-surface);
+  animation: slide-in 0.18s ease-out;
+}
+
+.pg-art-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: calc(var(--pg-top) + 12px) 12px 10px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+/* 第一行：这是哪一块（图标 + 标题 + 第几块），最右是关闭。 */
+.pg-art-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 与对话里那张卡片的图标同一副长相：远远一看就知道面板里是刚才那张卡。 */
+.pg-art-ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+  color: var(--accent);
+}
+
+.pg-art-ico.is-svg {
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--info) 30%, transparent);
+  color: var(--info-text);
+}
+
+.pg-art-names {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.pg-art-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  color: var(--color-ink);
+}
+
+.pg-art-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--color-faint);
+}
+
+.pg-art-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-style: normal;
+  color: var(--accent);
+}
+
+.pg-art-live::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: breathe 1s ease-in-out infinite;
+}
+
+/* 「‹ 2 / 5 ›」：整条会话里的 artifact 翻页。 */
+.pg-art-nav {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.pg-art-n {
+  padding: 0 5px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+/* 第二行：视角开关（预览 / 代码）在左，复制在右。 */
+.pg-art-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 分段控件与号源那一组（.pg-seg）同族：暗槽 + 抬起来的滑块。 */
+.pg-art-tabs {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--seg-bg);
+  box-shadow: inset 0 0 0 1px var(--seg-line);
+}
+
+.pg-art-tab {
+  height: 24px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.pg-art-tab:hover {
+  color: var(--color-ink-2);
+}
+
+.pg-art-tab[aria-selected="true"] {
+  color: var(--color-ink);
+  background: var(--seg-on);
+  box-shadow: var(--seg-on-shadow);
+}
+
+.pg-art-body {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.pg-art-frame {
+  flex: 1;
+  display: block;
+  width: 100%;
+  border: 0;
+  background: var(--color-paper);
+  animation: fade 0.16s ease-out;
+}
+
+/* 代码页：滚动交给外层容器，pre 自己不再套一层横向滚动条。 */
+.pg-art-code {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--code-bg);
+  animation: fade 0.16s ease-out;
+}
+
+.pg-art-code .md-pre-body {
+  min-height: 100%;
+  padding: 16px 18px;
+  overflow: visible;
+}
+
+.pg-art-caret {
+  display: inline-block;
+  margin: 0 18px 16px;
+}
+
+/* 还在生成时的预览占位：一句话 + 一条附注，别留一块白板。 */
+.pg-art-waiting {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.pg-art-waiting p {
+  margin: 0;
+}
+
+.pg-art-waiting-sub {
+  color: var(--color-faint);
+  font-size: 11.5px;
+}
+
+/* ── 资产 ───────────────────────────────────────────────────────────────── */
+
+/* 一整面墙，没有左栏。底色用最暗的一档：图片是这一页唯一的内容，底越暗它们越亮。 */
+.pg-assets {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-paper);
+}
+
+/* 和工作台的标题行同一条水平线：两个子页切来切去，标题不该上下跳。 */
+.pg-assets-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: calc(var(--pg-top) + 54px);
+  padding: var(--pg-top) var(--pg-pad) 8px;
+}
+
+.pg-assets-sub {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+.pg-assets-head .pg-search {
+  flex: none;
+  width: min(260px, 30vw);
+}
+
+.pg-assets-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 等大的正方形格子。一面墙要整齐才扫得快，完整画幅留给点开之后。
+   最小 200px：1240 宽的窗口排四列，940 宽的排三列，两头都不会出现半格。 */
+.pg-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  padding: 8px var(--pg-pad) 24px;
+}
+
+.pg-tile {
+  position: relative;
+  display: block;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: var(--color-canvas);
+  overflow: hidden;
+  text-align: left;
+  outline: 1px solid transparent;
+  outline-offset: -1px;
+  transition: outline-color 0.16s ease;
+  cursor: zoom-in;
+}
+
+.pg-tile:hover {
+  outline-color: var(--accent-line);
+}
+
+.pg-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.pg-tile-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.25s ease;
+}
+
+.pg-tile:hover .pg-tile-img {
+  transform: scale(1.03);
+}
+
+.pg-tile-cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 26px 10px 9px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.pg-tile:hover .pg-tile-cap,
+.pg-tile:focus-visible .pg-tile-cap {
+  opacity: 1;
+}
+
+.pg-tile-prompt {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.pg-tile-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.72);
+}

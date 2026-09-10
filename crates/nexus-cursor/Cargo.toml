@@ -1,0 +1,21 @@
+[package]
+name = "nexus-cursor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+
+[features]
+# 测试替身（FakeCursor）。只给依赖方的 dev-dependencies 用，发布构建里不编进来。
+testing = []
+
+[dev-dependencies]
+tempfile = "3"

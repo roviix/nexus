@@ -1,0 +1,54 @@
+[package]
+name = "nexus-desktop"
+description = "Nexus —— Cursor 账号切换与管理"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# Tauri v2 把逻辑放 lib、入口留 main，这样 iOS/Android 目标能复用同一个 core。
+name = "nexus_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+nexus-core.workspace = true
+nexus-store.workspace = true
+nexus-cursor.workspace = true
+nexus-switcher.workspace = true
+nexus-accounts.workspace = true
+nexus-chatgpt.workspace = true
+nexus-grok.workspace = true
+nexus-kiro.workspace = true
+nexus-sand.workspace = true
+nexus-grokbot.workspace = true
+nexus-gateway.workspace = true
+nexus-playground.workspace = true
+nexus-connect.workspace = true
+
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-log = "2"
+
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+log = "0.4.34"
+
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2"
+
+[dev-dependencies]
+# 权限探针的测试要在临时目录里造只读目录。
+tempfile = "3"
+
+[features]
+# `tauri build` 会带上它。
+custom-protocol = ["tauri/custom-protocol"]

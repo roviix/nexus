@@ -1,0 +1,348 @@
+/* 输入区（Composer）。只用 tokens 与 styles.css 的基元，类名 `pg-` 前缀。归 Composer.tsx 所有。
+   `.pg-att*` 是附件缩略图，输入框里那条和消息气泡里那排（Feed.tsx）是同一副样子——
+   同一个东西在两处看到该完全一样。 */
+
+/**
+ * 输入区。
+ *
+ * 底色的渐变**铺满整宽**（内容滚到底下时被它化开），但里面的东西 —— 示例、横幅、输入盒 ——
+ * 都收在 `--pg-col` 那条列里，和上面的消息、标题共用同一对左右边缘。
+ * 之前输入盒是整宽的，窗口一拉宽就比消息宽出一大截，两条右边缘对不上。
+ */
+.pg-compose {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 6px var(--pg-pad) 16px;
+  background: linear-gradient(transparent, var(--color-surface) 40%);
+}
+
+/* 示例、横幅、输入盒都占满那条列，不多不少。 */
+.pg-compose > * {
+  width: 100%;
+  max-width: var(--pg-col);
+}
+
+.pg-compose .banner {
+  margin: 0;
+}
+
+.pg-samples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pg-samples .tier {
+  max-width: 100%;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 盒子：一块比表面暗半档的实色 + 一道内高光。整条工具条都在它里面，所以是一个「控制台」，
+   不是一个输入框加一排按钮。 */
+.pg-box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--field-line);
+  border-radius: 16px;
+  background: var(--field-bg);
+  box-shadow:
+    inset 0 1px 0 var(--hi),
+    var(--float-shadow);
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.pg-box:focus-within {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 1px 0 var(--hi),
+    0 0 0 3px var(--accent-soft),
+    var(--float-shadow);
+}
+
+/* 文件拖到上面：整个盒子亮起来，落点是「这里」而不是某个小区域。 */
+.pg-box.is-drop {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 顶边拖柄：压在盒子上边缘、跨越整宽，抓取区比看得见的那条短横大得多。
+   平时几乎看不见（只有中间一枚淡短横），悬停 / 拖动时短横变成品牌色 —— 拖柄只在
+   需要的时候露面，不给输入框加一条常驻的横杠。 */
+.pg-grip {
+  position: absolute;
+  top: -5px;
+  left: 12px;
+  right: 12px;
+  height: 12px;
+  display: grid;
+  place-items: center;
+  cursor: ns-resize;
+  z-index: 1;
+  touch-action: none;
+}
+
+.pg-grip > i {
+  display: block;
+  width: 36px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-line);
+  transition:
+    background 0.12s ease,
+    width 0.12s ease;
+}
+
+.pg-grip:hover > i,
+.pg-box.is-resizing .pg-grip > i {
+  width: 48px;
+  background: var(--accent);
+}
+
+/* 拖动途中不让文字被选中、也不让过渡动画和手抢。 */
+.pg-box.is-resizing {
+  user-select: none;
+  transition: none;
+}
+
+.pg-box.is-resizing .pg-input {
+  pointer-events: none;
+}
+
+.pg-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  /* 上限不在这里锁死：自动增长的上限在 Composer.tsx（AUTO_MAX），用户从顶边拖可以更高。 */
+  padding: 4px 4px 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+}
+
+.pg-input::placeholder {
+  color: var(--placeholder);
+}
+
+/* ── 附件 ───────────────────────────────────────────────────────────────── */
+
+.pg-atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+
+.pg-att {
+  position: relative;
+  margin: 0;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-canvas);
+  overflow: hidden;
+}
+
+.pg-att.is-img {
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+
+.pg-att.is-img img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pg-att-x {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  /* 压在缩略图上的叉：黑底白叉，不跟主题走 —— 底下是照片，不是页面。 */
+  background: rgba(6, 8, 9, 0.72);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.pg-att:hover .pg-att-x,
+.pg-att:focus-within .pg-att-x {
+  opacity: 1;
+}
+
+.pg-att-x:hover {
+  background: var(--bad);
+  color: var(--bad-ink);
+}
+
+/* ── 底栏 ───────────────────────────────────────────────────────────────── */
+
+.pg-cbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 这一排药丸比工具条上的矮一档：它们是输入框的配件，不该跟正文抢高度。 */
+.pg-cbar .pg-pill-btn {
+  height: 28px;
+  max-width: 220px;
+  padding: 0 8px 0 9px;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 11.5px;
+}
+
+.pg-cbar .pg-pill-btn:hover:not(:disabled),
+.pg-cbar .pg-pill.is-open .pg-pill-btn {
+  background: var(--field-bg-focus);
+}
+
+/* 弹层往上开：输入框在页面最底下，往下开会掉到窗口外面。 */
+.pg-cbar .mpick-pop {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.pg-attach-btn {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+  color: var(--color-muted);
+}
+
+.pg-attach-btn:hover:not(:disabled) {
+  color: var(--color-ink);
+}
+
+.pg-mmenu .pg-pill-btn {
+  max-width: 240px;
+}
+
+.pg-mmenu-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 300px;
+  max-height: 320px;
+  padding: 6px;
+  overflow: hidden;
+}
+
+.pg-mmenu-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  padding: 0 8px;
+  height: 30px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-canvas);
+  color: var(--color-faint);
+}
+
+.pg-mmenu-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 12px;
+  outline: none;
+}
+
+.pg-mmenu-input::placeholder {
+  color: var(--placeholder);
+  font-family: var(--font-sans);
+}
+
+.pg-mmenu-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pg-mmenu-none {
+  margin: 0;
+  padding: 12px 9px;
+  color: var(--color-faint);
+  font-size: 12px;
+}
+
+.pg-cbar-price {
+  padding-right: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.pg-cbar-unit {
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--color-faint);
+}
+
+/* 发送键：这一页的主 CTA，所以它是整条底栏上唯一带渐变与填充的东西。
+   亮薄荷底上压近黑字，不是白字。 */
+.pg-send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent-grad);
+  color: var(--accent-ink);
+  box-shadow:
+    var(--cta-shadow);
+  transition:
+    filter 0.12s ease,
+    transform 0.08s ease;
+}
+
+.pg-send:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.pg-send:active:not(:disabled) {
+  transform: scale(0.94);
+  filter: brightness(0.97);
+}
+
+.pg-send:disabled {
+  background: var(--btn-off-bg);
+  color: var(--btn-off-ink);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* 停止：同一个位置换一副安静的面孔，别让「停」也带着渐变喊。 */
+.pg-send.is-stop {
+  background: var(--color-ink);
+  color: var(--color-paper);
+  box-shadow: none;
+}

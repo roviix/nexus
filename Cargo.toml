@@ -1,0 +1,76 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexus-core",
+    "crates/nexus-store",
+    "crates/nexus-cursor",
+    "crates/nexus-switcher",
+    "crates/nexus-accounts",
+    "crates/nexus-chatgpt",
+    "crates/nexus-grok",
+    "crates/nexus-kiro",
+    "crates/nexus-sand",
+    "crates/nexus-grokbot",
+    "crates/nexus-gateway",
+    "crates/nexus-playground",
+    "crates/nexus-connect",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+nexus-core = { path = "crates/nexus-core" }
+nexus-store = { path = "crates/nexus-store" }
+nexus-cursor = { path = "crates/nexus-cursor" }
+nexus-switcher = { path = "crates/nexus-switcher" }
+nexus-accounts = { path = "crates/nexus-accounts" }
+nexus-chatgpt = { path = "crates/nexus-chatgpt" }
+nexus-grok = { path = "crates/nexus-grok" }
+nexus-kiro = { path = "crates/nexus-kiro" }
+nexus-sand = { path = "crates/nexus-sand" }
+nexus-grokbot = { path = "crates/nexus-grokbot" }
+nexus-gateway = { path = "crates/nexus-gateway" }
+nexus-playground = { path = "crates/nexus-playground" }
+nexus-connect = { path = "crates/nexus-connect" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+
+# bundled: 不依赖系统 sqlite 版本（D3）
+rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite_migration = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+# http2 不是为了性能：cursor.com 在 Vercel 的机器人防护后面，而顶着 Chrome 的 UA 却在
+# ALPN 里只提供 http/1.1 会被判成自动化流量 —— 整个 dashboard 接口回 403
+# 「Vercel Security Checkpoint」（x-vercel-mitigated: challenge），刷用量全线失败。
+# 实测：rustls 加 h2 就通，换 native-tls 也通，改请求头（accept-language /
+# sec-fetch-* / connection）一概无效。留 rustls 是为了不引入系统 OpenSSL。
+#
+# 根证书用**系统**的而不是内置的 Mozilla 集合（`rustls-tls-native-roots` 而非
+# `rustls-tls`）：公司网络普遍用代理重签 TLS，那张自签 CA 只装在系统证书库里。
+# 认死 webpki 的话，一进这类网络用量刷新 / OAuth 轮询会全线握手失败，
+# 而且报错是「证书无效」这种用户完全无从下手的形态。Windows 上尤其常见。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "http2", "gzip"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+regex = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

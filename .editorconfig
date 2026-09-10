@@ -1,0 +1,20 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# rustfmt 的默认缩进是 4 空格，这里跟着它走，免得编辑器和 `cargo fmt` 互相打架。
+[*.rs]
+indent_size = 4
+
+# Markdown 的行尾两个空格是硬换行，删了会改变渲染结果。
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{ps1,bat,cmd}]
+end_of_line = crlf

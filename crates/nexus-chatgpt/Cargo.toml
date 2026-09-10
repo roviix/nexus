@@ -1,0 +1,35 @@
+[package]
+name = "nexus-chatgpt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+nexus-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+# 直接对 auth.openai.com / chatgpt.com 说话：换 token、刷 token、拉额度。TLS 与 h2 的选择
+# 跟 workspace 一致（rustls + 系统根证书 + http2）。
+reqwest.workspace = true
+# net / io-util：本机 1455 端口的一次性回调服务器；sync：按账号的刷新互斥。
+tokio = { workspace = true, features = ["net", "io-util", "sync", "time"] }
+sha2.workspace = true
+base64.workspace = true
+rand.workspace = true
+uuid.workspace = true
+time.workspace = true
+tracing.workspace = true
+
+# 注意：**不依赖 nexus-accounts**。ChatGPT 账号和 Cursor 账号是两张表、两个平台，
+# 同一个邮箱在两边是两个账号（ARCHITECTURE §5.3）。
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+# 假的 auth.openai.com / chatgpt.com：token 端点、额度接口。workspace 里 nexus-gateway 已经
+# 拉了 axum，这里只是复用。
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "form"] }
+tempfile = "3"

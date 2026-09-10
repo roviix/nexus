@@ -1,0 +1,1251 @@
+{
+ "aiserver.v1.InferenceAgentTool": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "name",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "description",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "parameters",
+    "kind": "message",
+    "type": "<Yd>"
+   },
+   {
+    "no": 4,
+    "name": "custom_tool_format",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceCustomToolFormat",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceAnthropicOptions": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "cache_control",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceCacheControl",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceCacheControl": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "type",
+    "kind": "scalar",
+    "type": "string"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceContentPart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "text",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceTextPart",
+    "oneof": "part"
+   },
+   {
+    "no": 2,
+    "name": "image",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceImagePart",
+    "oneof": "part"
+   },
+   {
+    "no": 3,
+    "name": "file",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceFilePart",
+    "oneof": "part"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceContentParts": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "parts",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceContentPart",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceCoreMessage": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "role",
+    "kind": "enum",
+    "type": "<A>"
+   },
+   {
+    "no": 2,
+    "name": "text",
+    "kind": "scalar",
+    "type": "string",
+    "oneof": "content"
+   },
+   {
+    "no": 3,
+    "name": "parts",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceContentParts",
+    "oneof": "content"
+   },
+   {
+    "no": 4,
+    "name": "tool_calls",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceToolCall",
+    "repeated": true
+   },
+   {
+    "no": 6,
+    "name": "tool_content",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceToolResultContent",
+    "oneof": "content"
+   },
+   {
+    "no": 7,
+    "name": "reasoning_parts",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceReasoningPart",
+    "repeated": true
+   },
+   {
+    "no": 8,
+    "name": "model_provider_message_id",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 9,
+    "name": "openai_phase",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 10,
+    "name": "openai_phase_null",
+    "kind": "scalar",
+    "type": "bool",
+    "opt": true
+   },
+   {
+    "no": 11,
+    "name": "cursor_inference_reason",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 12,
+    "name": "cursor_feature_type",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceCursorOptions": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "image_description",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 2,
+    "name": "image_descriptions",
+    "kind": "map",
+    "type": "map<int32,string>"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceCustomToolFormat": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "type",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "definition",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "syntax",
+    "kind": "scalar",
+    "type": "string"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceExtendedUsageInfo": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "input_tokens",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 2,
+    "name": "output_tokens",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 3,
+    "name": "cache_read_tokens",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 4,
+    "name": "cache_write_tokens",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 5,
+    "name": "max_tokens",
+    "kind": "scalar",
+    "type": "int32"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceExtraData": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "token_logprobs",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceTokenLogprobs",
+    "repeated": true
+   },
+   {
+    "no": 2,
+    "name": "token_ids",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceTokenIds",
+    "repeated": true
+   },
+   {
+    "no": 3,
+    "name": "prompt_token_ids",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceTokenIds",
+    "repeated": true
+   },
+   {
+    "no": 4,
+    "name": "extra_tokens",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceTokenIds",
+    "repeated": true
+   },
+   {
+    "no": 5,
+    "name": "extra_logprobs",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceTokenLogprobs",
+    "repeated": true
+   },
+   {
+    "no": 6,
+    "name": "routing_matrix",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceRoutingRow",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceFilePart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "data",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "media_type",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "filename",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 4,
+    "name": "provider_options",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceProviderOptions",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceImageDescription": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "message_index",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 2,
+    "name": "part_index",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 3,
+    "name": "exp_content_index",
+    "kind": "scalar",
+    "type": "int32",
+    "opt": true
+   },
+   {
+    "no": 4,
+    "name": "description",
+    "kind": "scalar",
+    "type": "string"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceImageDescriptionsInfo": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "descriptions",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceImageDescription",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceImagePart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "data",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "mime_type",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 3,
+    "name": "provider_options",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceProviderOptions",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceInvocationIdInfo": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "invocation_id",
+    "kind": "scalar",
+    "type": "string"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceMessageRole": {
+  "kind": "enum",
+  "fields": [
+   {
+    "no": 0,
+    "name": "INFERENCE_MESSAGE_ROLE_UNSPECIFIED"
+   },
+   {
+    "no": 1,
+    "name": "INFERENCE_MESSAGE_ROLE_USER"
+   },
+   {
+    "no": 2,
+    "name": "INFERENCE_MESSAGE_ROLE_ASSISTANT"
+   },
+   {
+    "no": 3,
+    "name": "INFERENCE_MESSAGE_ROLE_TOOL"
+   },
+   {
+    "no": 4,
+    "name": "INFERENCE_MESSAGE_ROLE_SYSTEM"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceModelConfig": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "max_tokens",
+    "kind": "scalar",
+    "type": "int32",
+    "opt": true
+   },
+   {
+    "no": 2,
+    "name": "temperature",
+    "kind": "scalar",
+    "type": "float",
+    "opt": true
+   },
+   {
+    "no": 3,
+    "name": "top_p",
+    "kind": "scalar",
+    "type": "float",
+    "opt": true
+   },
+   {
+    "no": 4,
+    "name": "stop_sequences",
+    "kind": "scalar",
+    "type": "string",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceModelParameterValue": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "value",
+    "kind": "scalar",
+    "type": "string"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceNamedProviderDefinedTool": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "name",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "type",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 4,
+    "name": "options",
+    "kind": "message",
+    "type": "<Yd>"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceProviderMetadataInfo": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "metadata",
+    "kind": "message",
+    "type": "<Yd>"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceProviderOptions": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "anthropic",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceAnthropicOptions",
+    "opt": true
+   },
+   {
+    "no": 2,
+    "name": "cursor",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceCursorOptions",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceProviderWarning": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "message",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "affected_models",
+    "kind": "scalar",
+    "type": "string",
+    "repeated": true
+   },
+   {
+    "no": 3,
+    "name": "fallback_model",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 4,
+    "name": "trigger",
+    "kind": "enum",
+    "type": "<A>"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceProviderWarningTrigger": {
+  "kind": "enum",
+  "fields": [
+   {
+    "no": 0,
+    "name": "INFERENCE_PROVIDER_WARNING_TRIGGER_UNSPECIFIED"
+   },
+   {
+    "no": 1,
+    "name": "INFERENCE_PROVIDER_WARNING_TRIGGER_ON_SELECT"
+   },
+   {
+    "no": 2,
+    "name": "INFERENCE_PROVIDER_WARNING_TRIGGER_ON_ERROR"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceReason": {
+  "kind": "enum",
+  "fields": [
+   {
+    "no": 0,
+    "name": "INFERENCE_REASON_UNSPECIFIED"
+   },
+   {
+    "no": 1,
+    "name": "INFERENCE_REASON_GEMINI_VIDEO_SUBAGENT"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceReasoningPart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "is_redacted",
+    "kind": "scalar",
+    "type": "bool"
+   },
+   {
+    "no": 2,
+    "name": "text",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "signature",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 4,
+    "name": "redacted_data",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 5,
+    "name": "model_name",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceRequestedModel": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "model_id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "max_mode",
+    "kind": "scalar",
+    "type": "bool"
+   },
+   {
+    "no": 3,
+    "name": "parameters",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceModelParameterValue",
+    "repeated": true
+   },
+   {
+    "no": 4,
+    "name": "built_in_model",
+    "kind": "scalar",
+    "type": "bool"
+   },
+   {
+    "no": 5,
+    "name": "is_variant_string_representation",
+    "kind": "scalar",
+    "type": "bool"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceResponseInfo": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "model",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "created_at",
+    "kind": "scalar",
+    "type": "int64"
+   },
+   {
+    "no": 4,
+    "name": "messages",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceResponseMessage",
+    "repeated": true
+   },
+   {
+    "no": 5,
+    "name": "error_message",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 6,
+    "name": "inference_extra_data",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceExtraData",
+    "opt": true
+   },
+   {
+    "no": 7,
+    "name": "supports_self_summary",
+    "kind": "scalar",
+    "type": "bool",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceResponseMessage": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "role",
+    "kind": "enum",
+    "type": "<A>"
+   },
+   {
+    "no": 3,
+    "name": "content",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 4,
+    "name": "tool_calls",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceToolCall",
+    "repeated": true
+   },
+   {
+    "no": 5,
+    "name": "tool_result",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceToolResultContent",
+    "opt": true
+   },
+   {
+    "no": 6,
+    "name": "reasoning_parts",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceReasoningPart",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceRoutingRow": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "values",
+    "kind": "scalar",
+    "type": "string",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceStreamError": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "message",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "code",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "is_input_token_limit_error",
+    "kind": "scalar",
+    "type": "bool"
+   },
+   {
+    "no": 4,
+    "name": "is_output_token_limit_error",
+    "kind": "scalar",
+    "type": "bool"
+   },
+   {
+    "no": 5,
+    "name": "error_type",
+    "kind": "enum",
+    "type": "<A>"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceStreamErrorType": {
+  "kind": "enum",
+  "fields": [
+   {
+    "no": 0,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_UNSPECIFIED"
+   },
+   {
+    "no": 1,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_UNKNOWN"
+   },
+   {
+    "no": 2,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_INPUT_TOKEN_LIMIT"
+   },
+   {
+    "no": 3,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_OUTPUT_TOKEN_LIMIT"
+   },
+   {
+    "no": 4,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_RATE_LIMIT"
+   },
+   {
+    "no": 5,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_AUTHENTICATION"
+   },
+   {
+    "no": 6,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_PERMISSION"
+   },
+   {
+    "no": 7,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_OVERLOADED"
+   },
+   {
+    "no": 8,
+    "name": "INFERENCE_STREAM_ERROR_TYPE_CONTENT_FILTER"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceStreamRequest": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "messages",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceCoreMessage",
+    "repeated": true
+   },
+   {
+    "no": 2,
+    "name": "tools",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceAgentTool",
+    "repeated": true
+   },
+   {
+    "no": 3,
+    "name": "provider_defined_tools",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceNamedProviderDefinedTool",
+    "repeated": true
+   },
+   {
+    "no": 4,
+    "name": "model_config",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceModelConfig",
+    "opt": true
+   },
+   {
+    "no": 5,
+    "name": "model_id",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 6,
+    "name": "invocation_id",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 7,
+    "name": "requested_model",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceRequestedModel",
+    "opt": true
+   },
+   {
+    "no": 8,
+    "name": "conversation_id",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 9,
+    "name": "accepted_unadvertised_tool_names",
+    "kind": "scalar",
+    "type": "string",
+    "repeated": true
+   },
+   {
+    "no": 10,
+    "name": "automation_id",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 11,
+    "name": "inference_reason",
+    "kind": "enum",
+    "type": "<A>",
+    "opt": true
+   },
+   {
+    "no": 12,
+    "name": "conversation_group_id",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceStreamResponse": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "text_part",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceTextStreamPart",
+    "oneof": "response"
+   },
+   {
+    "no": 2,
+    "name": "tool_call_part",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceToolCallStreamPart",
+    "oneof": "response"
+   },
+   {
+    "no": 3,
+    "name": "usage",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceUsageInfo",
+    "oneof": "response"
+   },
+   {
+    "no": 4,
+    "name": "response_info",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceResponseInfo",
+    "oneof": "response"
+   },
+   {
+    "no": 5,
+    "name": "extended_usage",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceExtendedUsageInfo",
+    "oneof": "response"
+   },
+   {
+    "no": 6,
+    "name": "provider_metadata",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceProviderMetadataInfo",
+    "oneof": "response"
+   },
+   {
+    "no": 7,
+    "name": "invocation_id",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceInvocationIdInfo",
+    "oneof": "response"
+   },
+   {
+    "no": 8,
+    "name": "error",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceStreamError",
+    "oneof": "response"
+   },
+   {
+    "no": 9,
+    "name": "thinking_part",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceThinkingStreamPart",
+    "oneof": "response"
+   },
+   {
+    "no": 10,
+    "name": "image_descriptions",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceImageDescriptionsInfo",
+    "oneof": "response"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceTextPart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "text",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "provider_options",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceProviderOptions",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceTextStreamPart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "text",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "is_final",
+    "kind": "scalar",
+    "type": "bool"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceThinkingStreamPart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "text",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "signature",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   },
+   {
+    "no": 3,
+    "name": "is_final",
+    "kind": "scalar",
+    "type": "bool"
+   }
+  ]
+ },
+ "aiserver.v1.InferenceTokenIds": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "values",
+    "kind": "scalar",
+    "type": "int64",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceTokenLogprobs": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "values",
+    "kind": "scalar",
+    "type": "double",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceToolCall": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "tool_call_id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "tool_name",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "args",
+    "kind": "message",
+    "type": "<Yd>"
+   },
+   {
+    "no": 4,
+    "name": "raw_tool_call_args",
+    "kind": "scalar",
+    "type": "string",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceToolCallStreamPart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "tool_call_id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "tool_name",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "args",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 4,
+    "name": "is_complete",
+    "kind": "scalar",
+    "type": "bool"
+   },
+   {
+    "no": 5,
+    "name": "tool_index",
+    "kind": "scalar",
+    "type": "int32",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceToolResultContent": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "parts",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceToolResultPart",
+    "repeated": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceToolResultPart": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "tool_call_id",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 2,
+    "name": "tool_name",
+    "kind": "scalar",
+    "type": "string"
+   },
+   {
+    "no": 3,
+    "name": "result",
+    "kind": "message",
+    "type": "<kte>"
+   },
+   {
+    "no": 4,
+    "name": "is_error",
+    "kind": "scalar",
+    "type": "bool"
+   },
+   {
+    "no": 5,
+    "name": "experimental_content",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceContentPart",
+    "repeated": true
+   },
+   {
+    "no": 6,
+    "name": "provider_options",
+    "kind": "message",
+    "type": "aiserver.v1.InferenceProviderOptions",
+    "opt": true
+   }
+  ]
+ },
+ "aiserver.v1.InferenceUsageInfo": {
+  "kind": "message",
+  "fields": [
+   {
+    "no": 1,
+    "name": "prompt_tokens",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 2,
+    "name": "completion_tokens",
+    "kind": "scalar",
+    "type": "int32"
+   },
+   {
+    "no": 3,
+    "name": "total_tokens",
+    "kind": "scalar",
+    "type": "int32",
+    "opt": true
+   }
+  ]
+ }
+}

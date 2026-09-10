@@ -1,0 +1,24 @@
+name: gitleaks
+
+# 这个仓库天生要碰 token：账号池里全是别人平台的凭证，测试夹具里也有 JWT 形状的字符串。
+# 每个 PR 和每次推 main 都扫一遍历史，防止真凭证混进来。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: 扫描泄漏的凭证
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

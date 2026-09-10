@@ -1,0 +1,23 @@
+[package]
+name = "nexus-connect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tracing.workspace = true
+# 改用户自己的 config.toml 要**保留他原有的格式与注释**，只动我们那几个键。
+# toml_edit 是为此存在的；普通的 toml 序列化会把整份文件重排一遍。
+toml_edit = "0.25"
+
+# 注意：不依赖 nexus-gateway / nexus-shop。这里只认「地址 + 钥匙 + 模型」三个字串，
+# 它们从哪个号源来是 Tauri 层的事。
+
+[dev-dependencies]
+tempfile = "3"

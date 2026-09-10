@@ -1,0 +1,83 @@
+<!doctype html>
+<!--
+  应用图标的母版。用 Chrome headless 渲成 1024×1024 PNG，再交给 `tauri icon` 切各平台尺寸：
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless --disable-gpu --screenshot=app-icon.png --window-size=1024,1024 \
+      --default-background-color=00000000 --force-device-scale-factor=1 icon-source.html
+    npx tauri icon src-tauri/app-icon.png
+
+  为什么留着这个源文件而不是只留 PNG：图标要改（品牌标一动、配色一调）时，
+  改这里重跑两条命令就行，不用去找当初是怎么画出来的。
+
+  圆角 22.4%（229/1024）是 macOS 的 squircle 比例。Tauri 不会替你加圆角，
+  母版里没有的话，Dock 上就是一个直角方块。
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 1024px;
+        height: 1024px;
+        background: transparent;
+      }
+      .tile {
+        width: 1024px;
+        height: 1024px;
+        border-radius: 229px;
+        /* 不用纯黑：纯黑上任何描边都显脏，#0a0c0d 这一档才压得住渐变光。
+           从中心略偏上打一团极淡的品牌光，让方块有体积而不是一块涂色。 */
+        background:
+          radial-gradient(680px 520px at 50% 34%, rgba(45, 212, 160, 0.16), transparent 68%),
+          linear-gradient(168deg, #12171a 0%, #0a0c0d 62%);
+        display: grid;
+        place-items: center;
+        position: relative;
+        overflow: hidden;
+      }
+      /* 顶边一道内高光。深色界面里唯一值得保留的「材质」。 */
+      .tile::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 229px;
+        box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.07);
+      }
+      svg {
+        width: 720px;
+        /* 环只占 24×24 视框竖向的 47%，用 tight 视框排版才不会小掉一半。 */
+        height: 383px;
+        overflow: visible;
+      }
+      /* 标底下一层同色辉光，把它从底色上托起来。 */
+      .glow {
+        filter: drop-shadow(0 0 56px rgba(45, 212, 160, 0.34));
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tile">
+      <svg class="glow" viewBox="1.3 6.3 21.4 11.4">
+        <defs>
+          <linearGradient id="m" x1="2" y1="17" x2="22" y2="7" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#6ff0c4" />
+            <stop offset="38%" stop-color="#2dd4a0" />
+            <stop offset="72%" stop-color="#22a8c8" />
+            <stop offset="100%" stop-color="#7b7ef0" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M12 12C10.2 9.2 8.9 7.6 6.9 7.6C4.4 7.6 2.6 9.6 2.6 12C2.6 14.4 4.4 16.4 6.9 16.4C8.9 16.4 10.2 14.8 12 12C13.8 9.2 15.1 7.6 17.1 7.6C19.6 7.6 21.4 9.6 21.4 12C21.4 14.4 19.6 16.4 17.1 16.4C15.1 16.4 13.8 14.8 12 12Z"
+          fill="none"
+          stroke="url(#m)"
+          stroke-width="2.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,926 @@
+//! 一个号在 Cursor 那边的真实账况。
+//!
+//! 走 cursor.com 网页版 dashboard 的接口，认证方式和浏览器一样——Cookie 里放
+//! `WorkosCursorSessionToken=user_xxx::<access_jwt>`。
+//!
+//! **字段口径以 `shop/src/lib/cursorUsage.ts` 为规格**（那份用真实响应逐条核对过），
+//! 这里是它的 Rust 移植。仍然做容错（数字可能是字符串、对象可能整个缺席），因为这些
+//! 接口没有公开契约；但**不做多路径猜测**：猜错了会安静地显示一个错的数，比显示「—」
+//! 糟得多。
+
+use nexus_core::{now_iso, AppError, ErrorCode, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::time::Duration;
+
+const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+const TIMEOUT: Duration = Duration::from_secs(20);
+const AGGREGATED_URL: &str = "https://cursor.com/api/dashboard/get-aggregated-usage-events";
+const DAY_MS: i64 = 86_400_000;
+
+/// Bot（Cursor 内部代号 sand，界面上叫 "Grok Bot Plan"）通道的**周**额度。
+///
+/// 和 dashboard 上的 Auto / API 桶是两套独立计量。老号（pro-legacy）没有这套，
+/// 整个对象缺席——宁可让上层看到「没有这套」，也不要造一个 0% 的假象。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BotQuota {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent_used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<i64>,
+    /// 下次重置时刻，epoch ms。Bot 是**周**额，和月账期不是一回事，界面两个都要显示。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_available: Option<bool>,
+    /// `granted` / `blocked`。没权限的话额度多少都没用。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    pub model: String,
+    /// 1 = named/API 桶，2 = Auto 桶。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<f64>,
+    pub cents: f64,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+}
+
+/// 一段时间窗内的花费：今天、近 7 天。
+///
+/// 数字来自 `get-aggregated-usage-events` 带日期的那一问，`cents` 是所有明细行 `totalCents`
+/// 的和 —— 和本账期那个来自 `usage-summary` 的 `spend_cents` 不是同一个口径（那个是
+/// Cursor 结算过的数），两者相差几美分是正常的。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindow {
+    /// 窗口起止，epoch ms。
+    pub start: i64,
+    pub end: i64,
+    pub cents: f64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub by_model: Vec<ModelUsage>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountUsage {
+    pub fetched_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_created_at: Option<String>,
+    /// 原样保留 Cursor 的写法：pro / pro_plus / ultra / free / enterprise…
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscription_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_yearly_plan: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_team_member: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_cancellation_date: Option<String>,
+    /// 月账期起止，epoch ms。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycle_start: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycle_end: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotQuota>,
+    /// 三个已用百分比（0..100）。Auto 桶和 API 桶分别计量，任一打满那类模型就停了，
+    /// 所以三个都要看。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_percent_used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_percent_used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_percent_used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub included_cents: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bonus_cents: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spend_cents: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_limit_cents: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_demand_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_demand_used_cents: Option<f64>,
+    /// `null` 且 enabled 为真 = 不封顶。所以这里是双层 Option，不能简化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_demand_limit_cents: Option<Option<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by_model: Option<Vec<ModelUsage>>,
+    /// 今天（本地零点起）与近 7 天（含今天的 7 个自然日）的花费。
+    ///
+    /// 「今天」从几点算，Rust 这边不知道：多线程进程里拿不到可靠的本地时区，而这个
+    /// 应用的刷新全部由前端触发，所以本地零点由前端递进来（`fetch` 的 `day_start_ms`）。
+    /// 没递、或那两问没回来，这两项就缺席 —— 界面上退回只看本账期。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub today: Option<UsageWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub week: Option<UsageWindow>,
+}
+
+/// 拉一个号的完整账况。
+///
+/// 六个接口并发；任意一个挂掉都不影响其余字段落地——只有 `usage-summary` 拿不到才算
+/// 失败，那是唯一不可替代的一个。给了 `day_start_ms`（本地零点，epoch ms）再多两问：
+/// 今天、近 7 天的按模型聚合 —— 同一个接口带日期。它们和其余六个一起并发出去。
+pub async fn fetch(
+    http: &reqwest::Client,
+    session_token: &str,
+    day_start_ms: Option<i64>,
+) -> Result<AccountUsage> {
+    let token = session_token.trim();
+    if !token.starts_with("user_") || !token.contains("::") {
+        return Err(AppError::unauthorized(
+            "session token 格式不对，应为 user_xxx::<jwt>。",
+        ));
+    }
+    let cookie = session_cookie(token);
+
+    let now_ms = now_millis();
+    // 零点在未来、或离谱地远（时钟坏了）都不问：一个空窗口比一个错窗口好。
+    let today_start = day_start_ms.filter(|s| *s > 0 && *s <= now_ms && now_ms - *s <= 2 * DAY_MS);
+    let week_start = today_start.map(|s| s - 6 * DAY_MS);
+
+    let (summary, stripe, me, agg, sand_usage, sand_access, today, week) = tokio::join!(
+        call(http, "https://cursor.com/api/usage-summary", &cookie, None),
+        call(http, "https://cursor.com/api/auth/stripe", &cookie, None),
+        call(http, "https://cursor.com/api/auth/me", &cookie, None),
+        // 空 body 默认就是本账期，实测与 usage-summary 的 breakdown.total 对得上。
+        // 不传日期是为了让六个请求完全并发——传的话得先拿到账期。
+        call(http, AGGREGATED_URL, &cookie, Some(serde_json::json!({}))),
+        // Bot（sand）通道的周额度与权限。
+        call(
+            http,
+            "https://cursor.com/api/dashboard/get-sand-usage-status",
+            &cookie,
+            Some(serde_json::json!({}))
+        ),
+        call(
+            http,
+            "https://cursor.com/api/dashboard/get-sand-access-status",
+            &cookie,
+            Some(serde_json::json!({}))
+        ),
+        ranged(http, &cookie, today_start, now_ms),
+        ranged(http, &cookie, week_start, now_ms),
+    );
+
+    if unauthenticated(summary.as_ref()) || unauthenticated(me.as_ref()) {
+        return Err(AppError::unauthorized("Cursor 会话已失效，需要重新授权。"));
+    }
+    let Some(summary) = summary else {
+        return Err(AppError::new(
+            ErrorCode::Upstream,
+            "拉取 usage-summary 失败（网络或响应异常）。",
+        )
+        .with_hint("稍后重试；这一项拿不到就没有可信的额度数据。"));
+    };
+
+    let mut usage = parse(
+        &summary,
+        stripe.as_ref(),
+        me.as_ref(),
+        agg.as_ref(),
+        sand_usage.as_ref(),
+        sand_access.as_ref(),
+    );
+    usage.today = today_start.and_then(|s| window(s, now_ms, today.as_ref()));
+    usage.week = week_start.and_then(|s| window(s, now_ms, week.as_ref()));
+    Ok(usage)
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 带日期的那一问。`start` 为 None 就不问 —— 让 `join!` 的形状保持固定。
+async fn ranged(
+    http: &reqwest::Client,
+    cookie: &str,
+    start: Option<i64>,
+    end: i64,
+) -> Option<Value> {
+    let start = start?;
+    // DashboardService 的日期是 int64 毫秒，JSON 里按字符串传（与 get-filtered-usage-events 同）。
+    let body = serde_json::json!({ "startDate": start.to_string(), "endDate": end.to_string() });
+    call(http, AGGREGATED_URL, cookie, Some(body)).await
+}
+
+pub fn session_cookie(session_token: &str) -> String {
+    // 有些来源里 `::` 是被 URL 编码过的，先还原再拼 Cookie。
+    let raw = if session_token.contains("%3A%3A") {
+        session_token.replace("%3A%3A", "::")
+    } else {
+        session_token.to_string()
+    };
+    format!("WorkosCursorSessionToken={raw}")
+}
+
+/// 一次重试要等多久。
+///
+/// 上游说了等多久就等多久（`Retry-After`），它比我们瞎猜准。没说才退回指数退避，
+/// 并且**加一点抖动** —— 六个请求是同时发的，一起被限流又一起原地重试，就是把同一记
+/// 突发再打一遍。上限卡住，免得一个离谱的 `Retry-After` 把整批刷号拖到天荒地老。
+pub(crate) fn backoff(attempt: u32, retry_after: Option<&str>) -> Duration {
+    const MAX: Duration = Duration::from_secs(5);
+    if let Some(secs) = retry_after.and_then(|v| v.trim().parse::<u64>().ok()) {
+        return Duration::from_secs(secs).min(MAX);
+    }
+    let base = Duration::from_millis(400 * 3u64.pow(attempt.min(3)));
+    // 抖动取地址低位，够散且不用引随机数依赖。
+    let jitter = Duration::from_millis((std::ptr::addr_of!(base) as u64) % 120);
+    (base + jitter).min(MAX)
+}
+
+/// 单个接口，最多试三次。
+///
+/// 这不是可有可无的加固：冷启动那一次，六个并发请求要一起做 TLS 握手，实测会掉一两个。
+/// 而调用方对缺字段是静默降级的——比如 sand 那个掉了，Bot 周额就成了 `None`，界面显示
+/// 「无」而不是真实的「已用尽」。宁可多花几百毫秒重来一次。
+async fn call(
+    http: &reqwest::Client,
+    url: &str,
+    cookie: &str,
+    body: Option<Value>,
+) -> Option<Value> {
+    const ATTEMPTS: u32 = 3;
+    for attempt in 0..ATTEMPTS {
+        let last = attempt + 1 == ATTEMPTS;
+        let mut req = match &body {
+            Some(b) => http.post(url).json(b),
+            None => http.get(url),
+        };
+        req = req
+            .header("Cookie", cookie)
+            .header("User-Agent", UA)
+            .header("Accept", "application/json")
+            .header("Origin", "https://cursor.com")
+            .header("Referer", "https://cursor.com/dashboard");
+
+        match req.send().await {
+            Ok(res) => {
+                let status = res.status();
+                // 429 和 5xx 都是「现在不行，等下再来」，不是这个号的稳定答案。
+                //
+                // 429 以前混在 4xx 里当稳定答案处理，直接返回 None —— 那意味着一次限流会
+                // 被读成「这个号没有这项数据」，然后一份空快照覆盖掉好数据。其余 4xx 才是
+                // 真正稳定的答案（这个号就是没这项），重试没意义。
+                let retryable =
+                    status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                if retryable {
+                    if !last {
+                        let after = res
+                            .headers()
+                            .get(reqwest::header::RETRY_AFTER)
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_owned);
+                        tokio::time::sleep(backoff(attempt, after.as_deref())).await;
+                        continue;
+                    }
+                    // 试到底还是不行：**当作拿不到**，不要把错误体交出去。
+                    // 交出去的话，`parse` 会从里面读不到任何字段，于是一份「计划未知、
+                    // 用量全空」的快照会覆盖掉上一份好数据，而且不留错误——用户看到的是
+                    // 「刚刚查过，没问题」。更糟的是错误体里若含 unauthorized 字样，
+                    // 这个号会被判死。
+                    tracing::warn!(url, %status, "上游持续不可用，放弃这一项");
+                    return None;
+                }
+                let text = res.text().await.ok()?;
+                return match serde_json::from_str(&text) {
+                    Ok(v) => Some(v),
+                    // 走到这里多半不是「接口改了」，而是压根没走到接口：被挡在防护层
+                    // 会回一整页 HTML。上层只会说「网络或响应异常」，不留下这一笔就
+                    // 查不出到底是被挡了、还是真的网络不通。
+                    Err(_) => {
+                        tracing::warn!(
+                            url,
+                            %status,
+                            head = %text.chars().take(120).collect::<String>(),
+                            "响应不是 JSON"
+                        );
+                        None
+                    }
+                };
+            }
+            Err(_) if !last => {
+                tokio::time::sleep(backoff(attempt, None)).await;
+            }
+            Err(err) => {
+                tracing::warn!(url, %err, "请求失败");
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// Cursor 对失效会话返回 **200 + `{"error":"not_authenticated"}`**，状态码看不出来。
+fn unauthenticated(json: Option<&Value>) -> bool {
+    let Some(j) = json else { return false };
+    let matches = |s: &str| {
+        let s = s.to_ascii_lowercase();
+        s.contains("not_authenticated")
+            || s.contains("unauthorized")
+            || s.contains("not authenticated")
+    };
+    match j.get("error") {
+        Some(Value::String(s)) => matches(s),
+        Some(obj) => obj
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(matches),
+        None => false,
+    }
+}
+
+// ── 解析。字段路径全部按真实响应核对过（规格见 cursorUsage.ts）。 ──────────────
+
+fn num(v: Option<&Value>) -> Option<f64> {
+    match v? {
+        Value::Number(n) => n.as_f64().filter(|f| f.is_finite()),
+        // 非有限值也要挡掉：`"NaN"` 能被 parse 出来，但之后 serde_json 序列化不了它，
+        // 整份用量都会写不进库。
+        Value::String(s) if !s.trim().is_empty() => {
+            s.trim().parse::<f64>().ok().filter(|f| f.is_finite())
+        }
+        _ => None,
+    }
+}
+
+fn int(v: Option<&Value>) -> i64 {
+    num(v).map(|f| f.round() as i64).unwrap_or(0)
+}
+
+fn text(v: Option<&Value>) -> Option<String> {
+    let s = v?.as_str()?.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+fn flag(v: Option<&Value>) -> Option<bool> {
+    (v? == &Value::Bool(true)).then_some(true)
+}
+
+/// 账期时间戳有两种写法：ISO 串（usage-summary）和毫秒数字串（sand 那两个）。
+fn ts(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::Number(n) => n.as_i64().filter(|x| *x > 0),
+        Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                return None;
+            }
+            if s.chars().all(|c| c.is_ascii_digit()) {
+                let n: i64 = s.parse().ok()?;
+                // 秒级时间戳（10 位）要补成毫秒。
+                return (n > 0).then_some(if n < 1_000_000_000_000 { n * 1000 } else { n });
+            }
+            parse_iso_millis(s)
+        }
+        _ => None,
+    }
+}
+
+fn parse_iso_millis(raw: &str) -> Option<i64> {
+    let t = nexus_core::clock::parse_iso(raw)?;
+    Some((t.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+/// 百分比按 Cursor 原样保留小数，只夹到 0..100 —— 超过 100 的桶展示成 100 就够了。
+fn pct(v: Option<&Value>) -> Option<f64> {
+    num(v).map(|n| n.clamp(0.0, 100.0))
+}
+
+fn obj<'a>(v: Option<&'a Value>, key: &str) -> Option<&'a Value> {
+    v?.get(key).filter(|x| x.is_object())
+}
+
+fn parse(
+    summary: &Value,
+    stripe: Option<&Value>,
+    me: Option<&Value>,
+    agg: Option<&Value>,
+    sand_usage: Option<&Value>,
+    sand_access: Option<&Value>,
+) -> AccountUsage {
+    let individual = obj(Some(summary), "individualUsage");
+    let plan = obj(individual, "plan");
+    let breakdown = obj(plan, "breakdown");
+    let on_demand = obj(individual, "onDemand");
+
+    // membershipType 三处都有，优先级：usage-summary > stripe 的个人档 > stripe 的总档。
+    // 个人档比总档准：团队成员的总档会显示 team，但实际吃的是他个人的额度。
+    let plan_name = text(summary.get("membershipType"))
+        .or_else(|| text(stripe.and_then(|s| s.get("individualMembershipType"))))
+        .or_else(|| text(stripe.and_then(|s| s.get("membershipType"))));
+
+    let mut usage = AccountUsage {
+        fetched_at: now_iso(),
+        email: text(me.and_then(|m| m.get("email"))),
+        account_created_at: text(me.and_then(|m| m.get("created_at"))),
+        plan: plan_name,
+        subscription_status: text(stripe.and_then(|s| s.get("subscriptionStatus"))),
+        is_yearly_plan: flag(stripe.and_then(|s| s.get("isYearlyPlan"))),
+        is_team_member: flag(stripe.and_then(|s| s.get("isTeamMember"))),
+        pending_cancellation_date: text(stripe.and_then(|s| s.get("pendingCancellationDate"))),
+        cycle_start: ts(summary.get("billingCycleStart")),
+        cycle_end: ts(summary.get("billingCycleEnd")),
+        bot: parse_bot(sand_usage, sand_access),
+        total_percent_used: pct(plan.and_then(|p| p.get("totalPercentUsed"))),
+        auto_percent_used: pct(plan.and_then(|p| p.get("autoPercentUsed"))),
+        api_percent_used: pct(plan.and_then(|p| p.get("apiPercentUsed"))),
+        included_cents: num(breakdown.and_then(|b| b.get("included"))),
+        bonus_cents: num(breakdown.and_then(|b| b.get("bonus"))),
+        // breakdown.total 是 included + bonus 的真实消费；plan.used 会被 limit 截顶
+        // （用超了也只显示 2000/2000），只能当兜底。
+        spend_cents: num(breakdown.and_then(|b| b.get("total")))
+            .or_else(|| num(plan.and_then(|p| p.get("used")))),
+        plan_limit_cents: num(plan.and_then(|p| p.get("limit"))),
+        on_demand_enabled: flag(on_demand.and_then(|o| o.get("enabled"))),
+        on_demand_used_cents: num(on_demand.and_then(|o| o.get("used"))),
+        on_demand_limit_cents: on_demand.map(|o| match o.get("limit") {
+            None | Some(Value::Null) => None,
+            other => num(other),
+        }),
+        ..Default::default()
+    };
+
+    if let Some(agg) = agg {
+        let a = aggregate(agg);
+        usage.input_tokens = Some(a.input);
+        usage.output_tokens = Some(a.output);
+        usage.cache_read_tokens = Some(a.cache_read);
+        usage.cache_write_tokens = Some(a.cache_write);
+        if !a.by_model.is_empty() {
+            usage.by_model = Some(a.by_model);
+        }
+    }
+    usage
+}
+
+/// `get-aggregated-usage-events` 的一份响应拆开：四个 token 总数 + 按模型的行 + 所有行的花费和。
+struct Aggregated {
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write: i64,
+    /// 花费从多到少。没有模型名的行不进来 —— 它们在界面上没地方摆。
+    by_model: Vec<ModelUsage>,
+    /// **所有**行的 `totalCents` 之和，包括没有模型名的那些：钱不该因为一行少了个名字就漏掉。
+    cents: f64,
+}
+
+fn aggregate(agg: &Value) -> Aggregated {
+    let rows = agg
+        .get("aggregations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut by_model: Vec<ModelUsage> = rows
+        .iter()
+        .filter_map(|r| {
+            let model = text(r.get("modelIntent")).or_else(|| text(r.get("model")))?;
+            Some(ModelUsage {
+                model,
+                tier: num(r.get("tier")),
+                cents: num(r.get("totalCents")).unwrap_or(0.0),
+                input: int(r.get("inputTokens")),
+                output: int(r.get("outputTokens")),
+                cache_read: int(r.get("cacheReadTokens")),
+                cache_write: int(r.get("cacheWriteTokens")),
+            })
+        })
+        .collect();
+    by_model.sort_by(|a, b| b.cents.total_cmp(&a.cents));
+    Aggregated {
+        input: int(agg.get("totalInputTokens")),
+        output: int(agg.get("totalOutputTokens")),
+        cache_read: int(agg.get("totalCacheReadTokens")),
+        cache_write: int(agg.get("totalCacheWriteTokens")),
+        by_model,
+        cents: rows.iter().filter_map(|r| num(r.get("totalCents"))).sum(),
+    }
+}
+
+/// 把带日期那一问的响应装成一个时间窗。
+///
+/// 响应若自报了 `period` 而它不是我们要的那段（比如接口无视日期、退回了本账期），
+/// 宁可不给 —— 一个错的「今天花了 $21」比一个「—」糟得多。差一天以内算对得上：
+/// 上游可能把起点归整到它自己的日界。
+fn window(start: i64, end: i64, agg: Option<&Value>) -> Option<UsageWindow> {
+    let agg = agg?;
+    if let Some(got) = ts(agg.get("period").and_then(|p| p.get("startDate"))) {
+        if (got - start).abs() > DAY_MS {
+            tracing::warn!(
+                want = start,
+                got,
+                "聚合接口回的不是要的那段，丢弃这个时间窗"
+            );
+            return None;
+        }
+    }
+    let a = aggregate(agg);
+    Some(UsageWindow {
+        start,
+        end,
+        cents: a.cents,
+        input_tokens: a.input,
+        output_tokens: a.output,
+        cache_read_tokens: a.cache_read,
+        cache_write_tokens: a.cache_write,
+        by_model: a.by_model,
+    })
+}
+
+fn parse_bot(usage: Option<&Value>, access: Option<&Value>) -> Option<BotQuota> {
+    let percent_used = pct(usage.and_then(|u| u.get("usagePercent")));
+    let reset_at = ts(usage.and_then(|u| u.get("nextResetTimestampUtc")));
+    let raw_state = text(access.and_then(|a| a.get("state")));
+    // 三样都没有 = 这个号没有 Bot 通道（老 pro-legacy 号返回空对象）。
+    if percent_used.is_none() && reset_at.is_none() && raw_state.is_none() {
+        return None;
+    }
+
+    let mut bot = BotQuota {
+        percent_used,
+        period_start: ts(usage.and_then(|u| u.get("currentPeriodStart"))),
+        reset_at,
+        has_available: usage
+            .and_then(|u| u.get("hasAvailableUsage"))
+            .and_then(Value::as_bool),
+        plan_label: text(usage.and_then(|u| u.get("grokPlanLabel"))),
+        ..Default::default()
+    };
+    if let Some(state) = raw_state {
+        let granted = state == "SAND_ACCESS_STATE_GRANTED";
+        bot.access = Some(if granted { "granted" } else { "blocked" }.to_string());
+        if !granted {
+            // NONE 是「没有阻断原因」的占位，带上去只会让界面显示一句废话。
+            bot.block_reason = text(access.and_then(|a| a.get("blockReason")))
+                .filter(|r| r != "SAND_ACCESS_BLOCK_REASON_NONE");
+        }
+    }
+    Some(bot)
+}
+
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .user_agent(UA)
+        .build()
+        .expect("构造 HTTP 客户端失败")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_retry_after_from_upstream_wins_over_our_guess() {
+        // 上游说了等多久就等多久，它比我们瞎猜准。
+        assert_eq!(backoff(0, Some("2")), Duration::from_secs(2));
+        assert_eq!(backoff(2, Some("1")), Duration::from_secs(1));
+        // 但不能被一个离谱的值把整批刷号拖住。
+        assert_eq!(backoff(0, Some("3600")), Duration::from_secs(5));
+        // 看不懂的头就当没有，回到退避。
+        assert!(backoff(0, Some("Wed, 21 Oct 2026 07:28:00 GMT")) < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn backoff_grows_and_stays_bounded() {
+        let d0 = backoff(0, None);
+        let d1 = backoff(1, None);
+        let d2 = backoff(2, None);
+        assert!(
+            d0 < d1 && d1 < d2,
+            "退避要一次比一次久：{d0:?} {d1:?} {d2:?}"
+        );
+        assert!(d0 >= Duration::from_millis(400));
+        for attempt in 0..8 {
+            assert!(backoff(attempt, None) <= Duration::from_secs(5));
+        }
+    }
+    use serde_json::json;
+
+    /// 一份贴着真实响应形状的 usage-summary。
+    fn summary() -> Value {
+        json!({
+            "membershipType": "ultra",
+            "billingCycleStart": "2026-08-15T00:00:00.000Z",
+            "billingCycleEnd": "2026-09-15T00:00:00.000Z",
+            "individualUsage": {
+                "plan": {
+                    "totalPercentUsed": 42.5,
+                    "autoPercentUsed": 61.25,
+                    "apiPercentUsed": 12,
+                    "used": 2000,
+                    "limit": 2000,
+                    "breakdown": { "included": 1800, "bonus": 450, "total": 2250 }
+                },
+                "onDemand": { "enabled": true, "used": 315, "limit": null }
+            }
+        })
+    }
+
+    #[test]
+    fn parses_the_headline_numbers() {
+        let u = parse(&summary(), None, None, None, None, None);
+        assert_eq!(u.plan.as_deref(), Some("ultra"));
+        assert_eq!(u.total_percent_used, Some(42.5));
+        assert_eq!(u.auto_percent_used, Some(61.25));
+        assert_eq!(u.api_percent_used, Some(12.0));
+        assert_eq!(u.plan_limit_cents, Some(2000.0));
+        assert!(u.cycle_end.unwrap() > u.cycle_start.unwrap());
+    }
+
+    #[test]
+    fn spend_prefers_breakdown_total_over_the_capped_used() {
+        // plan.used 被 limit 截顶成 2000，真实消费是 2250。显示 2000 会让人以为
+        // 「刚好用完」，而实际已经超支 250。
+        let u = parse(&summary(), None, None, None, None, None);
+        assert_eq!(u.spend_cents, Some(2250.0));
+        assert_eq!(u.included_cents, Some(1800.0));
+        assert_eq!(u.bonus_cents, Some(450.0));
+    }
+
+    #[test]
+    fn spend_falls_back_to_used_when_there_is_no_breakdown() {
+        let s = json!({ "individualUsage": { "plan": { "used": 1234 } } });
+        assert_eq!(
+            parse(&s, None, None, None, None, None).spend_cents,
+            Some(1234.0)
+        );
+    }
+
+    #[test]
+    fn uncapped_on_demand_is_distinguishable_from_absent() {
+        // limit: null + enabled → 不封顶；整个 onDemand 缺席 → 字段是 None。
+        let u = parse(&summary(), None, None, None, None, None);
+        assert_eq!(u.on_demand_enabled, Some(true));
+        assert_eq!(u.on_demand_used_cents, Some(315.0));
+        assert_eq!(u.on_demand_limit_cents, Some(None), "null = 不封顶");
+
+        let bare = json!({ "individualUsage": { "plan": {} } });
+        assert_eq!(
+            parse(&bare, None, None, None, None, None).on_demand_limit_cents,
+            None
+        );
+    }
+
+    #[test]
+    fn individual_membership_beats_the_team_wide_one() {
+        // 团队成员的总档显示 team，但派单吃的是他个人的额度。
+        let s = json!({ "individualUsage": { "plan": {} } });
+        let stripe = json!({ "membershipType": "team", "individualMembershipType": "pro" });
+        assert_eq!(
+            parse(&s, Some(&stripe), None, None, None, None)
+                .plan
+                .as_deref(),
+            Some("pro")
+        );
+    }
+
+    #[test]
+    fn percentages_are_clamped_but_keep_their_decimals() {
+        let s = json!({ "individualUsage": { "plan": {
+            "totalPercentUsed": 137.9, "autoPercentUsed": -3, "apiPercentUsed": "55.5"
+        }}});
+        let u = parse(&s, None, None, None, None, None);
+        assert_eq!(u.total_percent_used, Some(100.0));
+        assert_eq!(u.auto_percent_used, Some(0.0));
+        assert_eq!(u.api_percent_used, Some(55.5), "字符串数字也要认");
+    }
+
+    #[test]
+    fn bot_quota_is_absent_for_legacy_accounts() {
+        // 老号这两个接口返回空对象。造一个 0% 的假象会让界面显示「额度充足」。
+        let empty = json!({});
+        assert!(parse_bot(Some(&empty), Some(&empty)).is_none());
+        assert!(parse_bot(None, None).is_none());
+    }
+
+    #[test]
+    fn bot_quota_parses_weekly_reset_and_access() {
+        let usage = json!({
+            "usagePercent": 87.5,
+            "currentPeriodStart": "1756800000000",
+            "nextResetTimestampUtc": "1757404800000",
+            "hasAvailableUsage": true,
+            "grokPlanLabel": "Grok Bot Plan"
+        });
+        let access = json!({ "state": "SAND_ACCESS_STATE_GRANTED", "blockReason": "SAND_ACCESS_BLOCK_REASON_NONE" });
+        let bot = parse_bot(Some(&usage), Some(&access)).unwrap();
+        assert_eq!(bot.percent_used, Some(87.5));
+        assert_eq!(bot.reset_at, Some(1_757_404_800_000));
+        assert_eq!(bot.access.as_deref(), Some("granted"));
+        assert_eq!(bot.has_available, Some(true));
+        assert_eq!(bot.plan_label.as_deref(), Some("Grok Bot Plan"));
+        assert!(bot.block_reason.is_none());
+    }
+
+    #[test]
+    fn a_blocked_bot_channel_reports_a_real_reason_only() {
+        let usage = json!({ "usagePercent": 0 });
+        let blocked = json!({ "state": "SAND_ACCESS_STATE_BLOCKED", "blockReason": "SAND_ACCESS_BLOCK_REASON_ABUSE" });
+        let bot = parse_bot(Some(&usage), Some(&blocked)).unwrap();
+        assert_eq!(bot.access.as_deref(), Some("blocked"));
+        assert_eq!(
+            bot.block_reason.as_deref(),
+            Some("SAND_ACCESS_BLOCK_REASON_ABUSE")
+        );
+
+        // NONE 是占位，不该显示出来。
+        let placeholder = json!({ "state": "SAND_ACCESS_STATE_BLOCKED", "blockReason": "SAND_ACCESS_BLOCK_REASON_NONE" });
+        assert!(parse_bot(Some(&usage), Some(&placeholder))
+            .unwrap()
+            .block_reason
+            .is_none());
+    }
+
+    #[test]
+    fn model_breakdown_is_sorted_by_spend() {
+        let agg = json!({
+            "totalInputTokens": 1000, "totalOutputTokens": "2000",
+            "totalCacheReadTokens": 3000, "totalCacheWriteTokens": 4000,
+            "aggregations": [
+                { "modelIntent": "auto", "tier": 2, "totalCents": 10, "inputTokens": 1 },
+                { "model": "claude-4-opus", "tier": 1, "totalCents": 250, "inputTokens": 2 },
+                { "totalCents": 999 },
+                { "modelIntent": "gpt-5", "tier": 1, "totalCents": 30 }
+            ]
+        });
+        let u = parse(&summary(), None, None, Some(&agg), None, None);
+        let models = u.by_model.unwrap();
+        assert_eq!(models.len(), 3, "没有模型名的那行要丢掉");
+        assert_eq!(models[0].model, "claude-4-opus");
+        assert_eq!(models[0].cents, 250.0);
+        assert_eq!(models[2].model, "auto");
+        assert_eq!(u.output_tokens, Some(2000), "字符串数字也要认");
+    }
+
+    #[test]
+    fn a_missing_optional_endpoint_degrades_silently() {
+        // stripe / me / agg / sand 全挂，usage-summary 还在：核心数据照样落地。
+        let u = parse(&summary(), None, None, None, None, None);
+        assert_eq!(u.total_percent_used, Some(42.5));
+        assert!(u.email.is_none() && u.bot.is_none() && u.by_model.is_none());
+    }
+
+    #[test]
+    fn detects_the_200_ok_not_authenticated_response() {
+        assert!(unauthenticated(Some(
+            &json!({ "error": "not_authenticated" })
+        )));
+        assert!(unauthenticated(Some(
+            &json!({ "error": { "message": "Unauthorized" } })
+        )));
+        assert!(!unauthenticated(Some(&json!({ "error": "rate_limited" }))));
+        assert!(!unauthenticated(Some(&summary())));
+        assert!(!unauthenticated(None));
+    }
+
+    #[test]
+    fn timestamps_accept_iso_seconds_and_millis() {
+        assert_eq!(
+            ts(Some(&json!("2026-09-02T00:00:00Z"))),
+            Some(1_788_307_200_000)
+        );
+        assert_eq!(ts(Some(&json!("1757404800000"))), Some(1_757_404_800_000));
+        assert_eq!(
+            ts(Some(&json!("1757404800"))),
+            Some(1_757_404_800_000),
+            "秒要补成毫秒"
+        );
+        assert_eq!(
+            ts(Some(&json!(1_757_404_800_000i64))),
+            Some(1_757_404_800_000)
+        );
+        assert_eq!(ts(Some(&json!(""))), None);
+        assert_eq!(ts(Some(&json!("昨天"))), None);
+        assert_eq!(ts(None), None);
+    }
+
+    #[test]
+    fn session_cookie_decodes_an_encoded_separator() {
+        assert_eq!(
+            session_cookie("user_1%3A%3Ajwt"),
+            "WorkosCursorSessionToken=user_1::jwt"
+        );
+        assert_eq!(
+            session_cookie("user_1::jwt"),
+            "WorkosCursorSessionToken=user_1::jwt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_session_token_fails_fast_without_a_request() {
+        let http = http_client();
+        for bad in ["", "just-a-jwt", "user_1", "abc::def"] {
+            let err = fetch(&http, bad, None).await.unwrap_err();
+            assert_eq!(err.code, ErrorCode::Unauthorized, "应当拒绝 {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_window_sums_every_row_but_ranks_only_named_models() {
+        let agg = json!({
+            "totalInputTokens": 500, "totalOutputTokens": 60,
+            "aggregations": [
+                { "modelIntent": "claude-sonnet-5", "tier": 1, "totalCents": 120 },
+                { "modelIntent": "auto", "tier": 2, "totalCents": 30 },
+                // 没有模型名的行：钱要算，排行里没它。
+                { "totalCents": 5 }
+            ]
+        });
+        let w = window(1_000, 2_000, Some(&agg)).unwrap();
+        assert_eq!((w.start, w.end), (1_000, 2_000));
+        assert_eq!(w.cents, 155.0);
+        assert_eq!(w.input_tokens, 500);
+        assert_eq!(w.by_model.len(), 2);
+        assert_eq!(w.by_model[0].model, "claude-sonnet-5");
+    }
+
+    #[test]
+    fn a_window_is_dropped_when_upstream_answers_a_different_period() {
+        // 接口无视日期、退回本账期：宁可没有，也不能把整月的钱标成「今天」。
+        let start = 1_757_116_800_000i64;
+        let agg = json!({
+            "period": { "startDate": (start - 20 * DAY_MS).to_string(), "endDate": "1757462399999" },
+            "aggregations": [{ "modelIntent": "auto", "totalCents": 999 }]
+        });
+        assert!(window(start, start + 3_600_000, Some(&agg)).is_none());
+
+        // 起点只差几小时（上游按自己的日界归整）算对得上。
+        let close = json!({
+            "period": { "startDate": (start - 3 * 3_600_000).to_string() },
+            "aggregations": [{ "modelIntent": "auto", "totalCents": 7 }]
+        });
+        assert_eq!(window(start, start + 1, Some(&close)).unwrap().cents, 7.0);
+
+        // 没自报 period 的照单全收；没响应的就是没有。
+        assert!(window(start, start + 1, Some(&json!({ "aggregations": [] }))).is_some());
+        assert!(window(start, start + 1, None).is_none());
+    }
+
+    #[test]
+    fn serialized_windows_ride_along_and_stay_optional() {
+        let mut u = parse(&summary(), None, None, None, None, None);
+        assert!(serde_json::to_value(&u).unwrap().get("today").is_none());
+        u.today = Some(UsageWindow {
+            start: 1,
+            end: 2,
+            cents: 3.0,
+            ..Default::default()
+        });
+        let v = serde_json::to_value(&u).unwrap();
+        assert_eq!(v["today"]["cents"], 3.0);
+        // 旧快照里没有这两个字段，读回来也得成。
+        let back: AccountUsage = serde_json::from_value(json!({ "fetchedAt": "x" })).unwrap();
+        assert!(back.today.is_none() && back.week.is_none());
+    }
+
+    #[test]
+    fn serialized_usage_omits_absent_fields() {
+        let u = parse(
+            &json!({ "individualUsage": { "plan": {} } }),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let v = serde_json::to_value(&u).unwrap();
+        assert!(v.get("bot").is_none(), "缺席的字段不该以 null 出现在前端");
+        assert!(v.get("fetchedAt").is_some());
+    }
+}

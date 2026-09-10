@@ -1,0 +1,163 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # 静态检查跑在 Linux 上：最快，而且 lint 与平台无关。
+  check:
+    name: 检查（clippy / test / tsc）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Linux 上的 Tauri 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - run: npm ci
+        working-directory: apps/desktop
+
+      # 前端先构建：tauri.conf.json 的 frontendDist 指向 dist/，
+      # 少了它 cargo 侧的 clippy 会因为找不到产物而失败。
+      - run: npm run build:vite
+        working-directory: apps/desktop
+
+      - name: 前端类型检查与单测
+        working-directory: apps/desktop
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: 发布脚本回归
+        run: node scripts/test-package-release.mjs
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  # Windows 的平台分支（tasklist / taskkill、%APPDATA% 路径、只读属性、备份键归一化）
+  # 在 Linux 上一行都编不到，更别说测。它必须自己跑一遍，否则「CI 绿」只代表 macOS 能用。
+  check-windows:
+    name: 检查（Windows）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-windows
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - run: npm ci
+        working-directory: apps/desktop
+
+      - run: npm run build:vite
+        working-directory: apps/desktop
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  # 供应链：新依赖引入已知漏洞时要在 PR 上就看见。
+  audit:
+    name: 依赖审计
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # 未签名的安装包：验证两个平台都能打出来。签名与公证要证书，在 release.yml 里。
+  bundle:
+    name: 打包 ${{ matrix.label }}
+    needs: [check]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS (universal)
+            args: --target universal-apple-darwin
+          - os: windows-latest
+            label: Windows (x64)
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - run: npm ci
+        working-directory: apps/desktop
+
+      - name: 构建安装包
+        working-directory: apps/desktop
+        run: npx tauri build ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-${{ matrix.os }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            target/**/release/bundle/dmg/*.dmg
+            target/**/release/bundle/macos/*.app
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi

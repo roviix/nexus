@@ -1,0 +1,27 @@
+[package]
+name = "nexus-accounts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+nexus-store.workspace = true
+serde.workspace = true
+time.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+sha2.workspace = true
+base64.workspace = true
+rand.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+
+# 注意：**不依赖 nexus-switcher**。两个模块互不相通是编译期约束（ARCHITECTURE R1）。
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

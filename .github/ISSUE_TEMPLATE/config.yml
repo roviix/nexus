@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 报告安全问题
+    url: https://github.com/roviix/nexus/security/advisories/new
+    about: 本仓库存的是各平台账号的明文凭证。安全问题请走私密漏洞报告，不要开公开 issue。
+  - name: 使用问题与讨论
+    url: https://github.com/roviix/nexus/discussions
+    about: 不确定是不是缺陷、想问怎么配、想聊方案，都到这里。

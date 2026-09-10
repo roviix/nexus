@@ -1,0 +1,22 @@
+/target
+node_modules/
+/apps/desktop/dist
+/apps/desktop/src-tauri/gen
+
+# 本地开发数据库与日志。真实数据在应用数据目录（见 README「数据在哪」）。
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# 本机私有配置与凭证；发布用的密钥只走 GitHub Secrets。
+.env
+.env.*
+*.local
+*.key
+*.p12
+*.pfx
+
+.DS_Store
+Thumbs.db
+.tmp-*

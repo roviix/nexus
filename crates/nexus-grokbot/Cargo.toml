@@ -1,0 +1,30 @@
+[package]
+name = "nexus-grokbot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+base64.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+# pod exec daemon 是 Connect RPC（protobuf）；消息只有十来个字段，手写 derive，不拖 protoc。
+prost = "0.14.3"
+# Grok Bot（Electron safeStorage）在 macOS 上的加密形态：pbkdf2-sha1(1003) → AES-128-CBC，
+# IV 是 16 个空格。全部纯 Rust，去掉对 node 的运行时依赖（GUI 应用拿不到 shell 的 PATH）。
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }

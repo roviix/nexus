@@ -1,0 +1,96 @@
+name: 报告缺陷
+description: 某个功能的表现和预期不一致
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: 提交之前
+      options:
+        - label: 我搜索过既有的 issue，没有找到相同的问题
+          required: true
+        - label: 我读过 README「风险与免责」和 `docs/ARCHITECTURE.md` §11，确认这不是一条已知的、有意为之的取舍
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Nexus 版本
+      description: 在「设置 → 关于」里能看到。从源码构建的话请给出 commit。
+      placeholder: 0.4.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: macOS 15.6（Apple Silicon） / Windows 11 23H2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及哪部分
+      options:
+        - 本地网关
+        - 账号池与授权
+        - Cursor 切号
+        - 一键接入
+        - 游乐场
+        - Sand 补丁
+        - 远程主机
+        - 安装、更新与打包
+        - 其它 / 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 涉及哪个上游平台
+      options:
+        - Cursor
+        - ChatGPT
+        - Grok Build
+        - Kiro
+        - 不涉及上游
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请写成别人照着做就能复现的形式。只发生过一次、没法复现的也可以提，注明即可。
+      placeholder: |
+        1. 打开「本地网关」，开启网关
+        2. 用 curl 打 /v1/chat/completions，model 填 claude-sonnet-4-5
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望的结果与实际的结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志或错误信息
+      description: |
+        日志在 macOS 的 `~/Library/Logs/com.roviix.nexus/`、Windows 的 `%APPDATA%\com.roviix.nexus\logs\`。
+
+        ⚠️ **贴之前先抹掉敏感信息**：access token、refresh token、完整邮箱地址、机器码、
+        内网主机名。Nexus 自己打日志时会脱敏，但你手动复制的请求头和 curl 命令不会。
+      render: shell
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其它补充
+      description: 截图、网络环境（公司代理 / VPN）、Cursor 版本等。

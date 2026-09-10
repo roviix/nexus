@@ -1,0 +1,78 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nexus",
+  "version": "0.4.0",
+  "identifier": "com.roviix.nexus",
+  "build": {
+    "beforeDevCommand": "npm run dev:vite",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build:vite",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Nexus",
+        "width": 1240,
+        "height": 840,
+        "minWidth": 940,
+        "minHeight": 640,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' asset: data: nexus-image: http://nexus-image.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "frame-src": "blob:",
+        "object-src": "'none'"
+      },
+      "assetProtocol": {
+        "enable": false
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app", "nsis", "msi"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "copyright": "© 2026 Roviix",
+    "category": "DeveloperTool",
+    "shortDescription": "本地 AI 网关与多平台账号池",
+    "longDescription": "把 Cursor / ChatGPT / Grok / Kiro 订阅号接成一个本机的 OpenAI / Anthropic 兼容网关，并管理、切换这些账号。",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["nexus"]
+      }
+    },
+    "updater": {
+      "endpoints": ["https://github.com/roviix/nexus/releases/latest/download/latest.json"],
+      "pubkey": ""
+    }
+  }
+}

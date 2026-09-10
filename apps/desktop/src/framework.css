@@ -1,0 +1,3106 @@
+/* ============================================================
+   外壳框架层的样式：侧栏分组 / 概览 / 通道卡 / 模型广场 / 接入 / 密钥。
+   只用 tokens.css 的变量与 styles.css 已有的基元（.card .tag .tabs .btn .pool-*），
+   自己的类一律带前缀，与页面级样式互不越界。
+
+   **这一层照线上控制台（shop `globals.css` + `console/*`）搬**：`.pill .tier .pick .chip
+   .state-*` 是同名同值的原语，模型卡 / 通道卡 / 右栏筛选 / 四格数字都是那边已经磨过的
+   形状。桌面和网页说的是同一件事，长得也该是同一副样子。
+   ============================================================ */
+
+/* ── 侧栏分组 ───────────────────────────────────────────────────────────── */
+
+.nav-scroll {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.nav-group + .nav-group {
+  margin-top: 16px;
+}
+
+/* 分组名。原先是等宽 + 全大写 + 大字距，一列扫下来像四行终端提示符；
+   分组本来就靠上面那 16px 空当分开，这行字只需要认得出、不该抢。 */
+.nav-label {
+  padding: 0 10px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-faint);
+  white-space: nowrap;
+}
+
+/* 带子项的一级项（游乐场）：摊开时父项只提亮字色，高亮落在子项上。 */
+.nav-item.is-open {
+  color: var(--color-ink);
+}
+
+.nav-chevron {
+  margin-left: auto;
+  color: var(--color-faint);
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+}
+
+.nav-chevron.is-open {
+  transform: rotate(90deg);
+}
+
+/* 子项：缩进到父项文字的起点，左侧一道细线把三行框成一组。 */
+.nav-subs {
+  position: relative;
+  margin: 2px 0 2px 17px;
+  padding-left: 8px;
+  animation: fade 0.14s ease-out;
+}
+
+.nav-subs::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 0;
+  width: 1px;
+  background: var(--color-line);
+}
+
+.nav-item.nav-sub {
+  padding: 5px 9px;
+  font-size: 12.5px;
+}
+
+.nav-item.nav-sub .nav-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0.8;
+}
+
+/* ── 线上控制台的原语（同名同值）──────────────────────────────────────── */
+
+/* 徽章。默认中性；`.pill-hot` 主推档；`.state-*` 只管色调不管形状。
+   和 `.tag` 同一副长相（高度、字号、圆角都对齐）—— 两个名字是历史遗留，看着必须是同一个东西。 */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--color-line);
+  background: var(--color-canvas);
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.pill-hot {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+
+.state-ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 26%, transparent);
+}
+
+.state-warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent);
+}
+
+.state-err {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bad) 26%, transparent);
+}
+
+/**
+ * 档位芯片（也用作示例提示语）：整站最密集的可点元素。
+ *
+ * 它装的是**模型 id** —— 一段要粘进配置文件的字面量，点一下就复制。所以它得读作
+ * 「一枚能拿走的键帽」，不是一行浮着的字：
+ *   - 角比别处方（5px）。圆角越大越像标签，越方越像一个键、一段代码。
+ *   - 有厚度：亮色是底边一道实的暗边 + 一层浅散影，深色是顶边一道内高光（`--chip-*`）。
+ *   - **复制标记常显**（淡淡的），不藏在 hover 后面 —— 藏起来的话，静止时它就只是一行字，
+ *     没人知道能点。悬停提亮、复制完变成勾。
+ *   - 按下去真的下沉 1px 并收掉投影。
+ */
+.tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-height: var(--h-sm);
+  padding: 0 7px 0 9px;
+  border-radius: 4px;
+  border: 1px solid var(--chip-line);
+  background: var(--chip-bg);
+  color: var(--color-ink-2);
+  font-size: 11.5px;
+  overflow: hidden;
+  box-shadow: var(--chip-shadow);
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.08s ease;
+}
+
+.tier:hover {
+  border-color: var(--chip-line-hover);
+  background: var(--chip-bg-hover);
+  color: var(--color-ink);
+}
+
+.tier:active:not(.tier-on) {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+.tier-on,
+.tier-on:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: none;
+}
+
+/* 常显但很淡：静止时它只负责说「这个能拿走」，不该跟 id 抢。 */
+.tier-copy {
+  flex: none;
+  opacity: 0.32;
+  transition: opacity 0.12s ease;
+}
+
+.tier:hover .tier-copy {
+  opacity: 0.8;
+}
+
+.tier-on .tier-copy {
+  opacity: 1;
+}
+
+.tier-pct {
+  font-size: 10px;
+}
+
+.tier-pct.is-busy {
+  color: var(--warn);
+}
+
+.tier-pct.is-maintenance,
+.tier-pct.is-unknown {
+  color: var(--bad);
+}
+
+/* 单选卡片：几张卡里挑一张。选中靠描边 + 淡底，不靠整卡填色 —— 填色会把卡里的说明拖到读不清。
+   底色跟卡片一样是白的：这两张一张 200 多像素高，铺灰就是两块大灰板压在页顶。 */
+.pick {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+  color: var(--color-ink-2);
+  text-align: left;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.pick:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+/* 卡上压一个键：键不能套在 <button> 里，只能当兄弟压上去。 */
+.pick-slot {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+
+.pick-cta {
+  position: absolute;
+  right: 12px;
+  bottom: 11px;
+}
+
+.pick-on,
+.pick-on:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.pick:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* 克制的图标按钮：默认灰，悬停才出主色。边长走 --h-sm，和 .btn-sm.btn-icon 一样大 ——
+   同一行里两种图标键差 2px 是那种「说不上哪里不对」的不齐。 */
+.ibtn {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: var(--h-sm);
+  height: var(--h-sm);
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-muted);
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.ibtn:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.ibtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+/* 横向滚动：一行放不下就滑，不画滚动条；右缘渐隐让被切掉一半的芯片读作「右边还有」。 */
+/* 渐隐的坡度要短。28px 的坡会把停在边上那枚芯片的右描边和复制标记一起化掉，
+   看着像这枚芯片坏了；14px 只吃掉最后一点点，"右边还有"照样读得出来。 */
+.scroll-x {
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 14px), transparent 100%);
+}
+
+.scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── 通用栅格 ───────────────────────────────────────────────────────────── */
+
+.fw-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+/* styles.css 的 `.card + .card { margin-top }` 是给竖着叠的卡用的；栅格里的卡靠 gap 分，
+   这条要按同等特异度压回去，否则每行第二张卡都低 12px。 */
+.fw-grid-2 > .card,
+.mgrid > .card,
+.tools > .card,
+.stats > .card {
+  margin: 0;
+}
+
+.fw-sect-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 24px 0 10px;
+  font-size: 12.5px;
+}
+
+.fw-sect-cap .eyebrow {
+  margin: 0;
+}
+
+.fw-sect-cap .linkish {
+  padding: 0;
+  font-size: 12px;
+}
+
+.fw-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.fw-card-head .eyebrow {
+  margin: 0;
+}
+
+.fw-card-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.fw-card-head:has(> .eyebrow:first-child) {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  row-gap: 2px;
+}
+
+.fw-card-head:has(> .eyebrow:first-child) > .eyebrow,
+.fw-card-head:has(> .eyebrow:first-child) > h3 {
+  grid-column: 1;
+}
+
+.fw-card-head:has(> .eyebrow:first-child) > .grow {
+  display: none;
+}
+
+.fw-card-head:has(> .eyebrow:first-child) > .fw-arrow,
+.fw-card-head:has(> .eyebrow:first-child) > .row {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.fw-big {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.fw-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 14px;
+  row-gap: 4px;
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+
+.fw-kv .kv-v {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.fw-clickable {
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.fw-clickable:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.fw-clickable:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 2px;
+}
+
+.fw-arrow {
+  color: var(--color-faint);
+  transition:
+    color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.fw-clickable:hover .fw-arrow {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
+.field > span:first-child,
+.field > .row-between > label {
+  color: var(--color-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+/* ── 概览 ───────────────────────────────────────────────────────────────── */
+
+/* 本地用量：一整块。头 / 四格 / 图 / 两列排行 / 脚，各段靠发丝线分。 */
+.usage {
+  display: flex;
+  flex-direction: column;
+}
+
+.usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px 12px;
+}
+
+.usage-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.usage-title .eyebrow {
+  margin: 0;
+}
+
+.usage-title h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.usage-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 18px 18px;
+}
+
+.usage-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 26px 24px 30px;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.usage-blank > p {
+  margin: 0;
+  max-width: 40ch;
+}
+
+.usage-blank-title {
+  color: var(--color-ink);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.usage-blank-mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  margin-bottom: 6px;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+/* 四格数字：标签 / 大数 / 一行脚注。四格靠竖发丝线分，不各自套卡 —— 它们是同一件事的四面。 */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 18px 13px;
+}
+
+.kpi + .kpi {
+  border-left: 1px solid var(--color-line);
+}
+
+.kpi-k {
+  font-size: 11.5px;
+  color: var(--color-muted);
+}
+
+.kpi-v {
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  color: var(--color-ink);
+}
+
+.kpi-v.is-warn {
+  color: var(--warn);
+}
+
+.kpi-v.is-bad {
+  color: var(--bad);
+}
+
+.kpi-sub {
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+/* 折线图：左边三格刻度，右边画布。和线上控制台的用量曲线同一副：一条线、一层淡面积、
+   五条网格线，悬停一条竖线加圆点，浮层自己画。 */
+.chart {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 0 10px;
+  padding: 20px 18px 8px 12px;
+}
+
+.chart-y {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 128px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-faint);
+  text-align: right;
+  line-height: 1;
+}
+
+.chart-y > span {
+  transform: translateY(-40%);
+}
+
+.chart-y > span:last-child {
+  transform: translateY(-100%);
+}
+
+.chart-plot {
+  position: relative;
+  height: 128px;
+  min-width: 0;
+  cursor: crosshair;
+}
+
+.chart-grid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--line-soft);
+  pointer-events: none;
+}
+
+.chart-grid.is-base {
+  background: var(--track);
+}
+
+.chart-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-line-ok {
+  stroke: var(--accent);
+}
+
+.chart-stop-ok {
+  stop-color: var(--accent);
+}
+
+/* 失败的桶：一枚红点，高度是失败次数。 */
+.chart-mark {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bad);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-faint);
+  pointer-events: none;
+}
+
+/* 线的终点是「现在」：一枚小点钉住它。 */
+.chart-end {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* 准星：一条竖线 + 各线上的圆点。圆点用 HTML 画：SVG 横竖缩放比不同，画进去会成椭圆。 */
+.chart-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent-line);
+  transform: translateX(-0.5px);
+  pointer-events: none;
+}
+
+.chart-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--color-surface);
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.chart-dot.is-ok {
+  background: var(--accent);
+}
+
+.chart-dot.is-err {
+  background: var(--bad);
+}
+
+/* 浮层挂在图的上沿，过了中线就往左开，免得贴右边的几个点把它顶出卡片。 */
+.chart-tip {
+  position: absolute;
+  top: -6px;
+  z-index: 3;
+  min-width: 132px;
+  padding: 7px 10px 8px;
+  border: 1px solid var(--pop-line);
+  border-radius: 9px;
+  background: var(--color-surface);
+  box-shadow: var(--lift-2);
+  transform: translateX(12px);
+  pointer-events: none;
+}
+
+.chart-tip.is-flip {
+  transform: translateX(calc(-100% - 12px));
+}
+
+.chart-tip-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.chart-tip-none {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--color-muted);
+}
+
+.chart-tip-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--color-ink-2);
+  line-height: 1.6;
+}
+
+.chart-tip-row > i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  transform: translateY(1px);
+}
+
+.chart-tip-row > i.is-ok {
+  background: var(--accent);
+}
+
+.chart-tip-row > i.is-err {
+  background: var(--bad);
+}
+
+.chart-tip-row > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.chart-tip-row > b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+
+.chart-tip-row.is-foot {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--color-line);
+  color: var(--color-muted);
+}
+
+/* 横轴标签按点的位置摆，不切等宽列 —— 点在列的边界上，切列会差半格。两端的贴边对齐。 */
+.chart-x {
+  position: relative;
+  grid-column: 2;
+  height: 18px;
+  margin-top: 6px;
+}
+
+.chart-xl {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  color: var(--color-faint);
+  white-space: nowrap;
+}
+
+.chart-xl.is-first {
+  transform: none;
+}
+
+.chart-xl.is-last {
+  transform: translateX(-100%);
+}
+
+.chart-xl.is-now {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* 两列排行：名字 / 条子 / 次数。条子按第一名算比例。 */
+.usage-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--color-line);
+}
+
+.rank {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px 18px 14px;
+}
+
+.rank + .rank {
+  border-left: 1px solid var(--color-line);
+}
+
+.rank-cap {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.rank-cap .faint {
+  font-weight: 400;
+  font-size: 10.5px;
+}
+
+.rank-none {
+  margin: 0;
+  color: var(--color-faint);
+}
+
+.rank-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.rank-name {
+  color: var(--color-ink-2);
+}
+
+.rank-name.mono {
+  font-size: 11.5px;
+}
+
+.rank-bar {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.rank-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0.8;
+  transition: width 0.5s ease-out;
+}
+
+.rank-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+}
+
+.rank-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--warn);
+}
+
+.rank-dot.is-bad {
+  background: var(--bad);
+}
+
+.usage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 18px;
+  border-top: 1px solid var(--color-line);
+  font-size: 11.5px;
+  color: var(--color-muted);
+}
+
+.usage-foot .is-bad {
+  color: var(--bad);
+}
+
+/* ── 状态带 ─────────────────────────────────────────────────────────────────
+   左边一张当前账号卡，右边三条状态行。左列钉在 400px 是因为那张卡本来就有宽度上限
+   （额度条摊长了就成发丝线）；右列吃掉剩下的宽度，顺带把三件状态提进首屏。 */
+.ov-band {
+  display: grid;
+  grid-template-columns: minmax(0, 400px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+
+/* 栅格自己管间距，`.card + .card` 那条竖直外边距在这里是多余的 —— 而且它会顶低
+   第二、三张卡，让本该等高的三行变成 76 / 64 / 64。选择器要和它同等特异度才压得住。 */
+.ov-band > .card,
+.ov-rail > .card {
+  margin: 0;
+}
+
+/* 窄到右列放不下一句完整的结论时改成上下摞 —— 挤成两三个字再截断，
+   不如让它占满一行把话说完。
+   摞起来之后账号卡仍要守住 420 的上限：额度条摊到整个内容区宽就成了发丝线，
+   而那正是当初把它套进 `.accts` 的原因。状态行没有这个包袱，照旧通宽。 */
+@media (max-width: 1080px) {
+  .ov-band {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ov-band > :first-child {
+    max-width: 420px;
+  }
+}
+
+.ov-band-skel {
+  min-height: 172px;
+}
+
+/* 没登录时左边这格没有额度条撑着，内容居中，别让它在拉伸后的卡里贴着顶。 */
+.ov-band-none {
+  gap: 10px;
+  justify-content: center;
+}
+
+.ov-band-hint {
+  margin: 0;
+  max-width: 34ch;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--color-muted);
+}
+
+.ov-rail {
+  display: grid;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 摞起来之后不必再三等分，各行按自己的高度走。 */
+@media (max-width: 1080px) {
+  .ov-rail {
+    grid-template-rows: none;
+  }
+}
+
+.srow {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  /* 右边这条槽给箭头或开关。定死是为了三行的结论对齐在同一条竖线上 ——
+     有开关的那行要是自己让位，右边缘就参差了。宽度按开关算：34 的轨 + 两侧留白。 */
+  padding: 10px 56px 10px 14px;
+  min-height: 52px;
+  cursor: pointer;
+  outline: none;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.srow:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.srow:focus-visible {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.srow-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.srow-k {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.srow-v {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.srow-v > strong {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--color-ink);
+}
+
+.srow-v > strong.is-accent {
+  color: var(--accent);
+}
+
+.srow-v > strong.muted {
+  color: var(--color-muted);
+}
+
+/* 圆点和标签按中线对齐；跟着基线走会掉到字底下。 */
+.srow-v .current-orb,
+.srow-v .tag {
+  align-self: center;
+}
+
+.srow-v .current-orb {
+  width: 7px;
+  height: 7px;
+}
+
+.srow-sub {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.srow-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.srow-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.srow-chip > b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-2);
+}
+
+/* 还没拿到数时的占位。一条和文字同高的浅杠，比空着或者一个「…」都安静。 */
+.srow-wait {
+  display: block;
+  width: 54px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--skeleton);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+}
+
+.srow-wait.is-wide {
+  width: 132px;
+  height: 7px;
+}
+
+.srow-arrow {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  margin-top: -6px;
+  color: var(--color-faint);
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+
+.srow:hover .srow-arrow {
+  opacity: 1;
+  transform: translateX(2px);
+}
+
+.srow-ctl {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  transform: translateY(-50%);
+}
+
+.srow:has(.srow-ctl) .srow-arrow {
+  display: none;
+}
+
+/* 最近几条：不套卡，一列细行。 */
+.ov-recent {
+  margin-top: 4px;
+}
+
+.ov-log {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ov-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--color-ink-2);
+}
+
+.ov-log-row:hover {
+  background: var(--wash-1);
+}
+
+.ov-log-time {
+  flex: none;
+  width: 60px;
+  font-size: 10.5px;
+  color: var(--color-faint);
+}
+
+/* 谁干的，紧跟在那句话后面。
+   曾经是 `margin-left: auto` 顶到行尾 —— 那在窄窗里像一张表，可内容区宽到 1200 时
+   中间空出的那半行比两头的字还长，三条记录读起来像三堆碎片。 */
+.ov-log-who {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--color-faint);
+}
+
+.ov-log-who::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--color-dim);
+}
+
+.ov-log-row.is-warn .ov-log-time {
+  color: var(--warn);
+}
+
+.ov-log-row.is-error {
+  color: var(--bad);
+}
+
+/* ── 通道面板（模型广场 / 接入 共用）───────────────────────────────────── */
+
+/* 收进一个带边框的面板：它是开关，一点下面整页跟着变；下面那些是被它筛出来的结果。
+   面板本身不填色 —— 白卡要浮在页底上才立得起来，底填成 surface 就成了白压白。 */
+.chan {
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+}
+
+.chan-cap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 9px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-muted);
+}
+
+.chan-cap-n {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+/* 本地一排、云端一排。两排用同一套列定义（auto-fill 而不是 auto-fit），云端只有三张时右边
+   空着，也不会被拉成比本地卡宽一倍的板子 —— 两排的卡上下对齐才像一套东西。
+   最窄 150px 够放「Cursor · 默认」一行名字和「1/4 个号 · 可接」。 */
+.chan-groups {
+  display: grid;
+  gap: 14px;
+}
+
+.chan-group-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.chan-group-cap > span {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-faint);
+}
+
+.chan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+/* 通道卡的内部：名字顶格、价签靠右；大号数字 + 状态胶囊；24 格。 */
+.pick-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pick-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
+.pick-title > .pill {
+  flex: none;
+}
+
+/* 厂商标：随文字色，选中后带品牌色。 */
+.pick-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  color: var(--color-muted);
+}
+
+.pick-on .pick-logo {
+  color: var(--accent);
+}
+
+.pick-price {
+  flex: none;
+  margin-left: auto;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* 大数字和胶囊是一组，不许拆行；副文（模型数 / 高峰加价）挤不下就整段掉到下一行。 */
+.pick-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin-top: 12px;
+}
+
+.pick-big-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.pick-big {
+  display: flex;
+  align-items: baseline;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.pick-big-sub {
+  margin-left: 4px;
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--color-faint);
+}
+
+.pick-aside {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-faint);
+  white-space: nowrap;
+}
+
+.pick-band {
+  display: flex;
+  gap: 2px;
+  margin-top: 10px;
+}
+
+.pick-band > i,
+.mband-cells > span {
+  flex: 1;
+  min-width: 0;
+  height: 10px;
+  border-radius: 1.5px;
+  background: color-mix(in oklab, var(--color-muted) 22%, transparent);
+}
+
+.pick-band > i.is-unknown,
+.mband-cells > span.is-unknown {
+  background: color-mix(in oklab, var(--color-muted) 45%, transparent);
+}
+
+.pick-band > i.is-down,
+.mband-cells > span.is-down {
+  background: color-mix(in oklab, var(--bad) 80%, transparent);
+}
+
+.pick-band > i.is-degraded,
+.mband-cells > span.is-degraded {
+  background: var(--warn);
+}
+
+.pick-band > i.is-ok,
+.mband-cells > span.is-ok {
+  background: var(--ok);
+}
+
+/* ── 模型广场：内容列 + 右栏 ─────────────────────────────────────────────── */
+
+.plaza {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.plaza-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.plaza-rail {
+  flex: none;
+  width: 184px;
+}
+
+.plaza-rail-in {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rail-cap {
+  margin: 0 0 5px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-muted);
+}
+
+.rail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 12.5px;
+  text-align: left;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+
+.rail-row:hover {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+.rail-row.is-on {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+.rail-row > .truncate {
+  flex: 1;
+  min-width: 0;
+}
+
+.rail-meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+.rail-count {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+.plaza-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 48px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--color-muted);
+}
+
+.plaza-empty > p {
+  margin: 0;
+}
+
+/* 两列从 1280 起，三列等到 1560：每张卡要放得下四个价格格。 */
+.mgrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (min-width: 1560px) {
+  .mgrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* ── 模型卡 ─────────────────────────────────────────────────────────────── */
+
+.mcard {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+}
+
+/* 标题行：标 · 名字 · 状态 …… 两个动作贴右。右内边距收窄，图标键自己带内边距。 */
+.mcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 8px 10px 8px 16px;
+}
+
+.mcard-logo {
+  opacity: 0.9;
+}
+
+.mcard-title {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
+.mcard-title-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  text-align: left;
+}
+
+.mcard-title-btn > svg {
+  flex: none;
+  opacity: 0.4;
+  transition: opacity 0.12s ease;
+}
+
+.mcard-title-btn:hover > svg {
+  opacity: 0.8;
+}
+
+.mcard-title-btn.is-on {
+  color: var(--accent);
+}
+
+.mcard-title-btn.is-on > svg {
+  opacity: 1;
+}
+
+/* 状态点跟在名字后面读作「这个模型现在是好的」。 */
+.mcard-dot {
+  flex: none;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--color-muted) 55%, transparent);
+}
+
+.mcard-dot.is-ok {
+  background: var(--ok);
+}
+
+.mcard-dot.is-busy {
+  background: var(--warn);
+}
+
+.mcard-dot.is-maintenance {
+  background: color-mix(in oklab, var(--color-muted) 85%, transparent);
+}
+
+/* 状态紧跟着名字走，不再推到最右 —— 它说的是这个模型的事，和名字是一句话。
+   最右那一格留给动作。 */
+.mcard-status {
+  flex: none;
+}
+
+/* 四格费率：标签在上、数字在下；官方价另起一行画删除线。 */
+.rates {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 12px;
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-line);
+}
+
+.rate {
+  min-width: 0;
+}
+
+.rate-k {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rate-v {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 0;
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+
+.rate-num {
+  display: block;
+  min-width: 0;
+}
+
+.rate-main {
+  display: block;
+  font-size: 14.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--color-ink);
+}
+
+.rate-was {
+  display: block;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--color-faint);
+  text-decoration: line-through;
+}
+
+.rate-unit {
+  flex: none;
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--color-muted);
+}
+
+.rates-one {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.rates-unknown {
+  padding: 12px 16px;
+  border-top: 1px solid var(--color-line);
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.mcard-tail {
+  margin-top: auto;
+}
+
+/* 近 24 小时格子 + 实测行。 */
+.mband {
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-line);
+}
+
+.mband-cells {
+  display: flex;
+  gap: 2px;
+}
+
+.mband-cells > span {
+  height: 12px;
+}
+
+.mband-facts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.mband-sep {
+  margin: 0 8px;
+  opacity: 0.4;
+}
+
+.mband-samples {
+  opacity: 0.55;
+}
+
+/* 人工维护说明单独占一行：它是一整句话，和下面那排短标签抢同一行会挤。 */
+.mcard-note {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px solid var(--color-line);
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-muted);
+}
+
+.mcard-note.is-warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 6%, transparent);
+}
+
+/* 档位独占最后一行 —— 动作已经挪到标题行去了，这里整行都是它的。 */
+.mcard-tiers {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px 10px;
+  border-top: 1px solid var(--color-line);
+}
+
+/**
+ * 没有价目、没有可用性条、也没有说明的那种卡（本地网关的模型不计费）：
+ * 只剩「名字」和「档位 + 两个键」两行，中间还横着一道线，读起来像一张缺了内容的表。
+ * 这种时候把线去掉，两行合成一块 —— 卡片是短的，但它是完整的。
+ */
+.mcard-head + .mcard-tail > .mcard-tiers:only-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.tiers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  min-height: 24px;
+}
+
+/* 贴着标题行的最右。auto 外边距整行只此一个，名字和状态才会老实待在左边。 */
+.mcard-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-left: auto;
+}
+
+/* ── 接入 ───────────────────────────────────────────────────────────────── */
+
+.connect-section {
+  min-width: 0;
+  margin-bottom: 24px;
+}
+
+.connect-section:last-child {
+  margin-bottom: 0;
+}
+
+.connect-section-title {
+  margin: 0 0 10px;
+  color: var(--color-ink);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 22px;
+  letter-spacing: -0.01em;
+}
+
+.connect-section-body {
+  min-width: 0;
+}
+
+/* 状态提示与内容卡保持同宽，不再为步骤轨道预留左侧空白。 */
+.connect > .banner {
+  margin: -8px 0 24px;
+}
+
+/* 工具卡：五张一行，和线上接入页同一副样子。 */
+.tools {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1100px) {
+  .tools {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.toolcard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin: 0;
+  padding: 14px;
+  color: var(--color-ink-2);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.toolcard:hover:not(:disabled):not(.is-active) {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.toolcard:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* 标：厂商标压在一块底上。没选中时随文字色，选中后厂商标带上自己的品牌色，底色换成主色的淡底。 */
+.toolcard-glyph {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--color-canvas);
+  color: var(--color-muted);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--color-line);
+  transition:
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.toolcard.is-active .toolcard-glyph {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+/* 右上角一个小勾：五张卡里选中的那张。描边已经变色了，勾是给扫得快的人。 */
+.toolcard-tick {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 3px;
+}
+
+.toolcard-name {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.toolcard.is-active .toolcard-name {
+  color: var(--accent);
+}
+
+.toolcard-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* 配置卡：客户端身份、配置目标、参数与正文逐层展开。 */
+.cfg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 52px;
+  padding: 10px 12px 10px 18px;
+  border-bottom: 1px solid var(--color-line);
+  background: linear-gradient(180deg, var(--wash-1), transparent);
+}
+
+.cfg-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cfg-client {
+  color: var(--color-ink);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+}
+
+.cfg-protocol {
+  color: var(--color-muted);
+  background: transparent;
+}
+
+/* 卡右上角只有一个键。文件路径不在这儿说 —— 下面代码块的头上就写着，
+   同一句话在一张卡上出两遍，第二遍只是噪声。 */
+.cfg-acts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+/* 已经接上了：这不是一个键，是一个状态。做成键的样子会让人以为还要再按一次。 */
+.cfg-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: var(--h-sm);
+  padding: 0 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-control);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+/* 有话才出的一行注解：写完了、出错了、模型改了、文件现在指向别处。
+   不给底色 —— 一条通栏的灰带会把卡切成两半，一个小圆点足够把这行和标题分开。 */
+.cfg-note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--color-line);
+  color: var(--color-muted);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.cfg-note > i {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin-top: 1px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(-1px);
+}
+
+.cfg-note.is-ok {
+  color: var(--accent);
+}
+
+.cfg-note.is-warn {
+  color: var(--warn);
+}
+
+.cfg-note.is-bad {
+  color: var(--bad);
+}
+
+.cfg-note .linkish {
+  font-size: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cfg-note code {
+  margin: 0 2px;
+  font-size: 11px;
+}
+
+@media (max-width: 820px) {
+  .cfg-head {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    padding: 13px 14px;
+  }
+}
+
+.field > label,
+.field > .row-between > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.field-ico {
+  color: var(--color-faint);
+}
+
+.cfg-params {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.cfg-params .field {
+  gap: 5px;
+}
+
+/* 换工具、换号源时整份配置都变。淡入一下（12ms 都不到的一段位移 + 透明度）比原地
+   闪一下换掉内容像回事；给 key 换成 `工具-号源` 就会重挂载，动效自然重放。 */
+.cfg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px 18px;
+  animation: cfg-swap 0.2s ease both;
+}
+
+@keyframes cfg-swap {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cfg-body {
+    animation: none;
+  }
+}
+
+.cfg-fold {
+  border: 1px solid var(--color-line);
+  border-radius: 9px;
+  background: var(--color-canvas);
+  padding: 8px 12px;
+}
+
+.cfg-fold > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-muted);
+  user-select: none;
+}
+
+.cfg-fold > summary:hover {
+  color: var(--color-ink);
+}
+
+.cfg-test {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--color-line);
+}
+
+.connect-test .cfg-test {
+  border-top: 0;
+}
+
+.cfg-test > .input {
+  flex: 1;
+}
+
+.keyline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--field-line);
+  border-radius: 8px;
+  background: var(--field-bg);
+  box-shadow: var(--field-inset);
+}
+
+.keyline-val {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink);
+  user-select: text;
+}
+
+.keyline-sel {
+  flex: none;
+  width: auto;
+  max-width: 44%;
+  padding: 3px 8px;
+  font-size: 12px;
+  border-color: transparent;
+  background: var(--color-canvas);
+  box-shadow: none;
+}
+
+.mhint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.mhint .is-warn {
+  color: var(--warn);
+}
+
+.mhint .is-bad {
+  color: var(--bad);
+}
+
+.mpick-dot {
+  flex: none;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--dot-off);
+}
+
+.mpick-dot.is-ok {
+  background: var(--ok);
+}
+
+.mpick-dot.is-busy {
+  background: var(--warn);
+}
+
+.mpick-dot.is-maintenance {
+  background: var(--bad);
+}
+
+.mpick {
+  position: relative;
+}
+
+.mpick > .input {
+  padding-right: 34px;
+  font-size: 12.5px;
+}
+
+.mpick-toggle {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-faint);
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.mpick-toggle:hover:not(:disabled) {
+  color: var(--color-ink);
+  background: var(--wash-2);
+}
+
+.mpick-pop {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--pop-line);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow: var(--lift-2);
+  animation: rise 0.13s ease-out;
+}
+
+.mpick-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 12.5px;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.mpick-opt:hover {
+  background: var(--wash-2);
+}
+
+.mpick-opt.is-on {
+  color: var(--accent);
+}
+
+.mpick-opt.is-dim {
+  color: var(--color-faint);
+}
+
+.mpick-meta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+/* 代码块：目录退后、文件名提亮，格式与复制固定在右侧。 */
+.codeblock {
+  border: 1px solid var(--code-line);
+  border-radius: 11px;
+  background: var(--code-bg);
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 var(--hi),
+    var(--lift-1);
+}
+
+.codeblock-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 5px 6px 5px 13px;
+  border-bottom: 1px solid var(--code-line);
+  background: var(--code-head);
+  font-size: 11.5px;
+  color: var(--color-muted);
+}
+
+.codeblock-file {
+  position: relative;
+  flex: none;
+  width: 13px;
+  height: 16px;
+  border: 1px solid var(--code-glyph);
+  border-radius: 2.5px;
+  opacity: 0.85;
+}
+
+.codeblock-file::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  left: 3px;
+  height: 1px;
+  background: var(--code-glyph);
+  box-shadow: 0 3px 0 var(--code-glyph);
+}
+
+.codeblock-path {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.codeblock-directory {
+  color: var(--color-faint);
+}
+
+.codeblock-name {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.codeblock-format {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--code-line);
+  border-radius: 5px;
+  color: var(--color-faint);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.codeblock-copy {
+  flex: none;
+  gap: 5px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+
+.codeblock-pre {
+  margin: 0;
+  padding: 15px 16px 16px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.72;
+  color: var(--color-ink-2);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* 着色：字串最亮（那是要改的值），键随正文，关键字 / 数字用一点紫，注释与开关退后。
+   钥匙占位符用琥珀 + 虚线底：像钥匙、但一眼看出「这里还没填」。 */
+.hl-str,
+.hl-url {
+  color: var(--hl-str);
+}
+
+.hl-key {
+  color: var(--color-ink);
+}
+
+.hl-kw,
+.hl-num {
+  color: var(--info-text);
+}
+
+.hl-sec {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.hl-flag {
+  color: var(--color-muted);
+}
+
+.hl-cmt {
+  color: var(--color-faint);
+  font-style: italic;
+}
+
+.hl-ph {
+  color: var(--warn);
+  border-bottom: 1px dashed color-mix(in srgb, var(--warn) 50%, transparent);
+}
+
+.frow {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.frow-k {
+  font-size: 12px;
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.frow-v {
+  display: block;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 7px;
+  background: var(--color-canvas);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink);
+}
+
+/* ── 试一下 / 发送测试 的回字面板 ─────────────────────────────────────────── */
+
+.tryout {
+  padding: 12px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-canvas);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.tryout.is-ok {
+  border-color: var(--accent-line);
+}
+
+.tryout.is-bad {
+  border-color: color-mix(in srgb, var(--bad) 30%, transparent);
+}
+
+.tryout-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+}
+
+.tryout-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--dot-off);
+}
+
+.tryout-dot.is-busy {
+  background: var(--accent);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+.tryout-dot.is-ok {
+  background: var(--ok);
+}
+
+.tryout-dot.is-bad {
+  background: var(--bad);
+}
+
+.tryout-title {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.tryout-model {
+  font-size: 12px;
+  color: var(--color-ink-2);
+}
+
+.tryout-routed {
+  font-size: 12px;
+}
+
+.tryout-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--color-muted);
+}
+
+.tryout-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--color-ink);
+}
+
+.tryout-thinking {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--wash-1);
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.tryout-thinking > summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.tryout-thinking > pre {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-faint);
+}
+
+.fw-try-prompt {
+  min-height: 72px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+/* ── 本地网关 ───────────────────────────────────────────────────────────── */
+
+.gw {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px 18px;
+}
+
+.gw-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.gw-state {
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+/* 齿轮：设置全收在它后面。调过默认值就在角上点一个点。 */
+.gw-gear {
+  position: relative;
+}
+
+.gw-gear-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* 网关设置：每一项都是一条 .opt（见 styles.css），这里只剩额度通道的三格分段和端口输入框。 */
+.gwset-options {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--color-line);
+  border-radius: 9px;
+  background: var(--well-bg);
+}
+
+.gwset-option {
+  min-width: 0;
+  height: 31px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-faint);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 540;
+  cursor: pointer;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.gwset-option:hover:not(:disabled) {
+  color: var(--color-ink);
+}
+
+.gwset-option.is-active {
+  background: var(--seg-on);
+  color: var(--color-ink);
+  box-shadow: var(--seg-on-shadow);
+}
+
+.gwset-option.is-caution.is-active {
+  background: color-mix(in srgb, var(--warn) 11%, transparent);
+  color: var(--warn);
+}
+
+.gwset-option:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.gwset-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.gwset-ports {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.gwset-ports label {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.gwset-ports label > span {
+  color: var(--color-faint);
+  font-size: 10.5px;
+}
+
+.gwset-port {
+  height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+  appearance: textfield;
+}
+
+.gwset-port::-webkit-inner-spin-button,
+.gwset-port::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+/* 网关开着时改通道 / 端口：一句后果，摆在列表底下。 */
+.gwset-restart {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 0 4px;
+  color: var(--color-faint);
+  font-size: 10.5px;
+}
+
+.gwset-restart > i {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--warn);
+  opacity: 0.78;
+}
+
+/* 状态卡底下那一行：左边一句「怎么接」，右边一个收着的「地址与口令」。 */
+.gw-wire {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -4px 0 -6px;
+}
+
+.gw-wire .linkish {
+  margin: 0 2px;
+}
+
+.gw-wire-toggle {
+  flex: none;
+  color: var(--color-muted);
+}
+
+.gw-wire-toggle[aria-expanded="true"] {
+  color: var(--color-ink);
+}
+
+.gw-addrs {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-line);
+  animation: gw-unfold 0.18s ease both;
+}
+
+@keyframes gw-unfold {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* 通道列表：一张贴边的卡，每条通道一行，Cursor 那行下面能摊开号池。 */
+.gw-chans-head {
+  padding: 14px 18px 10px;
+}
+
+.gw-chan {
+  border-top: 1px solid var(--line-soft);
+}
+
+.gw-chan-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 18px;
+}
+
+.gw-chan-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* 名字列做成一枚键（去这条通道的号池 / 账号页）：不描边、不填色，悬停时洗一层底。 */
+.gw-chan-btn {
+  margin: -6px -8px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.gw-chan-btn:hover {
+  background: var(--wash-1);
+}
+
+/* 「号池 ›」「账号 ›」键尾的箭头（chevron 本身朝右，正好是「去别处」）：压淡，别和字抢。 */
+.gw-chan-go {
+  margin-left: -2px;
+  color: var(--color-faint);
+}
+
+/* 号池页的面包屑：一枚回上级的安静键 + 当前位置的小字。 */
+.gw-crumb {
+  margin-left: -8px;
+  color: var(--color-muted);
+}
+
+.gw-crumb-here {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.gw-addr {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 6px 0;
+  font-size: 12.5px;
+}
+
+.gw-addr + .gw-addr {
+  border-top: 1px solid var(--line-soft);
+}
+
+.gw-addr-k {
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.gw-addr-v {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.gw-addr-v > code {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-addr-hint {
+  font-size: 11px;
+  color: var(--color-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 密钥：云端号源的引擎室 ─────────────────────────────────────────────── */
+
+.keys-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.keys-page > .page-head {
+  margin-bottom: 0;
+}
+
+/* 余额栏：大数压左，拆分项靠一条竖发丝线隔开，动作贴右。 */
+.keys-wallet {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 28px;
+  padding: 18px 20px;
+}
+
+.keys-wallet-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 128px;
+}
+
+.keys-wallet-big {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--color-ink);
+}
+
+.keys-wallet-split {
+  display: flex;
+  gap: 26px;
+  margin: 0;
+  padding-left: 28px;
+  border-left: 1px solid var(--color-line);
+}
+
+.keys-wallet-split:empty {
+  display: none;
+}
+
+.keys-wallet-split > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.keys-wallet-split dt {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--color-faint);
+}
+
+.keys-wallet-split dd {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+  white-space: nowrap;
+}
+
+.keys-wallet-acts {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .keys-wallet {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .keys-wallet-split {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+/* 列表头：标题 + 可用数，右侧一行中转地址。整行一个高度，复制键也压在这个高度里。 */
+.keys-cap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  margin-bottom: 10px;
+  padding: 0 2px;
+  font-size: 13px;
+}
+
+.keys-cap-n {
+  color: var(--color-faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.keys-addr {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--color-faint);
+}
+
+.keys-addr > code {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--color-ink-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keys-addr .btn-icon {
+  width: 24px;
+  height: 24px;
+}
+
+/**
+ * 列表：一把一行，四列 —— 身份 / 密钥 / 用量 / 动作。
+ *
+ * 上一版的乱来自三处：密钥坐在一格深灰的「井」里，比它左右的东西都重；用量把次数加粗、
+ * 钱变灰，主次颠倒还左对齐，一列数字对不齐；「接入」是个没边的幽灵键，飘在行尾。
+ * 现在：密钥是一枚白底发丝线的胶囊，和这一行别的东西一个分量；用量钱在上、次数在下、
+ * 两列右对齐；接入是有边的软键。行与行之间只留一道软线，hover 洗一层。
+ */
+.keytable {
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-raised);
+  box-shadow:
+    inset 0 1px 0 var(--hi),
+    var(--lift-1);
+  overflow: hidden;
+}
+
+.keyrow {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(220px, 1.2fr) auto auto;
+  align-items: center;
+  gap: 20px;
+  min-height: 62px;
+  padding: 12px 16px;
+  transition: background 0.12s ease;
+}
+
+.keyrow + .keyrow {
+  border-top: 1px solid var(--line-soft);
+}
+
+.keyrow:hover {
+  background: var(--wash-1);
+}
+
+.keyrow-id {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.keyrow-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.keyrow-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.keyrow.is-off .keyrow-dot {
+  background: var(--dot-off);
+  box-shadow: none;
+}
+
+.keyrow-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+/* 通道 / 停用的小标：和名字一排，比名字矮一档，不填底只描线。 */
+.keyrow-pill {
+  height: 18px;
+  padding: 0 6px;
+  font-size: 10px;
+  background: transparent;
+}
+
+.keyrow-pill.is-off {
+  color: var(--warn);
+  border-color: color-mix(in oklab, var(--warn) 35%, var(--color-line));
+}
+
+.keyrow-sub {
+  padding-left: 14px;
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+/* 密钥本体：一枚胶囊。白底、发丝线，等宽字；显示 / 复制两枚键常态很淡，停上去才亮。 */
+.keyrow-secret {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  height: 30px;
+  padding: 0 3px 0 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 7px;
+  background: var(--color-raised);
+  transition: border-color 0.12s ease;
+}
+
+.keyrow-secret:hover,
+.keyrow-secret:focus-within {
+  border-color: var(--line-strong);
+}
+
+.keyrow-secret > code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-ink);
+  user-select: text;
+}
+
+.keyrow-secret.is-masked > code {
+  color: var(--color-muted);
+  letter-spacing: 0.03em;
+}
+
+.keyrow-secret .btn-icon {
+  width: 24px;
+  height: 24px;
+  color: var(--color-dim);
+}
+
+.keyrow-secret .btn-icon:hover:not(:disabled) {
+  color: var(--color-ink);
+}
+
+.keyrow-secret .btn-icon.is-done {
+  color: var(--accent);
+}
+
+/* 用量：两格，钱是主数、次数是脚注，一律右对齐 —— 一列扫下来小数点对得齐。 */
+.keyrow-stats {
+  display: flex;
+  gap: 18px;
+}
+
+.keyrow-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 72px;
+}
+
+.keyrow-stat-k {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--color-faint);
+}
+
+.keyrow-stat-v {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+  white-space: nowrap;
+}
+
+.keyrow-stat-n {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+  white-space: nowrap;
+}
+
+/* 没用过：整格压到最弱，一排 ¥0.00 不该和真花了钱的一样亮。 */
+.keyrow-stat.is-zero .keyrow-stat-v {
+  font-weight: 500;
+  color: var(--color-dim);
+}
+
+.keyrow-acts {
+  display: flex;
+  gap: 2px;
+}
+
+.keyrow.is-off .keyrow-name,
+.keyrow.is-off .keyrow-secret,
+.keyrow.is-off .keyrow-stats {
+  opacity: 0.5;
+}
+
+.keyrow-err {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--bad);
+}
+
+@media (max-width: 1040px) {
+  .keyrow {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    row-gap: 10px;
+  }
+
+  .keyrow-secret {
+    grid-column: 1 / -1;
+  }
+}
+
+/* 空态与未登录：一枚标、一句话、一个门。不居中 —— 这一页别的东西都是左对齐的。 */
+.keys-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 24px;
+}
+
+.keys-blank > p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-ink-2);
+}
+
+.keys-blank-ico {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--color-canvas);
+  color: var(--color-muted);
+  box-shadow: inset 0 0 0 1px var(--color-line);
+}
+
+/* ── 铺满内容区的页面（游乐场）─────────────────────────────────────────── */
+
+/**
+ * 大多数页面是「一叠卡片摊在有页边距的纸上」，游乐场不是：它是个定高的工作台，
+ * 三根柱子从窗口顶铺到底，滚动发生在柱子内部。所以外壳这一层要退干净——
+ * 不留页边距、不代它滚、也不在它头上再罩一团环境光（工作台自己有一小团，
+ * 见 playground.css 的 `.pg-main::before`）。
+ */
+/* 高度写死一屏而不是 100%：外壳那一行是内容撑出来的（侧栏在 640 高的最小窗口里本来就装不下），
+   写 100% 会跟着那一行一起长高，把输入区顶到窗口外面去。 */
+.main-flush {
+  height: 100vh;
+  padding: 0;
+  overflow: hidden;
+  background: var(--color-paper);
+}
+
+.main-flush::before {
+  display: none;
+}

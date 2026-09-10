@@ -1,0 +1,29 @@
+version: 2
+
+# 并发 PR 限到 5：这个仓库的 CI 每条 PR 要在 Linux、Windows 上各跑一遍 clippy 与测试，
+# 再加两个平台的打包。放开了跑，一次 dependabot 批量更新就能把 runner 占满半天，
+# 真正在等 CI 的人反而排不上。
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: npm
+    directory: /apps/desktop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore(deps)
