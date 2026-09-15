@@ -131,7 +131,10 @@ export const switcher = {
 // ── 我的账号 ─────────────────────────────────────────────────────────────────
 
 export const accounts = {
+  /** 连归档的一起给；页面自己按 `archivedAt` 分开。 */
   list: () => call<Account[]>("accounts_list"),
+  /** 归档 / 取消归档一批号。只是收起来，凭证不动。 */
+  setArchived: (ids: string[], archived: boolean) => call<Account[]>("accounts_set_archived", { ids, archived }),
   add: (input: {
     email: string;
     refreshToken?: string;

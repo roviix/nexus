@@ -2191,6 +2191,25 @@ h2 {
   background: var(--dot-off);
 }
 
+/* 可用性那一维的配色：可用 = 主色，仅会话 / 仅 Key = 信息色（能用但有条件），
+   掉登录 = 告警，已失效 = 坏。和卡片上那颗点说的是同一件事。 */
+.pool-seg.is-long_lived {
+  background: var(--accent);
+}
+
+.pool-seg.is-session,
+.pool-seg.is-api_key {
+  background: var(--info);
+}
+
+.pool-seg.is-logged_out {
+  background: var(--warn);
+}
+
+.pool-seg.is-dead {
+  background: var(--bad);
+}
+
 .pool-legend {
   display: flex;
   align-items: center;
@@ -2258,6 +2277,67 @@ h2 {
 
 .pool-dot.is-full {
   background: var(--bad);
+}
+
+.pool-dot.is-long_lived {
+  background: var(--accent);
+}
+
+.pool-dot.is-session,
+.pool-dot.is-api_key {
+  background: var(--info);
+}
+
+.pool-dot.is-logged_out {
+  background: var(--warn);
+}
+
+.pool-dot.is-dead {
+  background: var(--bad);
+}
+
+/* ── 多选 ── */
+
+/* 按下「选择」后列表上方那一条：选了几个、能做什么。和工具栏同一副面孔，只是多一个主色动作。 */
+.selbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+
+.selbar-n {
+  font-size: 12.5px;
+  color: var(--color-ink-2);
+}
+
+.selbar-n > b {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+/* 卡片右下角的勾选框。选中态填主色，和卡片的高亮边框一起说「这张被选了」。 */
+.acct-pick {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--color-canvas);
+  color: var(--accent-ink);
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.acct-pick.is-on {
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
 /* ── 账号工具栏：视图芯片贴左，搜索 + 筛子 + 排序整组贴右。窗口窄时右边那组整体折到下一行。 ── */

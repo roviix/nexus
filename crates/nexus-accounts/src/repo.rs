@@ -24,18 +24,44 @@ impl Accounts {
         Self { db, secrets }
     }
 
-    /// 列出全部账号，**按加入的先后**。
+    /// 列出**没归档的**账号，新加的在前。网关选号、批量刷新都走这一条，归档的号自然不参与。
     ///
     /// 曾经是 `ORDER BY updated_at DESC`，那是个坑：刷一次用量就写一次 `updated_at`，
     /// 于是每刷新一轮，整个列表的顺序都变了 —— 用户刚记住「第三个是主力号」，一刷新
     /// 它就跑到第一个去了。顺序要跟着「什么时候加进来的」这种不会变的事实走。
-    /// 同一毫秒加进来的（批量导入）再按 id 兜底，保证每次查询结果完全一致。
+    /// `created_at` 只到秒，一批导入的几十个号同一秒；再按 rowid 排，同一批内部就是
+    /// 导入清单的顺序，而不是随机 id 的顺序。
     pub fn list(&self) -> Result<Vec<Account>> {
         self.db.with(|c| {
-            let mut stmt = c.prepare(&format!("{SELECT} ORDER BY created_at ASC, id ASC"))?;
+            let mut stmt = c.prepare(&format!(
+                "{SELECT} WHERE archived_at IS NULL ORDER BY created_at DESC, rowid DESC"
+            ))?;
             let rows = stmt.query_map([], row_to_account)?;
             rows.collect()
         })
+    }
+
+    /// 连归档的一起列，给账号页用（它自己按 `archived_at` 分开画）。顺序同 [`Self::list`]。
+    pub fn list_all(&self) -> Result<Vec<Account>> {
+        self.db.with(|c| {
+            let mut stmt = c.prepare(&format!("{SELECT} ORDER BY created_at DESC, rowid DESC"))?;
+            let rows = stmt.query_map([], row_to_account)?;
+            rows.collect()
+        })
+    }
+
+    /// 归档 / 取消归档。只动 `archived_at` 一格：凭证、用量、备注一个字节都不碰，
+    /// 取消归档后它就是原来那个号。
+    pub fn set_archived(&self, id: &AccountId, archived: bool) -> Result<Account> {
+        self.get(id)?;
+        let now = now_iso();
+        self.db.with(|c| {
+            c.execute(
+                "UPDATE accounts SET archived_at = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![id.as_str(), archived.then(|| now.clone()), now],
+            )
+        })?;
+        self.get(id)
     }
 
     pub fn get(&self, id: &AccountId) -> Result<Account> {
@@ -390,7 +416,7 @@ const SELECT: &str = "SELECT id, email, source, status, note, tags, membership, 
         workos_user_id, usage_json, last_checked_at, last_error, code_channel,
         code_channel_resolved, last_code_at, has_refresh, has_password,
         has_email_password, has_recovery_email, created_at, updated_at,
-        has_access, access_expires_at, billing_json, has_api_key
+        has_access, access_expires_at, billing_json, has_api_key, rowid, archived_at
  FROM accounts";
 
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
@@ -425,6 +451,14 @@ fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
             .get::<_, Option<String>>(23)?
             .and_then(|j| serde_json::from_str(&j).ok()),
         has_api_key: row.get(24)?,
+        seq: row.get(25)?,
+        archived_at: row.get(26)?,
+        // 先占位，下面统一算：它依赖上面那几格，Rust 不允许在字面量里引用兄弟字段。
+        availability: crate::model::Availability::LoggedOut,
+    })
+    .map(|mut a: Account| {
+        a.availability = a.availability();
+        a
     })
 }
 
@@ -445,6 +479,7 @@ fn not_found(id: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Availability;
     use nexus_store::MemorySecrets;
 
     fn setup() -> (Accounts, Arc<MemorySecrets>) {
@@ -459,6 +494,85 @@ mod tests {
             refresh_token: Some("rt-1".into()),
             ..Default::default()
         }
+    }
+
+    /// 一批导入同一秒入库：顺序必须是导入清单的顺序（新批在前、批内按导入先后），
+    /// 而不是随机 id。`seq` 随行带出来，前端同一秒内的排序就靠它。
+    #[test]
+    fn list_puts_the_newest_first_and_keeps_import_order_within_a_second() {
+        let (accounts, _) = setup();
+        let a = accounts.upsert(with_refresh("a@example.com")).unwrap();
+        let b = accounts.upsert(with_refresh("b@example.com")).unwrap();
+        let c = accounts.upsert(with_refresh("c@example.com")).unwrap();
+        assert!(a.seq < b.seq && b.seq < c.seq);
+        let listed: Vec<_> = accounts
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|x| x.email)
+            .collect();
+        assert_eq!(listed, ["c@example.com", "b@example.com", "a@example.com"]);
+        // 刷一次用量改 updated_at，顺序不许变。
+        accounts.record_failure(&a.id, "boom", false).unwrap();
+        let again: Vec<_> = accounts
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|x| x.email)
+            .collect();
+        assert_eq!(again, listed);
+    }
+
+    #[test]
+    fn archiving_hides_from_list_but_not_from_list_all_and_keeps_credentials() {
+        let (accounts, secrets) = setup();
+        let a = accounts.upsert(with_refresh("a@example.com")).unwrap();
+        let _b = accounts.upsert(with_refresh("b@example.com")).unwrap();
+        assert!(a.archived_at.is_none() && !a.is_archived());
+
+        let archived = accounts.set_archived(&a.id, true).unwrap();
+        assert!(archived.is_archived());
+        assert_eq!(
+            archived.availability,
+            Availability::LongLived,
+            "归档不改可用性"
+        );
+        assert_eq!(
+            accounts.list().unwrap().len(),
+            1,
+            "网关 / 批量刷新那条看不见它"
+        );
+        assert_eq!(
+            accounts.list_all().unwrap().len(),
+            2,
+            "账号页连归档的一起拿"
+        );
+        assert!(
+            secrets
+                .get(&account_secret(&a.id, AccountSecret::Refresh))
+                .unwrap()
+                .is_some(),
+            "凭证一个字节不动"
+        );
+
+        let back = accounts.set_archived(&a.id, false).unwrap();
+        assert!(!back.is_archived());
+        assert_eq!(accounts.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn availability_is_filled_in_when_reading_a_row() {
+        let (accounts, _) = setup();
+        let a = accounts.upsert(with_refresh("a@example.com")).unwrap();
+        assert_eq!(a.availability, Availability::LongLived);
+        let p = accounts
+            .upsert(NewAccount {
+                email: "p@example.com".into(),
+                cursor_password: Some("pw".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(p.availability, Availability::LoggedOut);
     }
 
     #[test]
@@ -620,8 +734,9 @@ mod tests {
 
     #[test]
     fn listing_keeps_the_order_accounts_were_added_in() {
-        // 顺序是用户的肌肉记忆（「第三个是我那个主力号」）。刷一次用量会写 updated_at，
-        // 以前照它排，于是每刷新一轮列表就重排一次 —— 这里把顺序钉在「什么时候加进来的」。
+        // 顺序是用户的肌肉记忆（「顶上那个是我刚加的号」）。刷一次用量会写 updated_at，
+        // 以前照它排，于是每刷新一轮列表就重排一次 —— 这里把顺序钉在「什么时候加进来的」，
+        // 新加的在最上面。
         let (accounts, _) = setup();
         let first = accounts.upsert(with_refresh("first@example.com")).unwrap();
         let second = accounts.upsert(with_refresh("second@example.com")).unwrap();
@@ -636,9 +751,9 @@ mod tests {
         assert_eq!(
             before,
             [
-                "first@example.com",
+                "third@example.com",
                 "second@example.com",
-                "third@example.com"
+                "first@example.com"
             ]
         );
 

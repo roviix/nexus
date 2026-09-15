@@ -18,7 +18,9 @@ import {
   onDemandText,
   overallPercent,
   pctText,
+  bonusSpend,
   planBudget,
+  planSpend,
   planGroup,
   planLabel,
   planTone,
@@ -97,8 +99,20 @@ describe("spendPace / planBudget", () => {
     expect(fresh.perDay).toBe(300);
 
     const broke = spendPace(usage({ ...cycle, spendCents: 2250, planLimitCents: 2000 }), NOW)!;
-    expect(broke.remaining).toBe(-250);
+    expect(broke.remaining).toBe(0);
     expect(broke.runwayDays).toBe(0);
+  });
+
+  it("measures the plan by what was taken from it, not by spend that includes the free bonus", () => {
+    // 真机：Pro $20，breakdown = { included 2000, bonus 6868, total 8868 }，按需 0。
+    // 以前显示「已用 $88.68 / 额度 $20 / 剩余 $0 · 超出的走按需」；超出的那 $68 是白送的。
+    const u = usage({ ...cycle, spendCents: 8868, includedCents: 2000, bonusCents: 6868, planLimitCents: 2000, onDemandUsedCents: 0 });
+    expect(planSpend(u)).toBe(2000);
+    expect(bonusSpend(u)).toBe(6868);
+    expect(spendPace(u, NOW)!.remaining).toBe(0);
+    // 没有 breakdown 的老档：退回 spendCents，那时也没有 bonus。
+    expect(planSpend(usage({ spendCents: 500 }))).toBe(500);
+    expect(bonusSpend(usage({ spendCents: 500, bonusCents: 0 }))).toBeNull();
   });
 
   it("gives up without a cycle or a spend figure, and degrades without a budget", () => {
@@ -294,14 +308,17 @@ describe("blockReasonText", () => {
 });
 
 describe("accountProblem", () => {
-  const active = { status: "active" as const };
+  const active = { availability: "long_lived" as const };
 
-  it("reports credential problems", () => {
-    expect(accountProblem({ status: "dead" }, usage({ totalPercentUsed: 1 }))).toEqual({
+  it("reports credential problems in the words the availability bar uses", () => {
+    expect(accountProblem({ availability: "dead" }, usage({ totalPercentUsed: 1 }))).toEqual({
       tone: "bad",
       label: "已失效",
     });
-    expect(accountProblem({ status: "needs_login" })).toEqual({ tone: "warn", label: "待登录" });
+    expect(accountProblem({ availability: "logged_out" })).toEqual({ tone: "warn", label: "掉登录" });
+    expect(accountProblem({ availability: "api_key" })).toEqual({ tone: "warn", label: "仅 API Key" });
+    // 仅会话此刻能用，不算问题；到期那件事抽屉里另有一行。
+    expect(accountProblem({ availability: "session" })).toBeNull();
   });
 
   it("surfaces a blocked or exhausted Bot channel", () => {
@@ -325,7 +342,7 @@ describe("accountProblem", () => {
 });
 
 describe("railTone", () => {
-  const active = { status: "active" as const };
+  const active = { availability: "long_lived" as const };
 
   it("follows the overall quota, not a single exhausted bucket", () => {
     // API 常年 100% 是这批号的常态：Auto 那条路还通着，号还能用，不该判红。
@@ -343,8 +360,8 @@ describe("railTone", () => {
   it("is neutral without usage and takes problems first", () => {
     expect(railTone(active)).toBe("none");
     expect(overallPercent(null)).toBeNull();
-    expect(railTone({ status: "dead" }, usage({ totalPercentUsed: 1 }))).toBe("bad");
-    expect(railTone({ status: "needs_login" })).toBe("warn");
+    expect(railTone({ availability: "dead" }, usage({ totalPercentUsed: 1 }))).toBe("bad");
+    expect(railTone({ availability: "logged_out" })).toBe("warn");
   });
 });
 

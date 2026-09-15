@@ -15,9 +15,39 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// 账号页要连归档的一起拿：它自己按 `archivedAt` 分开画，切到「已归档」视图不用再问一次。
+/// 网关、批量刷新走的是 `repo.list()`，那条只给没归档的。
 #[tauri::command(async)]
 pub fn accounts_list(state: State<'_, AppState>) -> Result<Vec<Account>> {
-    state.accounts.repo.list()
+    state.accounts.repo.list_all()
+}
+
+/// 归档 / 取消归档一批号。归档只是收起来：凭证不动，随时能取回。
+#[tauri::command(async)]
+pub fn accounts_set_archived(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    archived: bool,
+) -> Result<Vec<Account>> {
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        let account = state
+            .accounts
+            .repo
+            .set_archived(&AccountId::from_raw(id), archived)?;
+        activity::info(
+            &state.db,
+            "accounts",
+            Some(&account.email),
+            if archived {
+                "已归档"
+            } else {
+                "已取消归档"
+            },
+        );
+        out.push(account);
+    }
+    Ok(out)
 }
 
 /// 手工添加一个号。托管门槛在 `NewAccount::qualify` 里，进不来的会说明原因。

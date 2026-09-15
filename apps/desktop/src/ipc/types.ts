@@ -198,6 +198,15 @@ export interface UsageWindow {
   byModel: ModelUsage[];
 }
 
+/** 一笔 Cursor 赠送的积分（credit grant）。这是「积分」；账期里的 bonus 是厂商补贴的免费加量，不是它。 */
+export interface CreditGrant {
+  displayName?: string | null;
+  totalCents: number;
+  remainingCents: number;
+  /** epoch ms */
+  expiresAt?: number | null;
+}
+
 export interface AccountUsage {
   fetchedAt: string;
   email?: string;
@@ -220,6 +229,8 @@ export interface AccountUsage {
   creditGrantTotalCents?: number;
   creditGrantUsedCents?: number;
   creditGrantRemainingCents?: number;
+  /** 每一笔赠送的明细：叫什么、还剩多少、什么时候过期。没有赠送时缺席。 */
+  creditGrants?: CreditGrant[];
   spendCents?: number;
   planLimitCents?: number;
   onDemandEnabled?: boolean;
@@ -335,7 +346,22 @@ export interface Account {
   hasApiKey: boolean;
   createdAt: string;
   updatedAt: string;
+  /** 入库序号（rowid）。同一秒导入的一批号靠它保持导入顺序。 */
+  seq: number;
+  /** 归档时刻；缺席 = 没归档。归档的号默认不列、不刷、不进网关候选，凭证原样留着。 */
+  archivedAt?: string | null;
+  /**
+   * 「此刻能不能用」的唯一答案，Rust 侧算好带过来（`Account::availability`）。
+   * 卡片、分布条、筛子、抽屉都只认它——别在前端再用 status / hasRefresh 拼一套。
+   */
+  availability: Availability;
 }
+
+/**
+ * long_lived：有 refresh，能自己续期 · session：只靠一把还活着的 session token · api_key：只有 crsr_ ·
+ * logged_out：掉登录（上游拒了 / 过期 / 只有密码）· dead：refresh 被拒又没密码，救不回来。
+ */
+export type Availability = "long_lived" | "session" | "api_key" | "logged_out" | "dead";
 
 export type SecretKind = "refresh" | "access" | "cursorPassword" | "emailPassword" | "recoveryEmail" | "apiKey";
 

@@ -18,6 +18,8 @@ function account(overrides: Partial<Account> = {}): Account {
     hasApiKey: false,
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
+    seq: 1,
+    availability: "long_lived",
     ...overrides,
   };
 }

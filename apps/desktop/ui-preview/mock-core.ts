@@ -154,6 +154,8 @@ const account = (over: Partial<Account> & { email: string }): Account => ({
   createdAt: iso(9 * D),
   updatedAt: iso(H),
   lastCheckedAt: iso(20 * 60_000),
+  seq: 0,
+  availability: "long_lived",
   ...over,
 });
 
@@ -199,7 +201,12 @@ export const ACCOUNTS: Account[] = EMPTY
           ],
         }),
       }),
-      account({ email: "junko.hale@outlook.com", source: "local", status: "needs_login", hasRefresh: false, usage: null }),
+      account({ email: "junko.hale@outlook.com", source: "local", status: "needs_login", hasRefresh: false, availability: "logged_out", usage: null }),
+      // 仅会话的号：此刻能用，到期就掉；卡上不算问题，分布条里单独一段。
+      account({ email: "sunniva.brekke@outlook.com", hasRefresh: false, hasAccess: true, accessExpiresAt: iso(-2 * D), availability: "session", usage: usage({ totalPercentUsed: 34, apiPercentUsed: 40, autoPercentUsed: 30 }) }),
+      // 归档的号：默认不出现，「已归档」视图里能取回。
+      account({ email: "old.batch.01@outlook.com", source: "purchased", status: "dead", availability: "dead", archivedAt: iso(3 * D), usage: usage({ totalPercentUsed: 100, apiPercentUsed: 100, autoPercentUsed: 100 }) }),
+      account({ email: "old.batch.02@outlook.com", source: "purchased", archivedAt: iso(3 * D), usage: usage({ totalPercentUsed: 12 }) }),
       // 这个号当天就回血：末行的倒计时会换成钟点。
       account({ email: "pilar.osei@outlook.com", source: "local", usage: usage({ totalPercentUsed: 100, apiPercentUsed: 100, autoPercentUsed: 100, bot: { percentUsed: 100, resetAt: NOW + 5 * H, hasAvailable: false, access: "granted" } }) }),
       account({ email: "wen.abernathy@outlook.com", usage: undefined, lastCheckedAt: null }),
@@ -1000,6 +1007,13 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
 
     case "accounts_list":
       return v(ACCOUNTS);
+    case "accounts_set_archived": {
+      const ids = new Set((args?.ids as string[]) ?? []);
+      const at = args?.archived ? new Date().toISOString() : null;
+      const hit = ACCOUNTS.filter((a) => ids.has(a.id));
+      for (const a of hit) a.archivedAt = at;
+      return delay(hit as T, 300);
+    }
     case "accounts_refresh_usage": {
       const a = ACCOUNTS.find((x) => x.id === args?.id);
       if (!a?.usage) throw { code: "invalid_input", message: "这个号没有 refresh_token，查不了用量。", hint: "先授权。" };

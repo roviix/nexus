@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Account } from "../ipc/types";
-import { applyCredFilter, applyPlanFilter, canQueryUsage, canUseDashboard, credState, hasLiveAccess } from "../ui/accounts";
+import { applyAvailFilter, applyPlanFilter, canQueryUsage, canUseDashboard, hasLiveAccess } from "../ui/accounts";
 import {
   BUILTIN_VIEWS,
   DEFAULT_VIEW,
@@ -32,6 +32,8 @@ function acct(over: Partial<Account> = {}): Account {
     hasApiKey: false,
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
+    seq,
+    availability: "long_lived",
     ...over,
   };
 }
@@ -46,16 +48,17 @@ function memStore() {
   };
 }
 
-describe("cred filter", () => {
-  it("separates 'fixable' from 'dead' and from 'fine'", () => {
-    expect(credState(acct())).toBe("authorized");
-    expect(credState(acct({ hasRefresh: false }))).toBe("needsAuth");
-    expect(credState(acct({ status: "needs_login" }))).toBe("needsAuth");
-    // 失效的号即使还带着 refresh token 也不算「掉授权」：它修不回来，别混进待办里。
-    expect(credState(acct({ status: "dead" }))).toBe("dead");
+describe("availability filter", () => {
+  it("filters on the answer Rust gave and passes everything through on 'all'", () => {
+    // 可用性不在前端算：Rust 的 `Account::availability` 是唯一口径，这里只认它。
+    const gone = acct({ availability: "logged_out", hasRefresh: false });
+    const list = [acct(), gone, acct({ availability: "dead" })];
+    expect(applyAvailFilter(list, "all")).toHaveLength(3);
+    expect(applyAvailFilter(list, "logged_out").map((a) => a.id)).toEqual([gone.id]);
+    expect(applyAvailFilter(list, "dead")).toHaveLength(1);
   });
 
-  it("treats a session-token-only account as 'session' while the token lives, 'needsAuth' after", () => {
+  it("still knows which accounts can be refreshed and which can use the dashboard", () => {
     const now = Date.parse("2026-09-09T12:00:00Z");
     const live = acct({ hasRefresh: false, hasAccess: true, accessExpiresAt: "2026-09-09T20:00:00Z" });
     const expired = acct({ hasRefresh: false, hasAccess: true, accessExpiresAt: "2026-09-09T11:00:00Z" });
@@ -63,21 +66,10 @@ describe("cred filter", () => {
     const nearlyExpired = acct({ hasRefresh: false, hasAccess: true, accessExpiresAt: "2026-09-09T12:00:30Z" });
     expect(hasLiveAccess(live, now)).toBe(true);
     expect(canQueryUsage(live, now)).toBe(true);
-    expect(credState(live, now)).toBe("session");
-    expect(credState(expired, now)).toBe("needsAuth");
     expect(canQueryUsage(expired, now)).toBe(false);
-    expect(credState(nearlyExpired, now)).toBe("needsAuth");
+    expect(hasLiveAccess(nearlyExpired, now)).toBe(false);
     expect(canQueryUsage(acct({ hasRefresh: false, hasAccess: true, accessExpiresAt: "2026-09-09T11:00:00Z", hasApiKey: true }), now)).toBe(true);
     expect(canUseDashboard(acct({ hasRefresh: false, hasAccess: true, accessExpiresAt: "2026-09-09T11:00:00Z", hasApiKey: true }), now)).toBe(false);
-    // 有 refresh 的号不看 access：哪怕 access 过期，refresh 一换就有新的。
-    expect(credState(acct({ hasAccess: true, accessExpiresAt: "2026-09-09T11:00:00Z" }), now)).toBe("authorized");
-  });
-
-  it("filters by cred state and passes everything through on 'any'", () => {
-    const stale = acct({ hasRefresh: false });
-    const list = [acct(), stale, acct({ status: "dead" })];
-    expect(applyCredFilter(list, "any")).toHaveLength(3);
-    expect(applyCredFilter(list, "needsAuth").map((a) => a.id)).toEqual([stale.id]);
   });
 });
 
@@ -120,10 +112,28 @@ describe("persistence", () => {
   });
 
   it("tolerates stale enums on disk by falling back per field", () => {
-    const spec = normalizeSpec({ plan: "gone", sort: "checked", cred: 42 });
+    const spec = normalizeSpec({ plan: "gone", sort: "checked", cred: 42, archived: "yes" });
     expect(spec.plan).toBe("all");
     expect(spec.sort).toBe("checked");
-    expect(spec.cred).toBe("any");
+    expect(spec.avail).toBe("all");
+    expect(spec.archived).toBe(false);
+  });
+
+  it("upgrades the previous shape: filter → quota, cred → avail", () => {
+    // 上一版存的是 `{ filter（额度）, cred（凭证）}`。存过「付费可用」那类视图的人不该丢掉它。
+    const spec = normalizeSpec({ filter: "warn", cred: "needsAuth", plan: "paid", sort: "added" });
+    expect(spec.quota).toBe("warn");
+    expect(spec.avail).toBe("logged_out");
+    expect(spec.plan).toBe("paid");
+    expect(normalizeSpec({ cred: "authorized" }).avail).toBe("long_lived");
+    expect(normalizeSpec({ cred: "any" }).avail).toBe("all");
+  });
+
+  it("has an archived builtin view that no ordinary filter combination collides with", () => {
+    const archived = BUILTIN_VIEWS.find((v) => v.id === "archived")!;
+    expect(archived.spec.archived).toBe(true);
+    expect(matchView({ ...DEFAULT_VIEW, archived: true }, [])?.id).toBe("archived");
+    expect(matchView(DEFAULT_VIEW, [])?.id).toBe("all");
   });
 
   it("drops the retired sorts (status / headroom) back to the default", () => {

@@ -4,36 +4,68 @@
  * 手里几十个号时，用户来这一页多半带着一个具体问题：「哪个还能用」「哪个余量最多」
  * 「哪个快重置了」。这些答案不该靠肉眼逐行比，所以排序按这几个问题来设。
  */
-import type { Account } from "../ipc/types";
-import { planGroup, railTone, type PlanGroup } from "./usage";
+import type { Account, Availability } from "../ipc/types";
+import { overallPercent, planGroup, type PlanGroup } from "./usage";
 
 /**
- * 一个号在池子里的状态。
+ * 一个号的**额度**状态：最紧的那个桶用到哪一档了（与卡片上额度条的配色同一套阈值）。
  *
- * 分档的依据是**最紧的那个额度桶**（与卡片上那个圆点、与额度条的配色同一套阈值），
- * 凭证出了问题的（失效 / 待登录 / Bot 被封）按严重程度并进 告警 / 已满 ——
- * 对「现在还能不能派上用场」这个问题来说，没额度和用不了是同一类答案。
+ * 它只回答「还剩多少」。以前这里把凭证问题（失效 / 待登录）也折进「告警 / 已满」，
+ * 结果一个 access 早就过期、但没刷过的号还顶着旧用量待在「正常」里 —— 用户想把
+ * 「掉登录的」从「正常可用的」里排除掉，做不到。现在凭证归 `availability`（Rust 侧算好），
+ * 额度归这里，两维各自筛，互不遮蔽。
  *
  * `unknown` 是「还没查过用量」：它不该混进「正常」里冒充一个已核实的号。
  */
-export type PoolState = "ok" | "warn" | "full" | "unknown";
+export type QuotaState = "ok" | "warn" | "full" | "unknown";
 
-export const POOL_LABEL: Record<PoolState, string> = {
-  ok: "正常",
-  warn: "告警",
-  full: "已满",
-  unknown: "未查",
+export const QUOTA_LABEL: Record<QuotaState, string> = {
+  ok: "额度充足",
+  warn: "额度告警",
+  full: "额度已满",
+  unknown: "未查用量",
 };
 
-export function poolState(a: Account): PoolState {
-  const tone = railTone(a, a.usage);
-  if (tone === "bad") return "full";
-  if (tone === "warn") return "warn";
-  if (tone === "ok") return "ok";
-  return "unknown";
+export const QUOTA_ORDER: QuotaState[] = ["ok", "warn", "full", "unknown"];
+
+export function quotaState(a: Pick<Account, "usage">): QuotaState {
+  const pct = overallPercent(a.usage);
+  if (pct == null) return "unknown";
+  if (pct > 90) return "full";
+  if (pct >= 70) return "warn";
+  return "ok";
 }
 
-export type AccountFilter = "all" | PoolState;
+export type QuotaFilter = "all" | QuotaState;
+
+export function applyQuotaFilter<T extends Pick<Account, "usage">>(list: T[], filter: QuotaFilter): T[] {
+  if (filter === "all") return list;
+  return list.filter((a) => quotaState(a) === filter);
+}
+
+/* ── 可用性（此刻能不能用） ───────────────────────────────────────────────── */
+
+/**
+ * 分布条与主筛子走这一维。答案由 Rust 的 `Account::availability` 给，前端不再自己拼：
+ * 以前卡片看 status、筛子看 hasRefresh + access 到期，两套口径打架。
+ */
+export type AvailFilter = "all" | Availability;
+
+export const AVAIL_LABEL: Record<Availability, string> = {
+  long_lived: "可用",
+  session: "仅会话",
+  api_key: "仅 API Key",
+  logged_out: "掉登录",
+  dead: "已失效",
+};
+
+/** 从好到坏。分布条与图例按这个顺序画。 */
+export const AVAIL_ORDER: Availability[] = ["long_lived", "session", "api_key", "logged_out", "dead"];
+
+export function applyAvailFilter<T extends Pick<Account, "availability">>(list: T[], filter: AvailFilter): T[] {
+  if (filter === "all") return list;
+  return list.filter((a) => a.availability === filter);
+}
 
 /* ── 按档筛选 ─────────────────────────────────────────────────────────────── */
 
@@ -97,48 +129,16 @@ export function canUseDashboard(a: Account, now = Date.now()): boolean {
 }
 
 /**
- * 凭证状态是独立于额度的一维：一个 Pro 号额度满满，refresh token 掉了照样进不了池、刷不了用量。
- * 分布条把这类问题并进「告警 / 已满」是为了回答「现在能不能用」；这里单拆出来是为了回答
- * 「哪些号要我动手」——两个问题都常问，所以两种切法都留着。
- *
- * `session` 是「仅会话」：此刻能用，但没有 refresh、到期就掉——它既不是「已授权」（那意味着长期），
- * 也还不是「掉授权」，单列一档让人知道这批号要盯着到期。
- */
-export type CredFilter = "any" | "authorized" | "session" | "needsAuth" | "dead";
-
-export const CRED_FILTER_LABEL: Record<CredFilter, string> = {
-  any: "凭证：全部",
-  authorized: "已授权",
-  session: "仅会话",
-  needsAuth: "掉授权",
-  dead: "已失效",
-};
-
-export const CRED_FILTERS: CredFilter[] = ["any", "authorized", "session", "needsAuth", "dead"];
-
-export function credState(a: Account, now = Date.now()): Exclude<CredFilter, "any"> {
-  if (a.status === "dead") return "dead";
-  if (a.hasRefresh && a.status !== "needs_login") return "authorized";
-  if (sessionOnly(a) && hasLiveAccess(a, now)) return "session";
-  return "needsAuth";
-}
-
-export function applyCredFilter(list: Account[], filter: CredFilter): Account[] {
-  if (filter === "any") return list;
-  return list.filter((a) => credState(a) === filter);
-}
-
-/**
- * 四种排序。曾经还有「按状态」和「余量最多」，都撤了：状态那一维已经由分布条 + 凭证筛子
+ * 五种排序。曾经还有「按状态」和「余量最多」，都撤了：状态那一维已经由分布条 + 额度筛子
  * 回答（筛出来比排出来直接）；「余量最多」按最紧的桶排，可卡上并排摆着三个桶的数字，
  * 排出来的第一名常常不是人眼看到的「最空的那张」，解释不清的排序不如没有。
  */
-export type AccountSort = "added" | "reset" | "botReset" | "checked";
+export type AccountSort = "added" | "registered" | "reset" | "botReset" | "checked";
 
 /**
- * 默认按**加入的先后**排。
+ * 默认按**加入的先后**排，新加的在最上面。
  *
- * 这一条比它看起来重要：列表的顺序是用户的肌肉记忆，「第三个是我那个主力号」这种
+ * 这一条比它看起来重要：列表的顺序是用户的肌肉记忆，「顶上那个是我刚加的号」这种
  * 认知一旦被打乱，每次回到这一页都得重新找。而其余几种排序的依据（重置时刻、检查时间）
  * **都会被一次刷新用量改写** —— 那意味着点一下刷新，整列就重排了。
  * 所以它们只作为可选项，默认永远是那个不会动的。
@@ -146,16 +146,12 @@ export type AccountSort = "added" | "reset" | "botReset" | "checked";
 export const DEFAULT_SORT: AccountSort = "added";
 
 export const SORT_LABEL: Record<AccountSort, string> = {
-  added: "添加时间",
+  added: "添加时间 · 新→旧",
+  registered: "注册时间 · 新→旧",
   reset: "月账期最快重置",
   botReset: "Bot 最快重置",
   checked: "最近查过",
 };
-
-export function applyFilter(list: Account[], filter: AccountFilter): Account[] {
-  if (filter === "all") return list;
-  return list.filter((a) => poolState(a) === filter);
-}
 
 /** 邮箱、备注、标签都搜；大小写不敏感。空串匹配一切。 */
 export function matchesQuery(a: Account, query: string): boolean {
@@ -169,7 +165,9 @@ export function matchesQuery(a: Account, query: string): boolean {
 /**
  * 排序。
  *
- * - 添加时间：先加的在前。**新号追加在末尾，已有的一个都不动** —— 这正是它当默认的理由。
+ * - 添加时间：新加的在前。同一秒入库的一批（批量导入）按 `seq`（rowid）倒排，等于导入清单
+ *   的逆序；**刷新用量不改任何一项**，这正是它当默认的理由。
+ * - 注册时间：Cursor 那边的 `created_at`（随用量拉回来），新注册的在前；没查过的沉底。
  * - 月账期最快重置：`cycleEnd` 越近越靠前；不知道的排最后。**只看月账期，不看「最紧的桶」**：
  *   以前按最紧的桶的重置时刻排，可 Bot 桶按周、其余按月，一个号最紧的是 Bot、另一个最紧的是 API，
  *   两个号就在拿周和月比 —— 卡上写着「月账期 20 天后重置」的排到了「3 天后」的前面，看着就是排错了。
@@ -177,26 +175,26 @@ export function matchesQuery(a: Account, query: string): boolean {
  *   「哪个号的 Bot 快回来了」是个独立的问题，所以单独一档。
  * - 最近查过：lastCheckedAt 越新越靠前；没查过的排最后。
  *
- * 同分时按 id 兜底，**不按后端给的顺序**：后端是 `ORDER BY updated_at DESC`，刷一次
- * 用量它就变了，拿它当兜底等于把「排序不动」的承诺又漏掉。
+ * 同分时按 `seq` 再按 id 兜底，**不按后端给的顺序**，保证同一批数据无论怎么来结果都一样。
  */
 export function sortAccounts(list: Account[], by: AccountSort, now = Date.now()): Account[] {
   const keyed = list.map((a) => ({ a, k: sortKey(a, by, now) }));
   keyed.sort((x, y) => {
-    // 失效的号在「重置 / 查过」里垫底：它的额度再快回来也用不上，摆在头一个是误导。
+    // 失效的号在「重置 / 查过 / 注册」里垫底：它的额度再快回来也用不上，摆在头一个是误导。
     // 但「添加时间」里不挪 —— 那一档承诺的就是顺序不变，一个号今天失效了也不该换位置。
     if (by !== "added") {
       const dx = deadRank(x.a) - deadRank(y.a);
       if (dx !== 0) return dx;
     }
     if (x.k !== y.k) return x.k - y.k;
+    if (x.a.seq !== y.a.seq) return y.a.seq - x.a.seq;
     return x.a.id < y.a.id ? -1 : x.a.id > y.a.id ? 1 : 0;
   });
   return keyed.map((k) => k.a);
 }
 
 function deadRank(a: Account): number {
-  return a.status === "dead" ? 1 : 0;
+  return a.availability === "dead" ? 1 : 0;
 }
 
 /** 越小越靠前。`Infinity` 表示「没有这项数据」，自然沉底。 */
@@ -204,7 +202,12 @@ function sortKey(a: Account, by: AccountSort, now: number): number {
   switch (by) {
     case "added": {
       const t = Date.parse(a.createdAt);
-      return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+      return Number.isFinite(t) ? -t : Number.POSITIVE_INFINITY;
+    }
+    case "registered": {
+      const raw = a.usage?.accountCreatedAt;
+      const t = raw ? Date.parse(raw) : Number.NaN;
+      return Number.isFinite(t) ? -t : Number.POSITIVE_INFINITY;
     }
     case "reset": {
       const at = a.usage?.cycleEnd;
@@ -227,18 +230,22 @@ function sortKey(a: Account, by: AccountSort, now: number): number {
 
 export interface AccountSummary {
   total: number;
-  /** 各档的数量。四档相加必然等于 total —— 顶部那条分布条就是照它画的。 */
-  by: Record<PoolState, number>;
+  /** 各种可用性的数量。相加必然等于 total —— 顶部那条分布条就是照它画的。 */
+  by: Record<Availability, number>;
+  /** 各种额度状态的数量，给「额度」筛子的计数用。 */
+  quota: Record<QuotaState, number>;
   /** 此刻能刷用量的号（有 refresh、还活着的 session，或 crsr_ API Key）。 */
   refreshable: number;
 }
 
 export function summarize(list: Account[]): AccountSummary {
-  const by: Record<PoolState, number> = { ok: 0, warn: 0, full: 0, unknown: 0 };
+  const by: Record<Availability, number> = { long_lived: 0, session: 0, api_key: 0, logged_out: 0, dead: 0 };
+  const quota: Record<QuotaState, number> = { ok: 0, warn: 0, full: 0, unknown: 0 };
   let refreshable = 0;
   for (const a of list) {
-    by[poolState(a)] += 1;
+    by[a.availability] += 1;
+    quota[quotaState(a)] += 1;
     if (canQueryUsage(a)) refreshable += 1;
   }
-  return { total: list.length, by, refreshable };
+  return { total: list.length, by, quota, refreshable };
 }

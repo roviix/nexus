@@ -17,7 +17,8 @@ import type { Account, ActivityEntry, AppStatus, Overview } from "../ipc/types";
 import { useRelay } from "../relay/useRelay";
 import { go, type Route } from "../shell/nav";
 import { ShellIcon } from "../shell/ShellIcon";
-import { POOL_LABEL, summarize, type PoolState } from "../ui/accounts";
+import { AVAIL_LABEL, AVAIL_ORDER, summarize } from "../ui/accounts";
+import type { Availability } from "../ipc/types";
 import { timeAgo } from "../ui/format";
 import { Banner, Icon, Switch, Tag } from "../ui/primitives";
 import { UsagePanel, type UsageRange } from "./overview/UsagePanel";
@@ -327,22 +328,20 @@ function StatusRow({ title, value, sub, onOpen, control }: { title: string; valu
   );
 }
 
-const POOL_ORDER: PoolState[] = ["ok", "warn", "full", "unknown"];
-
 /**
- * 号池四档的图例。为零的档不写 —— 一行「已满 0」占的位置和真有 3 个已满时一样宽，
- * 扫一眼分不出哪个是要处理的。
+ * 账号按**可用性**分档的图例（可用 / 仅会话 / 掉登录 / 已失效）。为零的档不写 —— 一行
+ * 「已失效 0」占的位置和真有 3 个已失效时一样宽，扫一眼分不出哪个是要处理的。
  *
  * 这里不画那条分布条：一行 52 高的状态行只有一条副行，而带数字的彩点比一条 3px 的杠
  * 说得更清楚；要看比例去账号页，那儿本来就有一条通宽的。
  */
-function PoolLegend({ by }: { by: Record<PoolState, number> }) {
+function PoolLegend({ by }: { by: Record<Availability, number> }) {
   return (
     <span className="srow-legend">
-      {POOL_ORDER.filter((k) => by[k] > 0).map((k) => (
+      {AVAIL_ORDER.filter((k) => by[k] > 0).map((k) => (
         <span key={k} className="srow-chip">
           <i className={`pool-dot is-${k}`} />
-          {POOL_LABEL[k]} <b className="num">{by[k]}</b>
+          {AVAIL_LABEL[k]} <b className="num">{by[k]}</b>
         </span>
       ))}
     </span>

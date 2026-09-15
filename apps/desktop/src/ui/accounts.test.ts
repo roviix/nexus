@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { Account } from "../ipc/types";
 import {
   accountPlanGroup,
-  applyFilter,
+  applyAvailFilter,
   applyPlanFilter,
+  applyQuotaFilter,
   matchesQuery,
-  poolState,
+  quotaState,
   sortAccounts,
   summarize,
 } from "./accounts";
@@ -32,46 +33,52 @@ function acct(over: Partial<Account> = {}): Account {
     hasApiKey: false,
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
+    seq,
+    availability: "long_lived",
     ...over,
   };
 }
 
 const usage = (u: Record<string, unknown>) => ({ fetchedAt: "", ...u });
 
-describe("poolState / filter / summarize", () => {
+describe("quotaState / filters / summarize", () => {
   it("grades an account by its overall quota, not by one exhausted bucket", () => {
-    expect(poolState(acct({ usage: usage({ totalPercentUsed: 20 }) }))).toBe("ok");
-    expect(poolState(acct({ usage: usage({ totalPercentUsed: 75 }) }))).toBe("warn");
-    expect(poolState(acct({ usage: usage({ totalPercentUsed: 100 }) }))).toBe("full");
+    expect(quotaState(acct({ usage: usage({ totalPercentUsed: 20 }) }))).toBe("ok");
+    expect(quotaState(acct({ usage: usage({ totalPercentUsed: 75 }) }))).toBe("warn");
+    expect(quotaState(acct({ usage: usage({ totalPercentUsed: 100 }) }))).toBe("full");
     // API 打满是这批号的常态，Auto 那条路还通着 —— 不该把整个号判成已满。
-    expect(poolState(acct({ usage: usage({ totalPercentUsed: 20, apiPercentUsed: 100 }) }))).toBe("ok");
+    expect(quotaState(acct({ usage: usage({ totalPercentUsed: 20, apiPercentUsed: 100 }) }))).toBe("ok");
   });
 
   it("does not pass off an unchecked account as normal", () => {
     // 「没查过」和「查过、没问题」是两件事。
-    expect(poolState(acct())).toBe("unknown");
+    expect(quotaState(acct())).toBe("unknown");
   });
 
-  it("folds credential problems into the same grades", () => {
-    expect(poolState(acct({ status: "dead" }))).toBe("full");
-    expect(poolState(acct({ status: "needs_login" }))).toBe("warn");
-    expect(poolState(acct({ usage: usage({ bot: { hasAvailable: false } }) }))).toBe("full");
+  it("keeps credentials out of the quota grade — that is what availability is for", () => {
+    // 以前失效 / 待登录会被折进「已满 / 告警」，于是一个掉了登录、旧用量还是绿的号就
+    // 混在「正常」里排除不掉。现在额度只说额度。
+    expect(quotaState(acct({ availability: "dead", usage: usage({ totalPercentUsed: 20 }) }))).toBe("ok");
+    expect(quotaState(acct({ availability: "logged_out", usage: usage({ totalPercentUsed: 20 }) }))).toBe("ok");
   });
 
-  it("counts every account into exactly one grade so the bar adds up", () => {
+  it("counts every account into exactly one availability so the bar adds up", () => {
     const list = [
       acct({ usage: usage({ totalPercentUsed: 10 }) }),
-      acct({ usage: usage({ totalPercentUsed: 80 }) }),
-      acct({ status: "dead" }),
-      acct({ hasRefresh: false }),
+      acct({ availability: "session", hasRefresh: false, hasAccess: true, accessExpiresAt: "2099-01-01T00:00:00Z" }),
+      acct({ availability: "dead" }),
+      acct({ availability: "logged_out", hasRefresh: false }),
     ];
     const s = summarize(list);
-    expect(s.by).toEqual({ ok: 1, warn: 1, full: 1, unknown: 1 });
-    expect(s.by.ok + s.by.warn + s.by.full + s.by.unknown).toBe(s.total);
+    expect(s.by).toEqual({ long_lived: 1, session: 1, api_key: 0, logged_out: 1, dead: 1 });
+    expect(Object.values(s.by).reduce((a, b) => a + b, 0)).toBe(s.total);
+    expect(s.quota).toEqual({ ok: 1, warn: 0, full: 0, unknown: 3 });
     expect(s.refreshable).toBe(3);
-    expect(applyFilter(list, "ok")).toHaveLength(1);
-    expect(applyFilter(list, "unknown")).toHaveLength(1);
-    expect(applyFilter(list, "all")).toHaveLength(4);
+    expect(applyAvailFilter(list, "long_lived")).toHaveLength(1);
+    expect(applyAvailFilter(list, "logged_out")).toHaveLength(1);
+    expect(applyAvailFilter(list, "all")).toHaveLength(4);
+    expect(applyQuotaFilter(list, "ok")).toHaveLength(1);
+    expect(applyQuotaFilter(list, "unknown")).toHaveLength(3);
   });
 });
 
@@ -108,15 +115,25 @@ describe("matchesQuery", () => {
 });
 
 describe("sortAccounts · 添加时间（默认）", () => {
-  it("orders by when the account was added, oldest first", () => {
+  it("orders by when the account was added, newest first", () => {
     const late = acct({ createdAt: "2026-09-02T00:00:00Z" });
     const early = acct({ createdAt: "2026-08-01T00:00:00Z" });
     const mid = acct({ createdAt: "2026-08-20T00:00:00Z" });
     expect(sortAccounts([late, early, mid], "added").map((a) => a.id)).toEqual([
-      early.id,
-      mid.id,
       late.id,
+      mid.id,
+      early.id,
     ]);
+  });
+
+  it("keeps import order inside one second by seq, not by random id", () => {
+    // 批量导入的几十个号 created_at 同一秒。以前同秒内按 id（uuid）排，看着就是乱的；
+    // 现在按 rowid 倒排，等于清单的逆序——最后导入的在最上面，和「新→旧」一致。
+    const t = "2026-09-10T07:04:17Z";
+    const first = acct({ createdAt: t, seq: 10, id: "zzz" });
+    const second = acct({ createdAt: t, seq: 11, id: "aaa" });
+    const third = acct({ createdAt: t, seq: 12, id: "mmm" });
+    expect(sortAccounts([first, third, second], "added").map((a) => a.id)).toEqual([third.id, second.id, first.id]);
   });
 
   it("never moves an account because its usage or status changed", () => {
@@ -128,7 +145,7 @@ describe("sortAccounts · 添加时间（默认）", () => {
 
     const refreshed = [
       { ...a, usage: usage({ totalPercentUsed: 99 }), lastCheckedAt: "2026-09-02T12:00:00Z" },
-      { ...b, status: "dead" as const },
+      { ...b, status: "dead" as const, availability: "dead" as const },
       { ...c, usage: usage({ totalPercentUsed: 1 }) },
     ];
     expect(sortAccounts(refreshed, "added").map((x) => x.id)).toEqual(before);
@@ -143,9 +160,18 @@ describe("sortAccounts · 添加时间（默认）", () => {
   });
 });
 
+describe("sortAccounts · 注册时间", () => {
+  it("orders by Cursor's own created_at, newest first, unchecked last", () => {
+    const older = acct({ usage: usage({ accountCreatedAt: "2026-05-01T00:00:00Z" }) });
+    const newer = acct({ usage: usage({ accountCreatedAt: "2026-08-01T00:00:00Z" }) });
+    const never = acct();
+    expect(sortAccounts([never, older, newer], "registered").map((a) => a.id)).toEqual([newer.id, older.id, never.id]);
+  });
+});
+
 describe("sortAccounts", () => {
   it("puts dead accounts last regardless of the chosen order", () => {
-    const dead = acct({ status: "dead", usage: usage({ cycleEnd: NOW + DAY }) });
+    const dead = acct({ status: "dead", availability: "dead", usage: usage({ cycleEnd: NOW + DAY }) });
     const live = acct({ usage: usage({ cycleEnd: NOW + 20 * DAY }) });
     expect(sortAccounts([dead, live], "reset", NOW).map((a) => a.id)).toEqual([live.id, dead.id]);
   });
@@ -190,11 +216,11 @@ describe("sortAccounts", () => {
   });
 
   it("is stable within a rank so the list does not shuffle on every reload", () => {
-    // 四个号都没查过用量，重置时刻全是「不知道」：同分时按 id，不按后端给的顺序。
+    // 三个号都没查过用量，重置时刻全是「不知道」：同分时按 seq 倒排（新加的在前），不按后端给的顺序。
     const a = acct();
     const b = acct();
     const c = acct();
-    expect(sortAccounts([c, a, b], "reset").map((x) => x.id)).toEqual([a.id, b.id, c.id]);
+    expect(sortAccounts([c, a, b], "reset").map((x) => x.id)).toEqual([c.id, b.id, a.id]);
   });
 
   it("puts the most recently checked first", () => {

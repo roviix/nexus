@@ -67,6 +67,41 @@ impl Status {
     }
 }
 
+/// 「这个号**此刻**能不能用」的唯一答案。
+///
+/// 以前这个问题散在三处各算一套：卡片看 `status`，筛子看 `has_refresh` + access 是否过期，
+/// 抽屉再看一遍 `session_only`。三处口径不同就会出现「卡上写待登录、筛子归仅会话」这种打架。
+/// 现在只在 [`Account::availability`] 里算一次，随 `Account` 一起序列化，前端所有地方只认它。
+///
+/// 它和额度（用了多少）是两个维度：一个 Pro 号额度满满、refresh 掉了照样进不了池，
+/// 所以它不并进额度那套颜色里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    /// 有 refresh，能自己续期：切号、进网关、查用量都行。
+    LongLived,
+    /// 只靠一把还活着的 session token 撑着：此刻能用，到期就掉；切不了号。
+    Session,
+    /// 只有 `crsr_` User API Key：查得了花费、走得了 CRSR 通道，但拿不出会话——切号、网关都不行。
+    ApiKey,
+    /// 掉登录了：上游拒了凭证 / session 过期 / 只有密码还没授权。授权一次或粘一份新 token 能救回来。
+    LoggedOut,
+    /// refresh 被拒又没密码，救不回来了。
+    Dead,
+}
+
+impl Availability {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Availability::LongLived => "long_lived",
+            Availability::Session => "session",
+            Availability::ApiKey => "api_key",
+            Availability::LoggedOut => "logged_out",
+            Availability::Dead => "dead",
+        }
+    }
+}
+
 /// 从凭证推初始状态：有 refresh、还活着的 access、或 crsr_ API Key → 可用；只有密码 → 待登录。
 pub fn status_from_credentials(
     has_refresh: bool,
@@ -119,9 +154,45 @@ pub struct Account {
     pub has_api_key: bool,
     pub created_at: String,
     pub updated_at: String,
+    /// 入库的先后序号（SQLite rowid）。`created_at` 只到秒，一批导入的几十个号共用一个时刻，
+    /// 「按添加时间排」就得靠它才能在同一秒内保持导入清单的顺序，而不是按随机 id 乱排。
+    pub seq: i64,
+    /// 归档时刻；`None` = 没归档。归档的号默认不列、不参与批量刷新、不进网关候选，
+    /// 但凭证一个字节都不动——这是「先收起来」，不是删除。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// 见 [`Availability`]。由 [`Account::availability`] 算出，读库时填好。
+    pub availability: Availability,
 }
 
 impl Account {
+    /// 此刻能不能用。这是唯一的判断入口，别在别处再拼一套。
+    ///
+    /// 顺序有讲究：`status` 是上游给过的判决（refresh 被拒、`shouldLogout`），比手上那把
+    /// access 还没到期这种本地事实更可信——上游说你掉了，JWT 没过期也是掉了。
+    pub fn availability(&self) -> Availability {
+        if self.status == Status::Dead {
+            return Availability::Dead;
+        }
+        if self.status == Status::NeedsLogin {
+            return Availability::LoggedOut;
+        }
+        if self.has_refresh {
+            return Availability::LongLived;
+        }
+        if self.has_live_access() {
+            return Availability::Session;
+        }
+        if self.has_api_key {
+            return Availability::ApiKey;
+        }
+        Availability::LoggedOut
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+
     /// 手上那把 access 还没过期。
     pub fn has_live_access(&self) -> bool {
         self.has_access && !crate::token::session_expired(self.access_expires_at.as_deref())
@@ -374,6 +445,9 @@ mod tests {
             has_api_key: false,
             created_at: "2026-09-02T00:00:00Z".into(),
             updated_at: "2026-09-02T00:00:00Z".into(),
+            seq: 1,
+            archived_at: None,
+            availability: Availability::LongLived,
         };
         let v = serde_json::to_value(&a).unwrap();
         assert_eq!(v["hasRefresh"], true);
@@ -383,6 +457,89 @@ mod tests {
         assert_eq!(v["source"], "purchased");
         assert_eq!(v["status"], "active");
         assert!(a.can_query_usage() && a.has_usable_session() && a.can_write_cursor_login());
+    }
+
+    /// 真实库里踩到的形态：上游拒了 session（status 已是待登录）但那把 JWT 还没到期。
+    /// 以前卡片说「待登录」、筛子说「仅会话」；现在只有一个答案：掉登录。
+    #[test]
+    fn availability_is_one_answer_and_the_upstream_verdict_wins() {
+        let base = Account {
+            id: AccountId::from_raw("x"),
+            email: "a@example.com".into(),
+            source: Source::Local,
+            status: Status::Active,
+            note: None,
+            tags: vec![],
+            membership: None,
+            signup_type: None,
+            workos_user_id: None,
+            usage: None,
+            billing: None,
+            last_checked_at: None,
+            last_error: None,
+            code_channel: "auto".into(),
+            code_channel_resolved: None,
+            last_code_at: None,
+            has_refresh: false,
+            has_access: false,
+            access_expires_at: None,
+            has_password: false,
+            has_email_password: false,
+            has_recovery_email: false,
+            has_api_key: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+            seq: 0,
+            archived_at: None,
+            availability: Availability::LoggedOut,
+        };
+        let with = |f: &dyn Fn(&mut Account)| {
+            let mut a = base.clone();
+            f(&mut a);
+            a.availability()
+        };
+        assert_eq!(with(&|a| a.has_refresh = true), Availability::LongLived);
+        assert_eq!(
+            with(&|a| {
+                a.has_access = true;
+                a.access_expires_at = Some("2099-01-01T00:00:00Z".into());
+            }),
+            Availability::Session
+        );
+        // access 过期 = 掉登录，不用等一次刷新失败来翻 status。
+        assert_eq!(
+            with(&|a| {
+                a.has_access = true;
+                a.access_expires_at = Some("2000-01-01T00:00:00Z".into());
+            }),
+            Availability::LoggedOut
+        );
+        // 上游判决优先于本地那把还没到期的 JWT。
+        assert_eq!(
+            with(&|a| {
+                a.status = Status::NeedsLogin;
+                a.has_access = true;
+                a.access_expires_at = Some("2099-01-01T00:00:00Z".into());
+            }),
+            Availability::LoggedOut
+        );
+        assert_eq!(
+            with(&|a| {
+                a.status = Status::Dead;
+                a.has_refresh = true;
+            }),
+            Availability::Dead
+        );
+        // 只有 crsr_ 的号：能查花费、走 CRSR 通道，但拿不出会话，单独一档，别混进掉登录。
+        assert_eq!(with(&|a| a.has_api_key = true), Availability::ApiKey);
+        // 有会话时 crsr_ 只是附加物，不改变答案。
+        assert_eq!(
+            with(&|a| {
+                a.has_api_key = true;
+                a.has_refresh = true;
+            }),
+            Availability::LongLived
+        );
     }
 
     #[test]
@@ -413,6 +570,9 @@ mod tests {
             has_api_key: false,
             created_at: String::new(),
             updated_at: String::new(),
+            seq: 0,
+            archived_at: None,
+            availability: Availability::LoggedOut,
         };
         assert!(!a.can_write_cursor_login());
         assert!(!a.has_usable_session());
@@ -449,6 +609,9 @@ mod tests {
             has_api_key: false,
             created_at: String::new(),
             updated_at: String::new(),
+            seq: 0,
+            archived_at: None,
+            availability: Availability::LoggedOut,
         };
         assert!(a.session_only());
         assert!(a.can_query_usage(), "有效期内拿它查用量 / 进网关都行");

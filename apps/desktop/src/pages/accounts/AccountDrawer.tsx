@@ -33,6 +33,7 @@ import { BillTab } from "./BillTab";
 import {
   accountProblem,
   blockReasonText,
+  bonusSpend,
   cycleProgress,
   isFresh,
   money,
@@ -40,6 +41,7 @@ import {
   onDemandText,
   planBudget,
   planLabel,
+  planSpend,
   planTone,
   shortDate,
 } from "../../ui/usage";
@@ -585,11 +587,16 @@ function UsageTab({
   const bot = u.bot;
   const cycle = cycleProgress(u, now);
   const budget = planBudget(u);
-  const spend = u.spendCents;
+  // 三本账分开说：订阅额度（included 对 limit）、免费加量（bonus）、按需（另一节）。
+  // 以前把 included + bonus 的总数对着 limit 摆「已用 / 剩余」，18/70 个号被显示成
+  // 「剩余 $0 · 超出的走按需」，可它们按需是 $0 —— 超出的是白送的。
+  const spend = planSpend(u);
+  const bonus = bonusSpend(u);
   const grantRemaining = u.creditGrantRemainingCents;
   const grantTotal = u.creditGrantTotalCents;
   const grantUsed = u.creditGrantUsedCents;
   const hasGrant = grantRemaining != null || grantTotal != null;
+  const grants = u.creditGrants ?? [];
 
   if (u.via === "apiKey") {
     const models = [...(u.byModel ?? [])].sort((a, b) => b.cents - a.cents);
@@ -604,7 +611,7 @@ function UsageTab({
           <dl className="facts">
             <div>
               <dt>合计</dt>
-              <dd>{money(spend)}</dd>
+              <dd>{money(u.spendCents)}</dd>
               <small>这段时间的扣费合计</small>
             </div>
             <div>
@@ -643,33 +650,97 @@ function UsageTab({
 
   return (
     <div className="stack" style={{ gap: 20 }}>
+      {/* 订阅额度是这一页要回答的第一个问题：这个月还能用多少。所以它在最上面。 */}
       <section className="sect">
         <div className="sect-cap">
-          <span>赠送积分</span>
-          {hasGrant && grantTotal != null ? <span className="sect-aside">总额 {creditPoints(grantTotal)}</span> : null}
+          <span>订阅额度</span>
+          <span className="sect-aside mono">
+            {shortDate(u.cycleStart)} → {shortDate(u.cycleEnd)}
+          </span>
         </div>
-        {!hasGrant ? (
-          <p className="sect-none">这个号没有 Cursor 赠送的 credit grant（25 / 100 那种）。</p>
-        ) : (
+        <Reset
+          label="月额重置"
+          at={u.cycleEnd}
+          now={now}
+          tag={isFresh(u.cycleStart, now) ? <Tag tone="ok">刚重置</Tag> : null}
+          progress={cycle}
+        />
+        <dl className="facts">
+          <div>
+            <dt>已用</dt>
+            <dd>{money(spend)}</dd>
+            <small>从订阅额度里扣的</small>
+          </div>
+          <div>
+            <dt>额度</dt>
+            <dd>{money(budget)}</dd>
+            <small>{u.plan ? `${u.plan} 每期包含` : "每期包含"}</small>
+          </div>
+          <div>
+            <dt>剩余</dt>
+            <dd>{budget != null && spend != null ? money(Math.max(0, budget - spend)) : "—"}</dd>
+            <small>{budget != null && spend != null && spend >= budget ? "用完了；再用走按需" : "到重置前还能花"}</small>
+          </div>
+        </dl>
+        <Gauge
+          label="总额度"
+          percent={u.totalPercentUsed}
+          note={budget != null || spend != null ? `${money(spend)} / ${money(budget)}` : undefined}
+          title="月账期包含额度的整体已用比例"
+        />
+        <Gauge label="Auto" percent={u.autoPercentUsed} title="composer / grok 等由 Cursor 调度的模型" />
+        <Gauge label="API" percent={u.apiPercentUsed} title="点名调用的 claude / gpt 等；打满后这类模型调不动" />
+        {bonus != null ? (
+          // 这一行只在真有加量时出现：它不占额度、不扣钱，摆进上面的「已用」会把剩余算成负数。
+          <p className="sect-foot">
+            另有免费加量 <b className="num">{money(bonus)}</b>
+            <span className="faint"> · Cursor 与模型厂商补贴的额外用量，不计入订阅额度，也不是按需</span>
+          </p>
+        ) : null}
+      </section>
+
+      <OnDemandEditor account={account} onReload={onReload} />
+
+      {hasGrant ? (
+        // 积分 = Cursor 赠送的 credit grant（仪表盘上 25 / 100 那种），有名字、有到期日。
+        // 70 个号里只有 1 个有，所以没有就整节不出现，不留一句「这个号没有」占位。
+        <section className="sect">
+          <div className="sect-cap">
+            <span>积分</span>
+            {grantTotal != null ? <span className="sect-aside">共 {creditPoints(grantTotal)} 积分 · 1 积分 = $1</span> : null}
+          </div>
           <dl className="facts">
             <div>
               <dt>剩余</dt>
               <dd>{creditPoints(grantRemaining)}</dd>
-              <small>还能花的赠送额度</small>
+              <small>还能花的</small>
             </div>
             <div>
               <dt>已用</dt>
               <dd>{creditPoints(grantUsed)}</dd>
-              <small>从赠送里扣掉的</small>
+              <small>从积分里扣掉的</small>
             </div>
             <div>
-              <dt>总额</dt>
-              <dd>{creditPoints(grantTotal)}</dd>
-              <small>1 积分 = $1</small>
+              <dt>到期</dt>
+              <dd>{grants.length && grants[0]?.expiresAt ? shortDate(Math.min(...grants.map((g) => g.expiresAt ?? Number.POSITIVE_INFINITY))) : "—"}</dd>
+              <small>{grants.length > 1 ? "最早到期的那笔" : "过期作废"}</small>
             </div>
           </dl>
-        )}
-      </section>
+          {grants.length ? (
+            <div className="kv">
+              {grants.map((g, i) => (
+                <div key={`${g.displayName ?? "grant"}-${i}`} className="kv-row">
+                  <span className="kv-k">{g.displayName ?? "Credit grant"}</span>
+                  <span className="kv-v num">
+                    {creditPoints(g.remainingCents)} / {creditPoints(g.totalCents)}
+                    {g.expiresAt ? <span className="faint"> · {timeUntil(g.expiresAt)}到期</span> : null}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="sect">
         <div className="sect-cap">
@@ -689,52 +760,9 @@ function UsageTab({
         ) : bot.access === "blocked" ? (
           <Banner tone="bad" title="无权限" hint={bot.blockReason ? blockReasonText(bot.blockReason) : undefined} />
         ) : (
-          <Gauge label="周用量" percent={bot.percentUsed} title="Grok Bot 通道的周额度；和下面月账期是两套计量" />
+          <Gauge label="周用量" percent={bot.percentUsed} title="Grok Bot 通道的周额度；和上面的月账期是两套计量" />
         )}
       </section>
-
-      <section className="sect">
-        <div className="sect-cap">
-          <span>月额度</span>
-          <span className="sect-aside mono">
-            {shortDate(u.cycleStart)} → {shortDate(u.cycleEnd)}
-          </span>
-        </div>
-        <Reset
-          label="月额重置"
-          at={u.cycleEnd}
-          now={now}
-          tag={isFresh(u.cycleStart, now) ? <Tag tone="ok">刚重置</Tag> : null}
-          progress={cycle}
-        />
-        <dl className="facts">
-          <div>
-            <dt>已用</dt>
-            <dd>{money(spend)}</dd>
-            <small>本账期 included + 赠送已花</small>
-          </div>
-          <div>
-            <dt>订阅额度</dt>
-            <dd>{money(budget)}</dd>
-            <small>plan.limit</small>
-          </div>
-          <div>
-            <dt>剩余</dt>
-            <dd>{budget != null && spend != null ? money(Math.max(0, budget - spend)) : "—"}</dd>
-            <small>{budget != null && spend != null && spend > budget ? "超出的走按需" : "到重置前还能花"}</small>
-          </div>
-        </dl>
-        <Gauge
-          label="总额度"
-          percent={u.totalPercentUsed}
-          note={budget != null || spend != null ? `${money(spend)} / ${money(budget)}` : undefined}
-          title="月账期包含额度的整体已用比例"
-        />
-        <Gauge label="Auto" percent={u.autoPercentUsed} title="composer / grok 等由 Cursor 调度的模型" />
-        <Gauge label="API" percent={u.apiPercentUsed} title="点名调用的 claude / gpt 等；打满后这类模型调不动" />
-      </section>
-
-      <OnDemandEditor account={account} onReload={onReload} />
     </div>
   );
 }

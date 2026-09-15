@@ -8,7 +8,7 @@
  *   - 用了但不到 1% 显示 `<1%`，不显示 `0%` —— 后者会被读成「一次没用过」。
  *   - 条子最小给 2% 宽度，否则「用了一点」和「完全没用」在视觉上一样。
  */
-import type { AccountUsage, BotQuota } from "../ipc/types";
+import type { AccountUsage, BotQuota, Availability } from "../ipc/types";
 
 export const DAY_MS = 86_400_000;
 
@@ -70,7 +70,8 @@ export function planGroup(p: PlanLike): PlanGroup {
   if (raw.includes("plus")) return "proplus";
   if (raw.includes("enterprise") || raw.includes("team") || raw.includes("business")) return "team";
   if (raw.includes("pro")) return "pro";
-  if (raw.includes("free") || raw.includes("trial")) return "free";
+  // `credit-grant-churn-power-user-3p` 这类：订阅已退、靠 Cursor 赠的积分在用 —— 没有付费档，按 Free 归。
+  if (raw.includes("free") || raw.includes("trial") || raw.includes("credit-grant")) return "free";
   return "unknown";
 }
 
@@ -290,10 +291,35 @@ export function planBudget(usage?: AccountUsage | null): number | null {
   if (!usage) return null;
   const limit = usage.planLimitCents;
   if (limit != null && Number.isFinite(limit) && limit > 0) return limit;
-  const spend = usage.spendCents;
+  const spend = planSpend(usage);
   const pct = usage.totalPercentUsed;
   if (spend != null && pct != null && pct > 0 && spend > 0) return (spend / pct) * 100;
   return null;
+}
+
+/**
+ * 本账期**算在订阅额度上**的花费（美分）。
+ *
+ * Cursor 把一期的消费拆成三份：`breakdown.included` 从订阅额度里扣，`breakdown.bonus` 是
+ * Cursor 与模型厂商补贴的**免费加量**（"free usage beyond what you've purchased"），
+ * `onDemand.used` 是额度用完后扣信用卡的按需。`spendCents = included + bonus`。
+ *
+ * 以前拿 `spendCents` 对着 `plan.limit` 算「已用 / 剩余」，于是一个 Pro 号显示
+ * 「已用 $88.68 / 额度 $20 / 剩余 $0 · 超出的走按需」，可它按需实际是 $0 —— 超出的 $68 是
+ * 白送的。要回答「订阅额度还剩多少」，只能拿 included 那一份。没有 breakdown 的老档退回
+ * spendCents，那时也没有 bonus 这个概念。
+ */
+export function planSpend(usage?: AccountUsage | null): number | null {
+  if (!usage) return null;
+  const inc = usage.includedCents;
+  if (inc != null && Number.isFinite(inc)) return inc;
+  return usage.spendCents ?? null;
+}
+
+/** 本账期的免费加量（bonus）；没有或为零时 null，界面整行不出现。 */
+export function bonusSpend(usage?: AccountUsage | null): number | null {
+  const b = usage?.bonusCents;
+  return b != null && Number.isFinite(b) && b > 0 ? b : null;
 }
 
 /**
@@ -312,7 +338,7 @@ export interface SpendPace {
   projected: number;
   /** 额度上限；没有就 null，下面几项也跟着 null。 */
   budget: number | null;
-  /** 还剩多少额度，可为负（已超支）。 */
+  /** 还剩多少订阅额度，≥ 0：Cursor 把 included 截顶在 limit，超出的走按需，不在这里。 */
   remaining: number | null;
   /** 花费进度 − 时间进度，百分点。正 = 花得比时间快。 */
   aheadPct: number | null;
@@ -322,7 +348,8 @@ export interface SpendPace {
 
 export function spendPace(usage?: AccountUsage | null, now = Date.now()): SpendPace | null {
   if (!usage?.cycleStart || !usage.cycleEnd || usage.cycleEnd <= usage.cycleStart) return null;
-  const spend = usage.spendCents;
+  // 节奏看的是订阅额度被吃掉的速度：免费加量不占额度，按需另有一格。
+  const spend = planSpend(usage);
   if (spend == null || !Number.isFinite(spend)) return null;
   const totalDays = (usage.cycleEnd - usage.cycleStart) / DAY_MS;
   const elapsedDays = Math.max(1, Math.min(totalDays, (now - usage.cycleStart) / DAY_MS));
@@ -332,7 +359,8 @@ export function spendPace(usage?: AccountUsage | null, now = Date.now()): SpendP
   if (budget == null) {
     return { totalDays, elapsedDays, perDay, projected, budget: null, remaining: null, aheadPct: null, runwayDays: null };
   }
-  const remaining = budget - spend;
+  // included 被 Cursor 截顶在 limit，所以这里不会出现负数；真超出的部分在 onDemand.used 里。
+  const remaining = Math.max(0, budget - spend);
   const aheadPct = (spend / budget) * 100 - (elapsedDays / totalDays) * 100;
   const runwayDays = remaining <= 0 ? 0 : perDay > 0 ? remaining / perDay : null;
   return { totalDays, elapsedDays, perDay, projected, budget, remaining, aheadPct, runwayDays };
@@ -390,11 +418,13 @@ export function blockReasonText(raw?: string | null): string {
  * 所以这里只留真正需要人动手的事：号能不能用、Bot 通道有没有被卡。
  */
 export function accountProblem(
-  account: { status: string },
+  account: { availability: Availability },
   usage?: AccountUsage | null,
 ): { tone: "warn" | "bad"; label: string } | null {
-  if (account.status === "dead") return { tone: "bad", label: "已失效" };
-  if (account.status === "needs_login") return { tone: "warn", label: "待登录" };
+  // 凭证那一维只认 Rust 算好的 availability：卡片、筛子、抽屉说的是同一个词。
+  if (account.availability === "dead") return { tone: "bad", label: "已失效" };
+  if (account.availability === "logged_out") return { tone: "warn", label: "掉登录" };
+  if (account.availability === "api_key") return { tone: "warn", label: "仅 API Key" };
 
   const bot = usage?.bot;
   if (bot?.access === "blocked") return { tone: "bad", label: "Bot 无权限" };
@@ -426,7 +456,7 @@ export function overallPercent(usage?: AccountUsage | null): number | null {
  * 阈值与额度条本身一致（`meterColor`），所以点和条永远说同一件事。
  */
 export function railTone(
-  account: { status: string },
+  account: { availability: Availability },
   usage?: AccountUsage | null,
 ): "ok" | "warn" | "bad" | "none" {
   const problem = accountProblem(account, usage);

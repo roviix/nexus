@@ -241,6 +241,16 @@ Rust 侧只要一个 `reqwest`。
 状态只反映**能不能用**：`active` / `needs_login` / `dead`。「这个号是哪来的、给谁了」是备注，
 不是状态——把它们混在一起，界面就没法回答「现在有几个号能用」这种最常问的问题。
 
+界面上那个「此刻能不能用」的答案叫 **`availability`**，由 `Account::availability()` 在读库时算好、
+随账号一起序列化：`long_lived`（有 refresh）/ `session`（只靠一把还活着的 session token）/
+`api_key`（只有 `crsr_`）/ `logged_out`（上游拒了、过期了、或只有密码）/ `dead`。它把 `status`
+和 access 的到期时刻折成一个词，**前端不再各自拼**——以前卡片看 status、筛子看 refresh + 到期，
+同一个号能得到两个说法。上游的判决（`needs_login`）优先于本地那把还没到期的 JWT。
+
+账号还可以**归档**（`archived_at`）：从列表、批量刷新、网关候选里消失，凭证一个字节不动，
+「已归档」视图里能取回。这是「先收起来」，不是删除。额度状态（用了多少）是另一维，
+和可用性各自筛，互不遮蔽。
+
 **三条判据，从宽到严。** 它们不是同义词，混用过一次就赔掉了一批号：
 
 | 判据 | 条件 | 谁在用 |
@@ -456,6 +466,7 @@ CREATE TABLE accounts (
   id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL,
   source TEXT NOT NULL,             -- 账号从哪来
   status TEXT NOT NULL,             -- active | needs_login | dead
+  archived_at TEXT,                 -- v15：归档时刻；NULL = 没归档
   note TEXT, tags TEXT,             -- tags 是 JSON array
   membership TEXT, signup_type TEXT,
   usage_json TEXT, billing_json TEXT,   -- 额度快照 / 订阅实付快照，各一口径（§8.1）

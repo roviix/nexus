@@ -19,6 +19,8 @@ const AGGREGATED_URL: &str = "https://cursor.com/api/dashboard/get-aggregated-us
 const SET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/set-hard-limit";
 const GET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/get-hard-limit";
 const CREDIT_GRANTS_URL: &str = "https://cursor.com/api/dashboard/get-credit-grants-balance";
+const CREDIT_GRANT_LIST_URL: &str =
+    "https://cursor.com/api/dashboard/get-client-visible-credit-grants";
 const DAY_MS: i64 = 86_400_000;
 
 /// Bot（Cursor 内部代号 sand，界面上叫 "Grok Bot Plan"）通道的**周**额度。
@@ -79,6 +81,21 @@ pub struct UsageWindow {
     pub by_model: Vec<ModelUsage>,
 }
 
+/// 一笔 Cursor 赠送的积分（credit grant）。这是用户口中的「积分」——和账期里那个
+/// `breakdown.bonus`（厂商补贴的免费加量）不是一回事。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditGrant {
+    /// Cursor 给的名字，例如 "Power user grant"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub total_cents: f64,
+    pub remaining_cents: f64,
+    /// 过期时刻，epoch ms。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsage {
@@ -127,6 +144,11 @@ pub struct AccountUsage {
     pub credit_grant_used_cents: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credit_grant_remaining_cents: Option<f64>,
+    /// 每一笔赠送的明细（`GetClientVisibleCreditGrants`）：叫什么、还剩多少、什么时候过期。
+    /// 余额接口只给总数；仪表盘上「Power user grant · 到 10 月 15 日」那行字来自这里。
+    /// 没有赠送时缺席。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_grants: Option<Vec<CreditGrant>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend_cents: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,7 +208,19 @@ pub async fn fetch(
     let week_start = today_start.map(|s| s - 6 * DAY_MS);
 
     let access = access_from_session(token);
-    let (summary, stripe, me, agg, sand_usage, sand_access, today, week, grants, hard_limit) = tokio::join!(
+    let (
+        summary,
+        stripe,
+        me,
+        agg,
+        sand_usage,
+        sand_access,
+        today,
+        week,
+        grants,
+        grant_list,
+        hard_limit,
+    ) = tokio::join!(
         call(http, "https://cursor.com/api/usage-summary", &cookie, None),
         call(http, "https://cursor.com/api/auth/stripe", &cookie, None),
         call(http, "https://cursor.com/api/auth/me", &cookie, None),
@@ -215,6 +249,13 @@ pub async fn fetch(
             "GetCreditGrantsBalance",
             CREDIT_GRANTS_URL
         ),
+        connect_or_rest(
+            http,
+            access,
+            &cookie,
+            "GetClientVisibleCreditGrants",
+            CREDIT_GRANT_LIST_URL
+        ),
         connect_or_rest(http, access, &cookie, "GetHardLimit", GET_HARD_LIMIT_URL),
     );
 
@@ -238,6 +279,7 @@ pub async fn fetch(
         sand_access.as_ref(),
     );
     apply_credit_grants(&mut usage, grants.as_ref());
+    apply_credit_grant_list(&mut usage, grant_list.as_ref());
     apply_hard_limit(&mut usage, hard_limit.as_ref());
     usage.today = today_start.and_then(|s| window(s, now_ms, today.as_ref()));
     usage.week = week_start.and_then(|s| window(s, now_ms, week.as_ref()));
@@ -830,11 +872,14 @@ fn apply_credit_grants(usage: &mut AccountUsage, json: Option<&Value>) {
     let has = as_bool(json.get("hasCreditGrants"));
     let total = num(json.get("totalCents"));
     let used = num(json.get("usedCents"));
-    let remaining = num(json.get("remainingCents")).or_else(|| match (total, used) {
-        (Some(t), Some(u)) => Some((t - u).max(0.0)),
-        (Some(t), None) => Some(t),
-        _ => None,
-    });
+    // 真机抓包里余额那格叫 `creditBalanceCents`；`remainingCents` 是明细接口的写法，两个都认。
+    let remaining = num(json.get("creditBalanceCents"))
+        .or_else(|| num(json.get("remainingCents")))
+        .or_else(|| match (total, used) {
+            (Some(t), Some(u)) => Some((t - u).max(0.0)),
+            (Some(t), None) => Some(t),
+            _ => None,
+        });
     if has == Some(false) && total.unwrap_or(0.0) <= 0.0 {
         return;
     }
@@ -844,6 +889,42 @@ fn apply_credit_grants(usage: &mut AccountUsage, json: Option<&Value>) {
     usage.credit_grant_total_cents = total;
     usage.credit_grant_used_cents = used;
     usage.credit_grant_remaining_cents = remaining;
+}
+
+/// 赠送积分的逐笔明细。数字字段在 JSON 里是**字符串**（protobuf int64 的 JSON 写法），
+/// `num()` 两种都认。没有 `grants` 或为空 = 没有赠送，不落数组。
+fn apply_credit_grant_list(usage: &mut AccountUsage, json: Option<&Value>) {
+    let Some(json) = json else { return };
+    if unauthenticated(Some(json)) {
+        return;
+    }
+    let Some(list) = json.get("grants").and_then(Value::as_array) else {
+        return;
+    };
+    let grants: Vec<CreditGrant> = list
+        .iter()
+        .filter_map(|g| {
+            let total = num(g.get("totalCents"))?;
+            Some(CreditGrant {
+                display_name: text(g.get("displayName")),
+                total_cents: total,
+                remaining_cents: num(g.get("remainingCents")).unwrap_or(total),
+                expires_at: ts(g.get("expiresAtMs")),
+            })
+        })
+        .collect();
+    if grants.is_empty() {
+        return;
+    }
+    // 只有明细、没有余额接口时，用明细把总数补齐——两边说的是同一笔钱。
+    if usage.credit_grant_total_cents.is_none() {
+        let total: f64 = grants.iter().map(|g| g.total_cents).sum();
+        let remaining: f64 = grants.iter().map(|g| g.remaining_cents).sum();
+        usage.credit_grant_total_cents = Some(total);
+        usage.credit_grant_remaining_cents = Some(remaining);
+        usage.credit_grant_used_cents = Some((total - remaining).max(0.0));
+    }
+    usage.credit_grants = Some(grants);
 }
 
 /// Spending 页的开关以 `GetHardLimit` 为准。usage-summary 的 `onDemand.enabled`
@@ -1214,6 +1295,48 @@ mod tests {
         let mut empty = AccountUsage::default();
         apply_credit_grants(&mut empty, Some(&json!({})));
         assert!(empty.credit_grant_remaining_cents.is_none());
+
+        // 真机抓包（cursor.com.har，2026-09-15）的形状：余额叫 creditBalanceCents，数字是字符串。
+        let mut real = AccountUsage::default();
+        apply_credit_grants(
+            &mut real,
+            Some(&json!({
+                "hasCreditGrants": true,
+                "creditBalanceCents": "2252",
+                "totalCents": "2500",
+                "usedCents": "248"
+            })),
+        );
+        assert_eq!(real.credit_grant_remaining_cents, Some(2252.0));
+    }
+
+    /// 明细接口给的是「哪一笔、叫什么、什么时候过期」——仪表盘上那行 "Power user grant" 就来自它。
+    #[test]
+    fn credit_grant_list_carries_names_and_expiry() {
+        let mut u = AccountUsage::default();
+        apply_credit_grant_list(
+            &mut u,
+            Some(&json!({
+                "grants": [{
+                    "remainingCents": "2252",
+                    "totalCents": "2500",
+                    "expiresAtMs": "1792073218986",
+                    "displayName": "Power user grant"
+                }]
+            })),
+        );
+        let g = &u.credit_grants.as_ref().unwrap()[0];
+        assert_eq!(g.display_name.as_deref(), Some("Power user grant"));
+        assert_eq!(g.total_cents, 2500.0);
+        assert_eq!(g.remaining_cents, 2252.0);
+        assert_eq!(g.expires_at, Some(1_792_073_218_986));
+        // 余额接口没回来时，用明细补总数。
+        assert_eq!(u.credit_grant_total_cents, Some(2500.0));
+        assert_eq!(u.credit_grant_used_cents, Some(248.0));
+
+        let mut none = AccountUsage::default();
+        apply_credit_grant_list(&mut none, Some(&json!({ "grants": [] })));
+        assert!(none.credit_grants.is_none());
     }
 
     #[test]

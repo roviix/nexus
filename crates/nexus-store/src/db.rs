@@ -343,6 +343,13 @@ ALTER TABLE chatgpt_accounts ADD COLUMN billing_json TEXT;
 ALTER TABLE accounts ADD COLUMN has_api_key INTEGER NOT NULL DEFAULT 0;
 "#,
         ),
+        // v15：Cursor 账号可以归档。归档 = 先收起来：默认不列、不刷、不进网关候选，
+        // 凭证原样留着，取消归档就回来。是一列时间而不是布尔，「什么时候收起来的」以后有用。
+        M::up(
+            r#"
+ALTER TABLE accounts ADD COLUMN archived_at TEXT;
+"#,
+        ),
     ])
 }
 

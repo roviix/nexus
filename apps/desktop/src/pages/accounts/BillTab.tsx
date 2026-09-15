@@ -36,6 +36,7 @@ import {
   shortDate,
   spendPace,
   type SpendPace,
+  bonusSpend,
 } from "../../ui/usage";
 
 export function BillTab({ account, onReload }: { account: Account; onReload: () => Promise<void> }) {
@@ -404,26 +405,28 @@ function UsageSpend({
 
   let sub: ReactNode = null;
   if (shown === "cycle") {
+    // 四本账各说各的：订阅额度还剩多少、按需扣了多少、免费加量白送了多少、积分还剩几个。
+    // 以前拿 included + bonus 对着额度算「超支」，一个 Pro 号会显示成「超支 $68」，可那是白送的。
+    const bonus = bonusSpend(u);
+    const onDemandUsed = u.onDemandEnabled && (u.onDemandUsedCents ?? 0) > 0 ? u.onDemandUsedCents! : null;
     sub = pace?.budget != null ? (
       <>
         额度 <b className="num">{money(pace.budget)}</b>
         <span className="bill-sub-sep">·</span>
-        {pace.remaining! >= 0 ? (
-          <>
-            还剩 <b className="num">{money(pace.remaining)}</b>
-          </>
-        ) : (
-          <span className="is-bad">
-            超支 <b className="num">{money(-pace.remaining!)}</b>
+        还剩 <b className="num">{money(pace.remaining)}</b>
+        {onDemandUsed != null ? (
+          <span className="is-warn">
+            <span className="bill-sub-sep">·</span>按需 <b className="num">{money(onDemandUsed)}</b>
           </span>
-        )}
+        ) : null}
+        {bonus != null ? (
+          <>
+            <span className="bill-sub-sep">·</span>免费加量 <b className="num">{money(bonus)}</b>
+          </>
+        ) : null}
         {u.creditGrantRemainingCents != null ? (
           <>
-            <span className="bill-sub-sep">·</span>赠送积分 <b className="num">{creditPoints(u.creditGrantRemainingCents)}</b>
-          </>
-        ) : u.bonusCents ? (
-          <>
-            <span className="bill-sub-sep">·</span>赠送已花 <b className="num">{money(u.bonusCents)}</b>
+            <span className="bill-sub-sep">·</span>积分 <b className="num">{creditPoints(u.creditGrantRemainingCents)}</b>
           </>
         ) : null}
       </>
