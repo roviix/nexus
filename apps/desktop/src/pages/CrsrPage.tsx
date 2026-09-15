@@ -20,7 +20,10 @@ export const STEP_LABEL: Record<CrsrProgress["step"], string> = {
   done: "完成",
 };
 
-export function CrsrPage({ onGo }: { onGo: (r: Route) => void }) {
+/**
+ * `embedded`：作为「Cursor 面板」页的一档渲染时，标题降一级——页头由外层给。
+ */
+export function CrsrPage({ onGo, embedded = false }: { onGo: (r: Route) => void; embedded?: boolean }) {
   const [status, setStatus] = useState<CrsrStatus | null>(null);
   const [backups, setBackups] = useState<CrsrBackup[]>([]);
   const [error, setError] = useState<unknown>(null);
@@ -78,8 +81,8 @@ export function CrsrPage({ onGo }: { onGo: (r: Route) => void }) {
 
   return (
     <div>
-      <div className="page-head">
-        <h1>CRSR 通道</h1>
+      <div className={embedded ? "section-head" : "page-head"}>
+        {embedded ? <h2>CRSR 通道</h2> : <h1>CRSR 通道</h1>}
         <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
           {backups.length > 0 ? (
             <button type="button" className="btn btn-sm" onClick={() => setShowBackups(true)}>
@@ -125,8 +128,8 @@ export function CrsrPage({ onGo }: { onGo: (r: Route) => void }) {
                 title={status.sandConflict}
                 hint="两条补丁改的是同一段 applyAuthorization，不能同时装。"
                 action={
-                  <button type="button" className="btn btn-sm" onClick={() => onGo(go("sand"))}>
-                    去 Sand 通道
+                  <button type="button" className="btn btn-sm" onClick={() => onGo(go("panel", { mode: "sand" }))}>
+                    去 Sand 那一档
                   </button>
                 }
               />

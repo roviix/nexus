@@ -7,8 +7,7 @@ import { GatewayPage } from "./pages/GatewayPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlaygroundPage } from "./pages/PlaygroundPage";
-import { CrsrPage } from "./pages/CrsrPage";
-import { SandPage } from "./pages/SandPage";
+import { CursorPanelPage } from "./pages/CursorPanelPage";
 import { PreflightModal } from "./pages/settings/PreflightModal";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SwitcherPage } from "./pages/SwitcherPage";
@@ -122,8 +121,7 @@ function Shell() {
         {route.section === "gateway" ? <GatewayPage route={route} onGo={navigate} /> : null}
         {route.section === "accounts" ? <AccountsPage route={route} onGo={navigate} /> : null}
         {route.section === "switcher" ? <SwitcherPage route={route} onGo={navigate} /> : null}
-        {route.section === "sand" ? <SandPage onGo={navigate} /> : null}
-        {route.section === "crsr" ? <CrsrPage onGo={navigate} /> : null}
+        {route.section === "panel" ? <CursorPanelPage route={route} onGo={navigate} /> : null}
         {route.section === "settings" ? <SettingsPage route={route} onGo={navigate} /> : null}
       </main>
 

@@ -119,7 +119,10 @@ export function cursorDownloadLabel(
   return `下载 Cursor ${release.version}${architecture}`;
 }
 
-export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
+/**
+ * `embedded`：作为「Cursor 面板」页的一档渲染时，标题降一级——页头由外层给。
+ */
+export function SandPage({ onGo, embedded = false }: { onGo: (r: Route) => void; embedded?: boolean }) {
   const [release, setRelease] = useState<CursorRelease | null>(null);
   const [status, setStatus] = useState<SandStatus | null>(null);
   const [backups, setBackups] = useState<SandBackup[]>([]);
@@ -222,8 +225,8 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
 
   return (
     <div>
-      <div className="page-head">
-        <h1>Sand 通道</h1>
+      <div className={embedded ? "section-head" : "page-head"}>
+        {embedded ? <h2>Sand 通道</h2> : <h1>Sand 通道</h1>}
         <div className="row" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
           {release?.downloads.map((download) => (
             <button

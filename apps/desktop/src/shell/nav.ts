@@ -8,9 +8,9 @@
  *   本地网关（开关、地址、口令、号的接力）。
  * - **账号**：号池本身（按平台分：Cursor 的号、ChatGPT 的号——两种都是网关背后的号源），
  *   以及把 Cursor 的号写进 IDE 的切号。
- * - **补丁**：Sand 通道（bot 额度）和 CRSR 通道（原生 Agent 走 crsr_ API Key）。
- *   两条都给本机 Cursor 打补丁、互斥，跟号池、网关都没有关系，所以自己一组，
- *   不再跟切号、网关挤在一个「使用」屋顶下。
+ * - **补丁**：只有一页「Cursor 面板」——Agent 面板由谁付账，三选一：原生（不改）/ CRSR
+ *   （账号的 `crsr_` API Key）/ Sand（Grok Bot 额度）。两条补丁改的是同一处、天然互斥，
+ *   摆成一个选择器比两个平级页面诚实；它们跟号池、网关都没有关系，所以自己一组。
  *
  * 概览压顶，设置压尾。
  */
@@ -23,8 +23,7 @@ export type Section =
   | "gateway"
   | "accounts"
   | "switcher"
-  | "sand"
-  | "crsr"
+  | "panel"
   | "settings";
 
 /**
@@ -44,6 +43,12 @@ export type PlaygroundView = "chat" | "image" | "video" | "assets";
  * 「设置路径」落到高级、「全部记录」落到日志，而不是把人丢在设置首页再让他找。
  */
 export type SettingsTab = "general" | "permissions" | "advanced" | "log" | "about";
+
+/**
+ * 「Cursor 面板」页的三档：原生 / CRSR / Sand。放进地址（`#panel/sand`）是为了让别的页能直达
+ * 某一档；缺省由页面按盘上装着什么决定。
+ */
+export type PanelMode = "native" | "crsr" | "sand";
 
 /**
  * 本地网关的下钻页：`#gateway/pool` 是 Cursor 号池。它曾经摊在网关页「通道」卡的 Cursor 那一行
@@ -75,6 +80,8 @@ export interface Route {
   tab?: SettingsTab;
   /** 只对 `gateway` 有意义：下钻到哪一页。缺省是网关主页。 */
   sub?: GatewaySub;
+  /** 只对 `panel` 有意义：看哪一档。缺省跟盘上装着的那一档。 */
+  mode?: PanelMode;
 }
 
 export const DEFAULT_ROUTE: Route = { section: "overview" };
@@ -94,8 +101,7 @@ export const SECTIONS: SectionMeta[] = [
   { id: "gateway", label: "本地网关", icon: "gateway" },
   { id: "accounts", label: "账号", icon: "accounts" },
   { id: "switcher", label: "切号", icon: "switcher" },
-  { id: "sand", label: "Sand 通道", icon: "sand" },
-  { id: "crsr", label: "CRSR 通道", icon: "crsr" },
+  { id: "panel", label: "Cursor 面板", icon: "crsr" },
   { id: "settings", label: "设置", icon: "settings" },
 ];
 
@@ -111,7 +117,7 @@ export const NAV_GROUPS: NavGroup[] = [
   { id: "top", label: null, items: ["overview"] },
   { id: "relay", label: "中转 API", items: ["models", "playground", "connect", "gateway"] },
   { id: "accounts", label: "账号", items: ["accounts", "switcher"] },
-  { id: "patch", label: "补丁", items: ["sand", "crsr"] },
+  { id: "patch", label: "补丁", items: ["panel"] },
 ];
 
 export interface PlaygroundViewMeta {
@@ -177,17 +183,29 @@ const TABBED = new Set<Section>(["settings"]);
 /** 子路径是下钻页的页：`#gateway/pool`。 */
 const SUBBED = new Set<Section>(["gateway"]);
 const SUB_IDS = new Set<string>(["pool"]);
+/** 子路径是档位的页：`#panel/sand`。 */
+const MODED = new Set<Section>(["panel"]);
+const MODE_IDS = new Set<string>(["native", "crsr", "sand"]);
 
 /**
  * 上一版的地址还可能留在书签或预览链接里。认出来、换成新地址，而不是掉回概览。
+ * Sand / CRSR 两页并成了「Cursor 面板」，旧地址各落到自己那一档（见 `LEGACY_MODE`）。
  */
 const LEGACY: Record<string, Section> = {
   "use/switcher": "switcher",
   "use/gateway": "gateway",
-  "use/sand": "sand",
+  "use/sand": "panel",
+  sand: "panel",
+  crsr: "panel",
   use: "switcher",
   "connect/local": "connect",
   "models/local": "models",
+};
+
+const LEGACY_MODE: Record<string, PanelMode> = {
+  "use/sand": "sand",
+  sand: "sand",
+  crsr: "crsr",
 };
 
 export function sectionMeta(id: Section): SectionMeta {
@@ -224,6 +242,10 @@ export function parseRoute(hash: string): Route {
   if (PLATFORMED.has(section) && PLATFORM_IDS.has(tail)) route.platform = tail as AccountPlatform;
   if (TABBED.has(section) && TAB_IDS.has(tail)) route.tab = tail as SettingsTab;
   if (!legacy && SUBBED.has(section) && SUB_IDS.has(tail)) route.sub = tail as GatewaySub;
+  if (MODED.has(section)) {
+    const mode = legacy ? LEGACY_MODE[pathPart] : MODE_IDS.has(tail) ? (tail as PanelMode) : undefined;
+    if (mode) route.mode = mode;
+  }
   return route;
 }
 
@@ -244,6 +266,7 @@ export function routeHash(r: Route): string {
   if (PLATFORMED.has(r.section) && r.platform) hash += `/${r.platform}`;
   if (TABBED.has(r.section) && r.tab) hash += `/${r.tab}`;
   if (SUBBED.has(r.section) && r.sub) hash += `/${r.sub}`;
+  if (MODED.has(r.section) && r.mode) hash += `/${r.mode}`;
   return hash;
 }
 
@@ -258,6 +281,7 @@ export function go(
     view?: PlaygroundView;
     tab?: SettingsTab;
     sub?: GatewaySub;
+    mode?: PanelMode;
   },
 ): Route {
   const r: Route = { section };
@@ -268,5 +292,6 @@ export function go(
   if (PLATFORMED.has(section) && opts?.platform) r.platform = opts.platform;
   if (TABBED.has(section) && opts?.tab) r.tab = opts.tab;
   if (SUBBED.has(section) && opts?.sub) r.sub = opts.sub;
+  if (MODED.has(section) && opts?.mode) r.mode = opts.mode;
   return r;
 }

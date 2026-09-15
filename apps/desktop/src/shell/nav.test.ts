@@ -111,7 +111,13 @@ describe("route ⇄ hash", () => {
   it("maps last version's hashes onto the new pages", () => {
     expect(parseRoute("#use/gateway")).toEqual({ section: "gateway" });
     expect(parseRoute("#use/switcher")).toEqual({ section: "switcher" });
-    expect(parseRoute("#use/sand")).toEqual({ section: "sand" });
+    expect(parseRoute("#use/sand")).toEqual({ section: "panel", mode: "sand" });
+    expect(parseRoute("#sand")).toEqual({ section: "panel", mode: "sand" });
+    expect(parseRoute("#crsr")).toEqual({ section: "panel", mode: "crsr" });
+    // 新地址自己也带档位，认不出的档位就回缺省（页面按盘上决定）。
+    expect(parseRoute("#panel/crsr")).toEqual({ section: "panel", mode: "crsr" });
+    expect(parseRoute("#panel/whatever")).toEqual({ section: "panel" });
+    expect(routeHash(go("panel", { mode: "sand" }))).toBe("#panel/sand");
     expect(parseRoute("#use")).toEqual({ section: "switcher" });
   });
 });
@@ -124,9 +130,9 @@ describe("sidebar groups", () => {
     expect([...placed].sort()).toEqual([...all].sort());
   });
 
-  it("keep Sand and CRSR in the patch group — they are not a way of using the pool", () => {
-    const sandGroup = NAV_GROUPS.find((g) => g.items.includes("sand"))!;
-    expect(sandGroup.items).toEqual(["sand", "crsr"]);
+  it("keep the Cursor panel page alone in the patch group — it is not a way of using the pool", () => {
+    const patch = NAV_GROUPS.find((g) => g.items.includes("panel"))!;
+    expect(patch.items).toEqual(["panel"]);
     // 中转 API 一组按「看 → 用 → 接 → 引擎」排：先浏览模型，再在游乐场上手，再配客户端，
     // 最后是本机那台引擎。
     const relay = NAV_GROUPS.find((g) => g.id === "relay")!;
