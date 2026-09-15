@@ -184,19 +184,26 @@ jobs:
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          shopt -s globstar nullglob
-          apps=(target/**/release/bundle/macos/*.app)
-          dmgs=(target/**/release/bundle/dmg/*.dmg)
-          updater_bundles=(target/**/release/bundle/macos/*.app.tar.gz)
-          updater_signatures=(target/**/release/bundle/macos/*.app.tar.gz.sig)
-          [[ ${#apps[@]} -eq 1 && ${#dmgs[@]} -eq 1 ]]
-          [[ ${#updater_bundles[@]} -eq 1 && ${#updater_signatures[@]} -eq 1 ]]
-          architectures="$(lipo -archs "${apps[0]}/Contents/MacOS/Nexus")"
+          # macos-latest 的 /bin/bash 是 3.2，没有 globstar。产物路径由
+          # `--target universal-apple-darwin` 决定，直接写死。
+          bundle_root=target/universal-apple-darwin/release/bundle
+          app="$bundle_root/macos/Nexus.app"
+          shopt -s nullglob
+          dmgs=("$bundle_root"/dmg/*.dmg)
+          updater_bundles=("$bundle_root"/macos/*.app.tar.gz)
+          updater_signatures=("$bundle_root"/macos/*.app.tar.gz.sig)
+          ls -la "$bundle_root/macos" "$bundle_root/dmg"
+          test -d "$app"
+          test ${#dmgs[@]} -eq 1
+          test ${#updater_bundles[@]} -eq 1
+          test ${#updater_signatures[@]} -eq 1
+          architectures="$(lipo -archs "$app/Contents/MacOS/Nexus")"
+          echo "architectures: $architectures"
           [[ "$architectures" == *arm64* && "$architectures" == *x86_64* ]]
           if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-            codesign --verify --deep --strict --verbose=2 "${apps[0]}"
-            spctl --assess --type execute --verbose=2 "${apps[0]}"
-            xcrun stapler validate "${apps[0]}"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+            xcrun stapler validate "$app"
           else
             echo "::warning::没有配置 Apple 证书，这一版 macOS 包未签名。"
           fi
