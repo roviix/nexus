@@ -243,9 +243,6 @@ pub fn run() {
             // 本地网关
             commands::gateway::gateway_status,
             commands::gateway::gateway_usage,
-            commands::gateway::gateway_ide_usage,
-            commands::gateway::gateway_set_intercept,
-            commands::gateway::gateway_set_grokbot_stream,
             commands::gateway::gateway_models,
             commands::gateway::gateway_try,
             commands::gateway::gateway_start,

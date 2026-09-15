@@ -34,15 +34,14 @@ pub struct AppState {
     pub client_backups_dir: PathBuf,
     pub switcher: Arc<Switcher>,
     pub accounts: Arc<AccountsService>,
-    /// Grok Bot 桥：Sand 补丁与本机网关按需借 Grok Bot 额度时的凭证来源。**不是账号系统**——
-    /// Cursor 账号在 `accounts`。一份实例三处共用（这里 / sand / gateway），钥匙串口令只弹一次。
+    /// Grok Bot 桥：Sand 补丁借 Grok Bot 额度时的凭证来源。**不是账号系统**——
+    /// Cursor 账号在 `accounts`。一份实例两处共用（这里 / sand），钥匙串口令只弹一次。
     pub grokbot: Arc<GrokBotService>,
     /// Sand 补丁。与 switcher 一样只由用户点击触发；两者互不认识，只共享 nexus-cursor。
     pub sand: Arc<SandService>,
     /// CRSR 补丁：原生 Agent 面板走账号里的 `crsr_` User API Key。和 Sand 互斥、备份分开。
     pub crsr: Arc<CrsrService>,
-    /// 远程 Cursor server 的 Sand 补丁 + 反向隧道。同一份规则表，只是对象在远端；
-    /// 隧道端口跟着网关的透传端口走，所以它认识 gateway（组装在这一层完成）。
+    /// 远程 Cursor server 的 Sand 补丁 + 隧道。同一份规则表，只是对象在远端。
     pub sand_remote: Arc<RemoteSandHub>,
     /// ChatGPT 订阅号：本地网关的第二种号源。和 Cursor 账号两张表、互不认识（ARCHITECTURE §5.3）。
     pub chatgpt: Arc<ChatGptService>,
@@ -100,7 +99,7 @@ impl AppState {
         let chatgpt = Arc::new(ChatGptService::new(db.clone(), secrets.clone()));
         let grok = Arc::new(GrokService::new(db.clone(), secrets.clone()));
         let kiro = Arc::new(KiroService::new(db.clone(), secrets.clone()));
-        let gateway = Arc::new(GatewayService::with_grokbot(
+        let gateway = Arc::new(GatewayService::with_services(
             db.clone(),
             secrets.clone(),
             Arc::new(cursor.clone()),
@@ -108,7 +107,6 @@ impl AppState {
             chatgpt.clone(),
             grok.clone(),
             kiro.clone(),
-            grokbot.clone(),
         ));
 
         // 本机 Cursor 的 commit：远程往往堆着好几个 commit 的 server，只有和本机同 commit 的
@@ -116,12 +114,7 @@ impl AppState {
         let local_commit = nexus_sand::SandLayout::resolve(&cursor.paths)
             .ok()
             .and_then(|l| read_commit(&l.product_json));
-        let sand_remote = Arc::new(RemoteSandHub::new(
-            db.clone(),
-            data_dir,
-            gateway.clone(),
-            local_commit,
-        ));
+        let sand_remote = Arc::new(RemoteSandHub::new(db.clone(), data_dir, local_commit));
 
         Ok(Self {
             backups: Arc::new(Backups::new(roviix_dir.join("backups"))),

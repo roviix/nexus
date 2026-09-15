@@ -24,8 +24,9 @@ use crate::model::{
 };
 use crate::rules::{self, LayoutProfile, PatchRule, RuleId};
 
-/// 排障用：把本机 Cursor 的推理改道到 `endpoint`（一般是本机的 passthrough），好在不改动
-/// 官方客户端任何逻辑的前提下，录一份它**真实发出去**的 `InferenceStreamRequest`。
+/// 排障用（只在 `examples/` 里调用，应用层不碰）：把本机 Cursor 的推理改道到 `endpoint`
+/// （一个本地抓包口），好在不改动官方客户端任何逻辑的前提下，录一份它**真实发出去**的
+/// `InferenceStreamRequest`。
 ///
 /// 平时本机不需要它——直连 api2 就好。它存在只为回答「官方客户端和我们发的到底差在哪」
 /// 这类问题，而那个问题靠读 bundle 猜了太多轮。

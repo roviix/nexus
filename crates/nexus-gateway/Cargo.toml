@@ -17,9 +17,6 @@ nexus-cursor.workspace = true
 nexus-chatgpt.workspace = true
 nexus-grok.workspace = true
 nexus-kiro.workspace = true
-# Grok Bot 桥：透传口对 `InferenceService/Stream` 可选用 grokBotToken（IDE Agent 面板走 Grok Bot 额度）。
-# 只在 `grokbot` 模块认识它；不是号源（不进 Lane），不影响别的路径。
-nexus-grokbot.workspace = true
 
 sha2.workspace = true
 base64.workspace = true
@@ -44,26 +41,6 @@ prost-types = "0.14.3"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "multipart"] }
 tokio-stream = { version = "0.1", default-features = false }
 futures-util = { version = "0.3", default-features = false }
-# 透传模式（cursor-agent -e / --agent-endpoint）：两边都不解 protobuf body，只换身份头。
-# 这几个包 reqwest 已经在用（rustls-tls + http2 拉进了 hyper / hyper-util / hyper-rustls /
-# h2 同一份版本），加到这里几乎不增加编译量。
-# - 入站要 h1 **和** h2：`agent.v1.AgentService/Run` 这类 BiDi 必须是 h2（探针确认过，
-#   HTTP/1.1 转发一到这个方法就是 `Protocol error`）；但真机联调打过 cursor-agent 的
-#   bundle 之后发现 `/auth/exchange_user_api_key`、`/auth/poll`（api-key 换 session、
-#   登录轮询）走的是 undici 的 `fetch`，也就是纯 HTTP/1.1——同一个透传端口两种协议都要接，
-#   所以用 `hyper_util::server::conn::auto`（h1/h2 前奏嗅探），不能只开 h2。
-# - 出站同理：不強制只报 h2，ALPN 里 h1/h2 都报，服务端认哪个就用哪个（和 `inference.rs`
-#   现有的 reqwest 客户端行为一致，那边也没有强制 http2-only）。
-# - hyper-util：client-legacy 给出站连接池（TLS 给生产上游，明文只在集成测试里对假上游用）。
-hyper = { version = "1", default-features = false, features = ["server", "http2", "http1", "client"] }
-hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "server", "server-auto", "tokio"], default-features = false }
-# `rustls-native-certs`：和 reqwest 侧同一个理由（见 workspace Cargo.toml），透传口
-# 的出站也要认系统证书库，否则企业网络下只有透传这一条路握不上手。
-# `webpki-tokio` 留着当兜底：系统证书库读不出来时还有一份内置锚点可用。
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "webpki-tokio", "rustls-native-certs"] }
-http-body-util = "0.1"
-bytes = "1"
-http = "1"
 
 # 注意：**不依赖 nexus-switcher**。网关改的是流量走向，切号改的是 Cursor 的登录态，
 # 两者互不认识（ARCHITECTURE R1 的同一精神）。

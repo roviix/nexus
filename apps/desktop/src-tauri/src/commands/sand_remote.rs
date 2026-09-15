@@ -5,30 +5,31 @@
 //! 这一点是刻意的：过去 `gateway/scripts/sand-remote-server.py` 另维护一套只有 5 类的规则，
 //! 漏掉的正是 `extensionHostProcess.js` 上的 client-type，远程于是一直以 `ide` 身份发请求。
 //!
-//! ## 远程怎么出网：两条路，都要一条隧道
+//! ## 远程怎么出网
 //!
 //! 远程那台默认出不去网（或出口地区拿不到 claude / gpt），所以**出网方式**是这一页的主轴，
 //! 见 [`RemoteRoute`]：
 //!
-//! - [`RemoteRoute::Gateway`]：把推理端点改道到 `http://127.0.0.1:<远程端口>`，隧道接回本机
-//!   网关透传口。号池接力、记账、面板拦截都长在这条路上，代价是链路多一跳、网关的 client-type 得是 sand。
-//! - [`RemoteRoute::Proxy`]：**不改端点**，远程照旧打官方 api2，只是把本机的 HTTP 代理经隧道送过去，
-//!   并让 Cursor 的 remote-ssh 扩展把 `HTTP(S)_PROXY` 注入远程会话（见 [`nexus_sand::remote::proxy`]）。
-//!   链路短、用官方端点，但没有号池轮换——用的就是远程当前登录的那个号。
+//! - [`RemoteRoute::Proxy`]（默认）：**不改端点**，远程照旧打官方 api2，只是把本机的 HTTP 代理
+//!   经隧道送过去，并让 Cursor 的 remote-ssh 扩展把 `HTTP(S)_PROXY` 注入远程会话
+//!   （见 [`nexus_sand::remote::proxy`]）。用的是远程当前登录的那个号。
 //! - [`RemoteRoute::Direct`]：远程自己出得去网，什么都不做。
 //!
+//! 早先还有第三条「经本机网关」：把推理端点改道到远程端口、隧道接回本机网关的透传口。透传口
+//! 2026-09 整条拆掉，这条路随之消失；老配置里选了它的主机读进来按 `Direct` 处理，远程盘上残留的
+//! 改道由界面报出来、重新安装剥掉。
+//!
 //! 隧道是 ssh 会话里的多路复用中继（[`nexus_sand::Tunnel`]），不是 `ssh -R`——为什么，见那个
-//! 模块的说明。它只活在本进程里，而远程盘上那个端点 / 那份代理设置是永久的：两者一旦不同步就是
+//! 模块的说明。它只活在本进程里，而 Cursor 里那份代理设置是永久的：两者一旦不同步就是
 //! 「静默不通」（§9.5）。所以启动时要把隧道拉回来，界面上还要能一键走一遍
 //! [`nexus_sand::RemoteSand::probe`] 实地验。
 //!
-//! 组装（谁依赖谁）全在 [`RemoteSandHub`] 里，`nexus-sand` 与 `nexus-gateway` 互不认识。
+//! 组装（谁依赖谁）全在 [`RemoteSandHub`] 里。它不认识 `nexus-gateway`。
 
 use crate::commands::events;
 use crate::commands::switcher::run_blocking;
 use crate::state::AppState;
 use nexus_core::{AppError, ErrorCode, Result};
-use nexus_gateway::GatewayService;
 use nexus_sand::remote::{proxy, sshcfg};
 use nexus_sand::{
     InstallOptions, ProbeReport, ProbeTarget, RemoteOutcome, RemoteSand, RemoteStatus,
@@ -63,10 +64,8 @@ pub const DEFAULT_REMOTE_PORT: u16 = 41777;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteRoute {
-    /// 经本机网关：端点改道 + 隧道接到网关透传口。
-    #[default]
-    Gateway,
     /// 经本机代理：不改端点，隧道把本机代理送过去，远程照旧打官方 api2。
+    #[default]
     Proxy,
     /// 远程自己出网：不改端点、不起隧道。
     Direct,
@@ -75,29 +74,24 @@ pub enum RemoteRoute {
 impl RemoteRoute {
     /// 这条路要不要隧道。
     pub fn needs_tunnel(self) -> bool {
-        matches!(self, Self::Gateway | Self::Proxy)
-    }
-
-    /// 装补丁时要不要写端点改道。**只有网关模式要**——代理模式故意不改端点，那正是它「走官方
-    /// 端点」的全部含义。
-    pub fn rewrites_endpoint(self) -> bool {
-        matches!(self, Self::Gateway)
+        matches!(self, Self::Proxy)
     }
 }
 
-/// 老配置里这一项是布尔 `routeViaLocal`（那时只有「经网关」和「不经」两种）。
-/// `true` → 网关，`false` → 远程自己出网。
+/// 老配置有两种旧形状：布尔 `routeViaLocal`（那时只有「经网关」和「不经」两种），以及已经
+/// 拆掉的 `"gateway"` 字面量。两种「经网关」都归到 `Direct`——那条路已经没有了，而 `Proxy`
+/// 需要一个此刻未必在的本机代理端口；归到 `Direct` 什么都不做，等用户自己改。
 fn de_route<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<RemoteRoute, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Repr {
-        Legacy(bool),
         Named(RemoteRoute),
+        // 布尔 `routeViaLocal`、字面量 `"gateway"`、以及将来任何认不出的值。
+        Retired(serde::de::IgnoredAny),
     }
     Ok(match Repr::deserialize(d)? {
-        Repr::Legacy(true) => RemoteRoute::Gateway,
-        Repr::Legacy(false) => RemoteRoute::Direct,
         Repr::Named(r) => r,
+        Repr::Retired(_) => RemoteRoute::Direct,
     })
 }
 
@@ -118,9 +112,8 @@ pub struct RemoteHost {
     /// 出网方式。`alias` 让老配置里的 `routeViaLocal` 还能读进来。
     #[serde(default, alias = "routeViaLocal", deserialize_with = "de_route")]
     pub route: RemoteRoute,
-    /// 隧道在远程那头监听的端口。网关模式下补丁写进远程 bundle 的端点就是它；代理模式下
-    /// Cursor 设置里的 `HTTP_PROXY` 就是它。老配置（`remoteProxyPort`，可能为 null）由
-    /// [`StoredHost`] 归一，这里只认新名字。
+    /// 隧道在远程那头监听的端口：代理模式下 Cursor 设置里给这台主机写的 `HTTP_PROXY` 就是它。
+    /// 老配置（`remoteProxyPort`，可能为 null）由 [`StoredHost`] 归一，这里只认新名字。
     #[serde(default = "default_remote_port")]
     pub remote_port: u16,
     /// 代理模式用：本机代理监听的端口。`None` = 用探测到的值。
@@ -234,30 +227,19 @@ pub struct RemoteHostView {
     /// `Err` 时给字符串：连不上不该让整个列表都拿不到。
     pub status: std::result::Result<RemoteStatus, String>,
     pub tunnel: TunnelStatus,
-    /// 隧道本机这头接到哪个端口（网关透传口 / 本机代理口）。`None` = 这条路不用隧道，或代理
-    /// 模式下一个代理端口都猜不到。
+    /// 隧道本机这头接到哪个端口（本机代理口）。`None` = 这条路不用隧道，或一个代理端口都猜不到。
     pub local_port: Option<u16>,
     /// 代理模式：Cursor 那三个设置此刻给这台主机配的是什么（`None` = 没配）。
-    /// 它和「盘上的端点」一样是**永久状态**，得和隧道对着看。
+    /// 它是**永久状态**，得和隧道对着看。
     pub proxy_configured: Option<String>,
-    /// 本机那头（网关口 / 代理口）现在有没有人听。
+    /// 本机那头（代理口）现在有没有人听。
     pub local_listening: bool,
-    /// 装补丁时会写进远程 bundle 的端点（网关模式）。界面拿它和盘上的 `inference_endpoint`
-    /// 对：不一样 = 远程指着一个旧端口，要重装。
-    pub expected_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteOverview {
     pub hosts: Vec<RemoteHostView>,
-    /// 本机 passthrough 网关是否在跑；不跑，隧道那头就没人接。
-    pub gateway_running: bool,
-    pub gateway_passthrough_port: u16,
-    /// 网关转发时改写进 `x-cursor-client-type` 的值。远程请求经网关出去时用的是**这个**身份，
-    /// 不是远程补丁写的那个：网关设成 `cli` / `ide`，远程的 sand 身份就在这里被换掉、记到普通额度上，
-    /// 表现和九月那次 `resource_exhausted` 一模一样。所以界面要在它不是 `sand` 时明说。
-    pub gateway_client_type: String,
     /// 本机 Cursor 的 commit，用来提示「远程 server 与本机是否同版本」。
     pub local_commit: Option<String>,
     /// 猜出来的本机代理端口（代理模式的默认值）。`None` = 一个常见端口都没人听。
@@ -267,7 +249,6 @@ pub struct RemoteOverview {
 pub struct RemoteSandHub {
     db: Arc<Db>,
     sand: Arc<RemoteSand>,
-    gateway: Arc<GatewayService>,
     tunnels: Mutex<HashMap<String, Arc<Tunnel>>>,
     local_commit: Option<String>,
     /// Cursor 的用户设置（`…/User/settings.json`）。代理模式要往里写那三个
@@ -280,16 +261,10 @@ pub struct RemoteSandHub {
 }
 
 impl RemoteSandHub {
-    pub fn new(
-        db: Arc<Db>,
-        data_dir: &Path,
-        gateway: Arc<GatewayService>,
-        local_commit: Option<String>,
-    ) -> Self {
+    pub fn new(db: Arc<Db>, data_dir: &Path, local_commit: Option<String>) -> Self {
         Self {
             sand: Arc::new(RemoteSand::with_system_ssh(data_dir, local_commit.clone())),
             db,
-            gateway,
             tunnels: Mutex::new(HashMap::new()),
             local_commit,
             cursor_settings: nexus_cursor::CursorPaths::detect()
@@ -378,12 +353,7 @@ impl RemoteSandHub {
             .clone()
     }
 
-    /// 本机网关的透传端口：网关模式下隧道本机这头接的就是它。
-    pub fn passthrough_port(&self) -> u16 {
-        self.gateway.settings().passthrough_port
-    }
-
-    /// 网关模式下写进远程 bundle 的推理端点：远程那头的中继口。
+    /// 远程会话里看到的隧道入口：远程那头的中继口。代理模式写进 Cursor 设置的就是它。
     pub fn endpoint_for(&self, host: &RemoteHost) -> String {
         format!("http://127.0.0.1:{}", host.remote_port)
     }
@@ -532,7 +502,6 @@ impl RemoteSandHub {
                     msg
                 });
                 let local_port = match h.route {
-                    RemoteRoute::Gateway => Some(self.passthrough_port()),
                     RemoteRoute::Proxy => h.proxy_port.or(detected),
                     RemoteRoute::Direct => None,
                 };
@@ -541,18 +510,13 @@ impl RemoteSandHub {
                     local_port,
                     proxy_configured: proxy::read(&settings_text, &h.host).http,
                     local_listening: local_port.map(port_listening).unwrap_or(false),
-                    expected_endpoint: h.route.rewrites_endpoint().then(|| self.endpoint_for(&h)),
                     host: h,
                     status,
                 }
             })
             .collect();
-        let settings = self.gateway.settings();
         RemoteOverview {
             hosts,
-            gateway_running: self.gateway.is_running(),
-            gateway_passthrough_port: settings.passthrough_port,
-            gateway_client_type: settings.client_type,
             local_commit: self.local_commit.clone(),
             detected_proxy_port: detected,
         }
@@ -570,7 +534,8 @@ impl RemoteSandHub {
             .ok_or_else(|| AppError::invalid("这台主机不在列表里。"))
     }
 
-    /// 装补丁。出网方式决定「写不写端点改道」和「要不要动 Cursor 的代理设置」。
+    /// 装补丁。出网方式决定「要不要动 Cursor 的代理设置」；端点一律不改道，盘上若有早期版本
+    /// 写的改道，这一步把它剥掉。
     ///
     /// 代理设置在**补丁之前**配：它可能因为「代理没开」「用户有个全局代理」而失败，那时候
     /// 远程一个字节都还没被改动 —— 先做能失败的事，是这一整套流程的一贯顺序（§4.1）。
@@ -590,7 +555,7 @@ impl RemoteSandHub {
         entry.route = route;
         self.sync_persistent_state(&entry)?;
         let options = InstallOptions {
-            inference_endpoint: route.rewrites_endpoint().then(|| self.endpoint_for(&entry)),
+            inference_endpoint: None,
             // 远程没有「重启 Cursor.app」这回事；对应动作是杀 server 进程，install 里自己做。
             relaunch: false,
             ..InstallOptions::default()
@@ -604,14 +569,11 @@ impl RemoteSandHub {
         self.sand.uninstall(host, progress)
     }
 
-    /// 从远程实地走一遍出网链路。网关模式验到本机网关，代理模式一路验到 api2。
+    /// 从远程实地走一遍出网链路：经隧道、经本机代理，一路验到 api2。
     /// 打的是常驻中继的远程口——远程 Agent 用的正是它。
     pub fn probe(&self, host: &str) -> Result<ProbeReport> {
         let entry = self.find(host)?;
         match entry.route {
-            RemoteRoute::Gateway => self
-                .sand
-                .probe(host, entry.remote_port, &ProbeTarget::Local),
             RemoteRoute::Proxy => self.sand.probe(
                 host,
                 entry.remote_port,
@@ -622,14 +584,13 @@ impl RemoteSandHub {
             RemoteRoute::Direct => Err(AppError::invalid(
                 "这台主机设的是「远程自己出网」，没有经本机的链路可验。",
             )
-            .with_hint("要验的话先把出网方式改成经本机网关或经本机代理。")),
+            .with_hint("要验的话先把出网方式改成经本机代理。")),
         }
     }
 
     /// 这台主机的隧道两端。
     fn tunnel_spec(&self, host: &RemoteHost) -> Result<TunnelSpec> {
         let local_port = match host.route {
-            RemoteRoute::Gateway => self.passthrough_port(),
             RemoteRoute::Proxy => self.proxy_local_port(host)?,
             RemoteRoute::Direct => {
                 return Err(AppError::invalid(
@@ -860,40 +821,43 @@ mod tests {
         s.into()
     }
 
-    /// 回归：应用重启后隧道必须自己回来。装了改道的远程是**永久**指着 `127.0.0.1:<port>` 的，
-    /// 这边不拉隧道，那边每次推理都是 ECONNREFUSED，而且只有 Cursor 那个转圈能看出来。
-    /// 代理模式同理：远程会话的 `HTTP_PROXY` 也是永久写在 Cursor 设置里的。
+    /// 回归：应用重启后隧道必须自己回来。远程会话的 `HTTP_PROXY` 是永久写在 Cursor 设置里的，
+    /// 这边不拉隧道，那边每次出网都是 ECONNREFUSED，而且只有 Cursor 那个转圈能看出来。
     #[test]
     fn restore_picks_every_host_whose_route_runs_through_us() {
         let hosts = [
-            host("devbox-01", RemoteRoute::Gateway),
             host("走代理的那台", RemoteRoute::Proxy),
             host("自己出网的那台", RemoteRoute::Direct),
         ];
-        assert_eq!(
-            hosts_to_restore(&hosts),
-            vec!["devbox-01".to_string(), "走代理的那台".to_string()]
-        );
+        assert_eq!(hosts_to_restore(&hosts), vec!["走代理的那台".to_string()]);
         assert!(hosts_to_restore(&[]).is_empty());
     }
 
-    /// 老配置里这一项是布尔 `routeViaLocal`。`true` 必须读成「经网关」——读丢了会让这些主机
-    /// 装出一个不改道的补丁，而远程出不去网，症状是装完就不通。
+    /// 老配置里「经网关」有两种写法：布尔 `routeViaLocal: true` 和字面量 `"gateway"`。那条路
+    /// 已经没有了，两种都要**读得进来**（不能让整张主机表因为一个旧值而加载失败）并归到 `Direct`。
     #[test]
-    fn hosts_saved_with_the_old_boolean_flag_still_load() {
+    fn hosts_saved_with_the_retired_gateway_route_still_load() {
         assert_eq!(
             load(r#"{"host":"box","routeViaLocal":true}"#).route,
-            RemoteRoute::Gateway
+            RemoteRoute::Direct
         );
         assert_eq!(
             load(r#"{"host":"box","routeViaLocal":false}"#).route,
             RemoteRoute::Direct
         );
-        // 更老的形状：连这个字段都没有。默认走网关（那时唯一的行为）。
-        assert_eq!(load(r#"{"host":"box"}"#).route, RemoteRoute::Gateway);
+        assert_eq!(
+            load(r#"{"host":"box","route":"gateway","remotePort":5000}"#).route,
+            RemoteRoute::Direct
+        );
+        // 更老的形状：连这个字段都没有。按当前默认（代理）走。
+        assert_eq!(load(r#"{"host":"box"}"#).route, RemoteRoute::Proxy);
         let new = load(r#"{"host":"box","route":"proxy","proxyPort":7890}"#);
         assert_eq!(new.route, RemoteRoute::Proxy);
         assert_eq!(new.proxy_port, Some(7890));
+        assert_eq!(
+            load(r#"{"host":"box","route":"direct"}"#).route,
+            RemoteRoute::Direct
+        );
     }
 
     /// 上一版的形状：`remoteProxyPort`（可能 null）+ `tunnelMode`（现在没有这个概念了，忽略）。
@@ -928,14 +892,8 @@ mod tests {
         assert_eq!(load(&json), h);
     }
 
-    /// 只有网关模式改端点。代理模式**故意不改** —— 那正是它「走官方端点」的全部含义，
-    /// 改了就等于既走代理又绕网关，两套语义混在一起。
     #[test]
-    fn only_the_gateway_route_rewrites_the_inference_endpoint() {
-        assert!(RemoteRoute::Gateway.rewrites_endpoint());
-        assert!(!RemoteRoute::Proxy.rewrites_endpoint());
-        assert!(!RemoteRoute::Direct.rewrites_endpoint());
-        assert!(RemoteRoute::Gateway.needs_tunnel());
+    fn only_the_proxy_route_needs_a_tunnel() {
         assert!(RemoteRoute::Proxy.needs_tunnel());
         assert!(!RemoteRoute::Direct.needs_tunnel());
     }
@@ -954,10 +912,10 @@ mod tests {
         assert_eq!(port_of_url("http://127.0.0.1"), None);
     }
 
-    /// 默认值不能悄悄变：`RemoteRoute::default()` 是网关，老用户升级后行为不变。
+    /// 新主机默认经本机代理——远程那台默认出不去网，这是唯一还在的「经本机」路。
     #[test]
-    fn the_default_route_stays_the_gateway() {
-        assert_eq!(RemoteRoute::default(), RemoteRoute::Gateway);
+    fn the_default_route_is_the_proxy() {
+        assert_eq!(RemoteRoute::default(), RemoteRoute::Proxy);
         assert_eq!(
             serde_json::to_string(&RemoteRoute::Proxy).unwrap(),
             "\"proxy\""

@@ -145,12 +145,11 @@ pub struct InstallOptions {
     pub relaunch: bool,
     /// 把 `InferenceService` 改道到这个地址（`http://127.0.0.1:<port>`）。
     ///
-    /// 远程默认带上：它要么没有外网，要么出口地区拿不到 claude / gpt（实测某公司代理走东京出口，
-    /// grok 正常、claude 与 gpt 被 api2 以 region 拒绝），配一条隧道（`remote::tunnel`）把端口接到
-    /// 本机的 passthrough 网关，让推理从你自己的出口走。
-    ///
-    /// 本机默认 `None`（直连 api2）；打开「推理经本机网关」时填成本机 passthrough 的地址——
-    /// 那是网关拦截 Agent 面板流量（记用量、改写上下文）的唯一入口。
+    /// **产品里不再有这个开关。** 它曾经服务两件事：本机「推理经本机网关」（让网关透传口拦截面板
+    /// 流量）和远程「经本机网关」出网；网关的透传口 2026-09 整条拆掉之后，两条路都没了。
+    /// 字段留着有两个理由：① 老机器盘上还装着改道，`SandService::install` / `uninstall` 靠
+    /// 同一条规则把它认出来并剥掉（见 `rules::installed_inference_endpoint`）；② 研究用的
+    /// `examples/install_local` 仍可以把面板流量改道到一个本地抓包口。应用层永远传 `None`。
     pub inference_endpoint: Option<String>,
     /// `InferenceService/Stream` 用 Grok Bot 额度鉴权的方式（见 [`GrokBotAuthMode`]）。
     ///
@@ -167,7 +166,9 @@ pub struct InstallOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GrokBotAuthMode {
-    /// 不动鉴权：Stream 用 Cursor 自己登着的号（或交给「推理经本机网关」）。
+    /// 不动鉴权：Stream 用 Cursor 自己登着的号。**这一档在今天的服务端上不能用**——`sand` 头配
+    /// 会话 JWT 一律 401（Connect 16），它只在卸载 / 剥掉 Grok 鉴权块时作为「目标形态」出现，
+    /// 界面上不再提供。
     Off,
     /// Stream 改道到 Grok Bot Box 内的 relay，token 留在 Box（v135 社区脚本同款）。
     /// 依赖 pod 在线 + Bot 端装过 relay。
@@ -316,8 +317,9 @@ pub struct SandStatus {
     /// 盘上 Direct 注入体里自动摘要开关的实际取值；没装 Direct 注入体时为 `None`。
     /// 这是「盘上是什么」，界面上选的是「要装什么」——两者不同时 install 会原地切换。
     pub self_summary: Option<bool>,
-    /// 盘上装着的推理端点改道地址；没改道为 `None`。同样是「盘上是什么」：界面开关选的
-    /// 地址与它不同时，install 原地换 URL；开关关了而它还在，install 把那两处剥掉。
+    /// 盘上装着的推理端点改道地址；没改道为 `None`。产品里已经没有这个开关，所以 `Some` 只剩
+    /// 一种含义：早期版本留下的改道还在，指着一个已经不存在的本机端口——界面要把它当问题报出来，
+    /// 重新安装会把那两处剥掉。
     pub inference_endpoint: Option<String>,
     /// 盘上装着的 Grok Bot 鉴权形态；没装为 `Off`。同样是「盘上是什么」，界面选的与它不同时
     /// install 原地切换。

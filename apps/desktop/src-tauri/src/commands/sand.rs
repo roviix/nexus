@@ -8,10 +8,9 @@ use crate::commands::switcher::run_blocking;
 use crate::state::AppState;
 use nexus_core::{AppError, Result};
 use nexus_sand::{
-    supported_cursor_release, CursorDownloadPlatform, CursorRelease, InstallOptions, SandBackup,
-    SandOutcome, SandProgress, SandStatus,
+    supported_cursor_release, CursorDownloadPlatform, CursorRelease, GrokBotAuthMode,
+    InstallOptions, SandBackup, SandOutcome, SandProgress, SandStatus,
 };
-use nexus_store::activity;
 use tauri::{AppHandle, Emitter, State};
 
 /// Sand 明确适配的 Cursor 发行包。只按编译目标选平台，不依赖 WebView 的 UA；
@@ -36,8 +35,9 @@ pub fn sand_status(state: State<'_, AppState>) -> Result<SandStatus> {
 /// 安装。整段跑在阻塞线程上（里面有等 Cursor 退出这种会睡十几秒的操作），
 /// 进度经 `sand://progress` 推给界面。
 ///
-/// 推理端点改道由界面上「推理经本机网关」开关决定（`options.inference_endpoint`）；
-/// `SAND_INFERENCE_ENDPOINT` 环境变量仍留作排障口子，设了就覆盖界面选的值。
+/// 应用层不再提供「推理经本机网关」：`inference_endpoint` 恒为 `None`，盘上若还有早期版本写的
+/// 改道，这次安装把它剥掉。Grok 鉴权也不能选「关」——`sand` 头配会话 JWT 上游一律 401，
+/// 以前靠网关透传口换 token 才成立，那条口子已经没有了。
 #[tauri::command]
 pub async fn sand_install(
     app: AppHandle,
@@ -45,17 +45,13 @@ pub async fn sand_install(
     options: Option<InstallOptions>,
 ) -> Result<SandOutcome> {
     let sand = state.sand.clone();
-    let options = nexus_sand::with_inference_endpoint(
-        options.unwrap_or_default(),
-        std::env::var("SAND_INFERENCE_ENDPOINT").ok().as_deref(),
-    )?;
-    if options.inference_endpoint.is_some() {
-        state.gateway.prepare_sand_passthrough().await?;
-        activity::info(
-            &state.db,
-            "gateway",
-            None,
-            "装「推理经本机网关」：已开网关并打开 Bot 通道",
+    let mut options = options.unwrap_or_default();
+    options.inference_endpoint = None;
+    if options.grokbot_auth == GrokBotAuthMode::Off {
+        return Err(
+            AppError::invalid("Sand 通道必须选一种 Grok Bot 鉴权方式。").with_hint(
+                "选「Box Relay」或「直连」。不带 Grok Bot 凭证的 sand 请求会被上游拒绝（401）。",
+            ),
         );
     }
     run_blocking(move || {

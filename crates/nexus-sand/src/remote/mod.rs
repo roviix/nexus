@@ -5,8 +5,10 @@
 //! remote SSH 下 Agent 的编排与推理跑在远程 `~/.cursor-server` 上，本机 Cursor.app 只是 UI，
 //! 所以 [`crate::SandService`] 改本机改不到它。而且远程那台**默认就是出不去网的**：要么没有外网，
 //! 要么出口地区拿不到 claude / gpt（实测某公司代理走东京出口，grok 正常、claude 与 gpt 被 api2
-//! 以 region 拒绝）。所以远程安装默认带上推理端点改道，配一条隧道（[`tunnel`]：ssh 会话里的
-//! 多路复用中继，不是 `ssh -R`）把流量接回本机的 passthrough 网关。
+//! 以 region 拒绝）。所以远程安装配一条隧道（[`tunnel`]：ssh 会话里的多路复用中继，不是
+//! `ssh -R`）把**本机的 HTTP 代理**送到远程，远程照旧打官方 api2（见应用层的 `RemoteRoute::Proxy`）。
+//! 早先还有一条「端点改道 + 隧道接回本机网关透传口」的路，随透传口一起拆掉了；
+//! `InstallOptions::inference_endpoint` 仍被这里认得，只为把老机器盘上的改道剥干净。
 //!
 //! ## 为什么不另起一套规则
 //!
@@ -264,7 +266,8 @@ impl RemoteSand {
 
     // ------------------------------------------------------------------ 写
 
-    /// 打补丁。`options.inference_endpoint` 一般要给（远程默认出不去网）。
+    /// 打补丁。应用层传的 `options.inference_endpoint` 恒为 `None`：盘上若还有早期版本写的改道，
+    /// 这一步把它剥掉。
     pub fn install(
         &self,
         host: &str,

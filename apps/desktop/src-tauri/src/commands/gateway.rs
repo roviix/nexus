@@ -8,9 +8,7 @@ use crate::state::AppState;
 use nexus_core::{AppError, Result};
 use nexus_gateway::models::CatalogEntry;
 use nexus_gateway::playground::{self, TryEvent};
-use nexus_gateway::{
-    GatewaySettings, GatewayStatus, MediaJob, RewriteRule, SettingsPatch, UsageSummary,
-};
+use nexus_gateway::{GatewaySettings, GatewayStatus, MediaJob, SettingsPatch, UsageSummary};
 use nexus_playground::Endpoint;
 use nexus_store::activity;
 use serde::Serialize;
@@ -45,57 +43,6 @@ pub fn gateway_usage(
     tz_offset_min: i32,
 ) -> Result<UsageSummary> {
     state.gateway.usage(days, tz_offset_min)
-}
-
-/// IDE Agent 面板经本机网关的用量（Sand 补丁把推理改道到透传口之后才有数据）。
-/// 和 `gateway_usage` 分开：那是标准 API 客户端的请求，这是 Cursor 自己每一轮的模型调用，口径不同。
-#[tauri::command(async)]
-pub fn gateway_ide_usage(
-    state: State<'_, AppState>,
-    days: u32,
-    tz_offset_min: i32,
-) -> Result<UsageSummary> {
-    state.gateway.ide_usage(days, tz_offset_min)
-}
-
-/// 透传口的 Grok Bot 额度开关：开着时 IDE Agent 面板经网关的 `InferenceService/Stream` 用
-/// grokBotToken 出去（不动接力队里的号）。热生效；开的时候没凭证会当场去 Grok Bot 生成。
-#[tauri::command]
-pub async fn gateway_set_grokbot_stream(
-    state: State<'_, AppState>,
-    on: bool,
-) -> Result<GatewayStatus> {
-    activity::info(
-        &state.db,
-        "gateway",
-        None,
-        if on {
-            "透传口：Agent 面板 Stream 改用 Grok Bot 额度"
-        } else {
-            "透传口：Agent 面板 Stream 回到接力队"
-        },
-    );
-    state.gateway.set_grokbot_stream(on).await
-}
-
-/// 改 IDE 拦截的上下文改写规则（开关 / 哨兵位置 / 哨兵文本）。落库并立刻生效，不用重启网关。
-/// 改写发出去的是用户自己的对话，所以只能由用户显式点开，且开着时界面常显。
-#[tauri::command(async)]
-pub fn gateway_set_intercept(
-    state: State<'_, AppState>,
-    rule: RewriteRule,
-) -> Result<GatewayStatus> {
-    activity::info(
-        &state.db,
-        "gateway",
-        None,
-        if rule.enabled {
-            format!("IDE 拦截：开启上下文改写（{:?}）", rule.position)
-        } else {
-            "IDE 拦截：关闭上下文改写".to_string()
-        },
-    );
-    state.gateway.set_intercept_rule(rule)
 }
 
 /// 模型广场的「本地」一列：每条通道各自报 `{通道}/{模型}`，带系列 / 档位 / 别名。

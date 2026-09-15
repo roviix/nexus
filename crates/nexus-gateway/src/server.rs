@@ -9,7 +9,6 @@
 
 use crate::channel::{Capability, Channel, ChannelRegistry, Resolved};
 use crate::error::UpstreamError;
-use crate::grokbot::{GrokBotStreamAuth, GROKBOT_LABEL_PREFIX};
 use crate::images::{self, GeneratedImage, ImageRequest};
 use crate::inbound::{parse_request, protocol_error, Dialect, Serializer, SseFrame};
 use crate::inference::STATIC_MODELS;
@@ -43,10 +42,6 @@ pub struct Gateway {
     /// 异步媒体任务（生视频）的登记簿：`request_id → 通道 / 账号`，状态轮询要回到创建它的号。
     /// `None` = 不落库（测试、examples），视频任务只活在这一次进程里也查不到。
     pub media_jobs: Option<Arc<MediaJobs>>,
-    /// 方言口 Cursor 通道也可以走 Grok Bot。`None` = 测试 / examples，照旧取接力队。
-    pub grokbot: Option<Arc<GrokBotStreamAuth>>,
-    /// 与透传口一致：`sand` 身份必须配 grokBotToken，开关关着也不能拿会话 JWT 去盖 sand 头。
-    pub sand_identity: bool,
 }
 
 impl Gateway {
@@ -57,8 +52,6 @@ impl Gateway {
             api_key: None,
             ledger: None,
             media_jobs: None,
-            grokbot: None,
-            sand_identity: false,
         }
     }
 
@@ -424,28 +417,6 @@ fn attach_headers(res: &mut Response, extra: &[(String, String)]) {
 /// 几十秒：lane 会把试过的号记成耗尽 / 冷却，下一次请求自然跳过它们，收敛得很快。
 const MAX_ACCOUNT_ATTEMPTS: usize = 4;
 
-/// 方言口 Cursor 通道要不要改走 Grok Bot。规则跟透传口 `resolve_identity` 对齐：
-/// 开着开关，或 `client_type=sand`（sand 头配会话 JWT 上游一律 401）。
-fn dialect_grokbot<'a>(gw: &'a Gateway, channel: &Channel) -> Option<&'a Arc<GrokBotStreamAuth>> {
-    if channel.id != crate::channel::CURSOR {
-        return None;
-    }
-    gw.grokbot
-        .as_ref()
-        .filter(|g| g.enabled() || gw.sand_identity)
-}
-
-async fn take_chat_credential(
-    gw: &Gateway,
-    channel: &Channel,
-    model: &str,
-) -> Result<Credential, UpstreamError> {
-    if let Some(g) = dialect_grokbot(gw, channel) {
-        return g.credential().await;
-    }
-    channel.lane.acquire(model).await
-}
-
 /// 取号 → 打上游 → 收尾（回报 lane、记账），怪号的错误在**首字节之前**换号重来。
 ///
 /// 只有 `blames_account` 的错误换号：额度 / 鉴权 / 权限 / 限流 / 这个号出不了这个模型。
@@ -464,7 +435,7 @@ async fn relay(
     let mut tried: Vec<String> = Vec::new();
     let route = gw.route(model, Capability::Chat).channel;
     for attempt in 1..=MAX_ACCOUNT_ATTEMPTS {
-        let credential = match take_chat_credential(gw, route, model).await {
+        let credential = match route.lane.acquire(model).await {
             Ok(c) => c,
             Err(e) => return Err(last.unwrap_or(e)),
         };
@@ -472,7 +443,6 @@ async fn relay(
             return Err(e.clone());
         }
         tried.push(credential.label.clone());
-        let via_grokbot = credential.label.starts_with(GROKBOT_LABEL_PREFIX);
         let started = std::time::Instant::now();
         let mut emitted = false;
         let mut sink = |d: Delta| {
@@ -485,12 +455,7 @@ async fn relay(
         let result = route.upstream.stream(&credential, request, &mut sink).await;
         settle(gw, route, &credential, model, dialect, &result, started);
         match result {
-            Err(e)
-                if e.kind.blames_account()
-                    && !emitted
-                    && !via_grokbot
-                    && attempt < MAX_ACCOUNT_ATTEMPTS =>
-            {
+            Err(e) if e.kind.blames_account() && !emitted && attempt < MAX_ACCOUNT_ATTEMPTS => {
                 tracing::info!(
                     account = %credential.label, model, kind = e.kind.as_str(), status = e.status, attempt,
                     "这个号出不了，换号重来"
@@ -1166,8 +1131,6 @@ mod tests {
             api_key: None,
             ledger: None,
             media_jobs: Some(jobs.clone()),
-            grokbot: None,
-            sand_identity: false,
         });
         let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2391,50 +2354,5 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), 402);
         assert_eq!(*up.seen.lock().unwrap(), ["a@x"], "同一个号只试一次");
-    }
-
-    #[tokio::test]
-    async fn sand_dialect_uses_grokbot_and_does_not_touch_the_lane() {
-        let dir = tempfile::tempdir().unwrap();
-        let grokbot = Arc::new(GrokBotStreamAuth::new(
-            Arc::new(nexus_grokbot::GrokBotService::offline(dir.path())),
-            true,
-        ));
-        let lane = Arc::new(ScriptedLane::new(&["minnie@x"]));
-        let upstream = Arc::new(FakeUpstream::chat(
-            vec![Delta::Text("should-not-run".into())],
-            Ok(completion("should-not-run", vec![])),
-        ));
-        let gw = Arc::new(Gateway {
-            grokbot: Some(grokbot),
-            sand_identity: true,
-            ..Gateway::single(lane.clone(), upstream.clone())
-        });
-        let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve(listener, router(gw), std::future::pending()));
-        let res = http()
-            .post(format!("http://{addr}/v1/chat/completions"))
-            .json(&json!({
-                "model": "cursor/grok-4.5",
-                "messages": [{ "role": "user", "content": "ping" }]
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(res.status(), 502);
-        let body: Value = res.json().await.unwrap();
-        assert!(
-            body["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("Grok Bot 凭证不可用"),
-            "{body}"
-        );
-        assert!(
-            lane.reports.lock().unwrap().is_empty(),
-            "Bot 凭证不是接力队里的号"
-        );
-        assert!(upstream.seen.lock().unwrap().is_empty());
     }
 }
