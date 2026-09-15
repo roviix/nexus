@@ -12,6 +12,7 @@ pub mod app;
 pub mod backup;
 pub mod chatgpt;
 pub mod connect;
+pub mod crsr;
 pub mod gateway;
 pub mod grok;
 pub mod grokbot;
@@ -36,6 +37,8 @@ pub mod events {
     pub const ACCOUNT_REFRESHED: &str = "accounts://refreshed";
     /// Sand 补丁安装 / 卸载 / 还原进度。载荷是 `nexus_sand::SandProgress`。
     pub const SAND_PROGRESS: &str = "sand://progress";
+    /// CRSR 补丁安装 / 卸载 / 还原进度。载荷同上（`SandProgress` 的步骤枚举）。
+    pub const CRSR_PROGRESS: &str = "crsr://progress";
     /// 远程 Sand 补丁安装 / 卸载进度。载荷同上（`nexus_sand::SandProgress`）。
     pub const SAND_REMOTE_PROGRESS: &str = "sand://remote-progress";
     /// 「试一下」的流式回字。载荷是 `commands::gateway::TryFrame`。

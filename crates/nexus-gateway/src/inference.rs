@@ -24,7 +24,7 @@ use crate::proto::inference_stream_response::Response;
 use crate::proto::{
     InferenceAgentTool, InferenceContentPart, InferenceContentParts, InferenceCoreMessage,
     InferenceImagePart, InferenceMessageRole, InferenceModelConfig, InferenceRequestedModel,
-    InferenceStreamError, InferenceStreamErrorType, InferenceStreamRequest,
+    InferenceResponseInfo, InferenceStreamError, InferenceStreamErrorType, InferenceStreamRequest,
     InferenceStreamResponse, InferenceTextPart, InferenceToolCall, InferenceToolResultContent,
     InferenceToolResultPart,
 };
@@ -43,8 +43,7 @@ pub const DEFAULT_MAX_TURN: Duration = Duration::from_secs(1800);
 /// 缺省的额度通道标签。`cli` 是一条普通用户通道；`sand`（bot 额度）是另一个显式的高风险开关，
 /// 不在这里预设。
 pub const DEFAULT_CLIENT_TYPE: &str = "cli";
-/// `/v1/models` 的清单来自 [`crate::models::CURSOR_MODELS`]——和别名解析同一个来源，
-/// 免得「报出去的」和「认得的」两张表各自漂移。
+/// Cursor 通道的静态清单来自 [`crate::models::CURSOR_MODELS`]；对外报的时候加成 `cursor/…`。
 pub use crate::models::CURSOR_MODELS as STATIC_MODELS;
 
 #[derive(Debug, Clone)]
@@ -75,9 +74,19 @@ impl Default for StreamConfig {
 }
 
 /// 网关用的 HTTP 客户端。不设总超时——流可以很长，空闲超时在 [`stream`] 里按分片管。
+///
+/// 协议跟 Cursor 默认一样走 HTTP/2（`cursor.general.disableHttp2` 未开）。Connect
+/// 本就是 protobuf over h2。要避开的不是 Clash，是 **系统 HTTP 代理那条 CONNECT**：
+/// reqwest 若走 `127.0.0.1:7897` 再在隧道里谈 h2，长流会占着连接不吐帧。`no_proxy`
+/// 之后和 Cursor 一样出网（本机 Clash TUN 仍会拦，那是透明 TLS，h2 正常）。
+/// 空闲 PING 给 4.7 那种先默想几十秒的流保活，免得中间设备当死连接切掉。
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(15))
+        .no_proxy()
+        .http2_keep_alive_interval(Duration::from_secs(10))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
         .build()
         .expect("reqwest 客户端初始化（只在 TLS 后端缺失时失败）")
 }
@@ -750,6 +759,9 @@ impl Collector {
             }
             Response::ThinkingPart(p) => {
                 if !p.text.is_empty() {
+                    if self.ttft_ms.is_none() {
+                        self.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
+                    }
                     self.thinking.push_str(&p.text);
                     on_delta(Delta::Thinking(p.text));
                 }
@@ -816,16 +828,24 @@ impl Collector {
             }
             Response::ResponseInfo(info) => {
                 if !info.model.is_empty() {
-                    self.routed_model = Some(info.model);
+                    self.routed_model = Some(info.model.clone());
                 }
-                if let Some(m) = info.error_message.filter(|m| !m.is_empty()) {
+                if let Some(m) = info
+                    .error_message
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                {
                     if self.stream_err.is_none() {
                         self.stream_err = Some(InferenceStreamError {
-                            message: m,
+                            message: m.to_string(),
                             ..Default::default()
                         });
                     }
                 }
+                // 4.7 / CUA 常常不推 ThinkingPart，只把思考搁在收尾的 ResponseInfo 里。
+                // 不刮的话游乐场思考栏永远空，界面就像「空等几十秒再突然出全文」。
+                self.absorb_response_reasoning(&info, on_delta);
             }
             Response::Error(e) => {
                 // 上游按 max_tokens 截断了输出。这不是错误：标准 API 里它是 finish_reason=length
@@ -846,6 +866,33 @@ impl Collector {
             _ => {}
         }
         Flow::Continue
+    }
+
+    fn absorb_response_reasoning(
+        &mut self,
+        info: &InferenceResponseInfo,
+        on_delta: &mut dyn FnMut(Delta),
+    ) {
+        if !self.thinking.is_empty() {
+            return;
+        }
+        let mut buf = String::new();
+        for msg in &info.messages {
+            for part in &msg.reasoning_parts {
+                if part.is_redacted || part.text.is_empty() {
+                    continue;
+                }
+                buf.push_str(&part.text);
+            }
+        }
+        if buf.is_empty() {
+            return;
+        }
+        if self.ttft_ms.is_none() {
+            self.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
+        }
+        self.thinking.push_str(&buf);
+        on_delta(Delta::Thinking(buf));
     }
 
     /// 收尾：流内错误优先；空流报错；用量兜底估算；攒齐的工具调用整理成形。
@@ -997,6 +1044,210 @@ pub async fn stream(
     }
 
     collector.finish(request, saw_end)
+}
+
+/// `sand-cua` 这类别名探针的结论。`resolved_model` 空时看 `note`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutedModelProbe {
+    pub resolved_model: Option<String>,
+    pub note: Option<String>,
+}
+
+/// 从流里挑 `sand-cua` 真正落到谁。
+///
+/// 旧探针「第一帧非空 model 就挂」会踩两处：thinking 模型（4.7）常先出思考、
+/// `ResponseInfo` 很晚才来，4 token 上限把流掐了就记失败；Ultra 号第一帧又常
+/// 带着账号默认的 opus，还可能挂着 error_message。只信已知分片，或出字之后
+/// 那次干净的 ResponseInfo。
+#[derive(Debug, Clone)]
+struct CuaRouteAcc {
+    requested: String,
+    candidates: Vec<String>,
+    chosen: Option<String>,
+    saw_output: bool,
+    error: Option<String>,
+}
+
+impl CuaRouteAcc {
+    fn new(requested: &str) -> Self {
+        Self {
+            requested: requested.to_string(),
+            candidates: Vec::new(),
+            chosen: None,
+            saw_output: false,
+            error: None,
+        }
+    }
+
+    fn on_output(&mut self) {
+        self.saw_output = true;
+    }
+
+    fn on_response_info(&mut self, model: &str, error_message: Option<&str>) {
+        let model = model.trim();
+        if !model.is_empty() {
+            self.candidates.push(model.to_string());
+        }
+        if let Some(e) = error_message.map(str::trim).filter(|e| !e.is_empty()) {
+            if self.error.is_none() {
+                self.error = Some(e.to_string());
+            }
+            return;
+        }
+        if model.is_empty() || model.eq_ignore_ascii_case(&self.requested) {
+            return;
+        }
+        if crate::models::is_known_cua_shard(model) || self.saw_output {
+            self.chosen = Some(model.to_string());
+        }
+    }
+
+    fn on_stream_error(&mut self, message: &str) {
+        let message = message.trim();
+        if self.error.is_none() && !message.is_empty() {
+            self.error = Some(message.to_string());
+        }
+    }
+
+    fn ready(&self) -> bool {
+        self.chosen
+            .as_deref()
+            .is_some_and(crate::models::is_known_cua_shard)
+    }
+
+    fn finish(self) -> Result<RoutedModelProbe, UpstreamError> {
+        if let Some(model) = self.chosen {
+            return Ok(RoutedModelProbe {
+                resolved_model: Some(model),
+                note: None,
+            });
+        }
+        if let Some(error) = self.error {
+            return Err(UpstreamError::new(UpstreamKind::Upstream, 502, error));
+        }
+        let note = if self.saw_output {
+            "上游出了字，但没回落到哪个模型。".to_string()
+        } else if let Some(first) = self.candidates.first() {
+            format!("只看到 {first}，不像 sand-cua 落点（没出字）。")
+        } else {
+            "上游没回落到哪个模型。".to_string()
+        };
+        Ok(RoutedModelProbe {
+            resolved_model: None,
+            note: Some(note),
+        })
+    }
+}
+
+/// 打一发短 Stream，看别名落到谁。已知 CUA 分片一到就挂断，不把回答跑完。
+///
+/// 不设 `max_output_tokens`：thinking 模型常先吐思考，上限太低会在
+/// `ResponseInfo` 到来前被掐。闲时/总时长仍由 [`StreamConfig`] 管。
+pub async fn probe_routed_model(
+    client: &reqwest::Client,
+    cfg: &StreamConfig,
+    access_token: &str,
+    identity: &DeviceIdentity,
+    model: &str,
+) -> Result<RoutedModelProbe, UpstreamError> {
+    let request = ChatRequest {
+        model: model.to_string(),
+        messages: vec![Message::text(Role::User, "Reply with exactly: 1")],
+        ..ChatRequest::default()
+    };
+    let started = Instant::now();
+    let conversation_id = uuid::Uuid::new_v4().to_string();
+    let req = build_request_with(&request, &conversation_id, cfg.force_model.as_deref());
+    let headers = ai_headers(
+        access_token,
+        identity,
+        &cfg.client_type,
+        RequestNonce::now(),
+    );
+    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), STREAM_PATH);
+
+    let mut stream = connect::call_server_stream(client, &url, &headers, &req.encode_to_vec())
+        .await
+        .map_err(failure_to_error)?;
+
+    let mut acc = CuaRouteAcc::new(model);
+
+    loop {
+        if acc.ready() {
+            break;
+        }
+        let cap_left = cfg.max_turn.saturating_sub(started.elapsed());
+        if cap_left.is_zero() {
+            return Err(timeout_error(TimeoutReason::Cap, cfg.max_turn));
+        }
+        let wait = cfg.idle_timeout.min(cap_left);
+        let item = match tokio::time::timeout(wait, stream.next()).await {
+            Ok(r) => r.map_err(failure_to_error)?,
+            Err(_) => {
+                if acc.ready()
+                    || acc.chosen.is_some()
+                    || acc.saw_output
+                    || !acc.candidates.is_empty()
+                {
+                    break;
+                }
+                return Err(if cap_left < cfg.idle_timeout {
+                    timeout_error(TimeoutReason::Cap, cfg.max_turn)
+                } else {
+                    timeout_error(TimeoutReason::Idle, cfg.idle_timeout)
+                });
+            }
+        };
+
+        match item {
+            StreamItem::Eof => break,
+            StreamItem::End(end) => {
+                if let Some(err) = end.error {
+                    if acc.ready() {
+                        break;
+                    }
+                    if acc.chosen.is_none() {
+                        return Err(connect_error_to_upstream(err));
+                    }
+                }
+                break;
+            }
+            StreamItem::Message(bytes) => {
+                let resp = InferenceStreamResponse::decode(&bytes[..]).map_err(|e| {
+                    UpstreamError::new(UpstreamKind::Upstream, 502, format!("响应解码失败：{e}"))
+                })?;
+                let Some(r) = resp.response else { continue };
+                match r {
+                    Response::TextPart(p) if !p.text.is_empty() => acc.on_output(),
+                    Response::ThinkingPart(p) if !p.text.is_empty() => acc.on_output(),
+                    Response::ResponseInfo(info) => {
+                        acc.on_response_info(&info.model, info.error_message.as_deref());
+                    }
+                    Response::Error(e) => {
+                        if acc.ready() {
+                            break;
+                        }
+                        acc.on_stream_error(&e.message);
+                        if acc.chosen.is_none() {
+                            return Err(UpstreamError::new(
+                                UpstreamKind::Upstream,
+                                502,
+                                if e.message.is_empty() {
+                                    "inference stream error".into()
+                                } else {
+                                    e.message
+                                },
+                            ));
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    acc.finish()
 }
 
 #[cfg(test)]
@@ -1488,13 +1739,17 @@ mod tests {
             "default",
             "认不出就交给上游自选"
         );
+        assert_eq!(requested_model("grok-4.7"), "sand-cua");
+        assert_eq!(requested_model("grok-4-7-0910-xhigh"), "sand-cua");
+        assert_eq!(requested_model("sand-cua"), "sand-cua");
     }
 
     // ---------- Collector：流内每个分支的行为，不联网钉住 ----------
 
     use crate::proto::{
-        InferenceExtendedUsageInfo, InferenceResponseInfo, InferenceTextStreamPart,
-        InferenceThinkingStreamPart, InferenceToolCallStreamPart, InferenceUsageInfo,
+        InferenceExtendedUsageInfo, InferenceReasoningPart, InferenceResponseInfo,
+        InferenceResponseMessage, InferenceTextStreamPart, InferenceThinkingStreamPart,
+        InferenceToolCallStreamPart, InferenceUsageInfo,
     };
 
     fn req_with(max_out: Option<u32>, stops: &[&str]) -> ChatRequest {
@@ -1777,6 +2032,67 @@ mod tests {
     }
 
     #[test]
+    fn response_info_reasoning_fills_thinking_when_no_thinking_part() {
+        let req = req_with(None, &[]);
+        let (deltas, done) = run(
+            &req,
+            vec![
+                Response::ResponseInfo(InferenceResponseInfo {
+                    model: "grok-4-7-0910-xhigh".into(),
+                    messages: vec![InferenceResponseMessage {
+                        reasoning_parts: vec![InferenceReasoningPart {
+                            text: "先想清楚".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                text("答"),
+            ],
+            true,
+        );
+        assert_eq!(
+            deltas,
+            vec![Delta::Thinking("先想清楚".into()), Delta::Text("答".into())]
+        );
+        let c = done.unwrap();
+        assert_eq!(c.thinking, "先想清楚");
+        assert_eq!(c.routed_model.as_deref(), Some("grok-4-7-0910-xhigh"));
+    }
+
+    #[test]
+    fn response_info_reasoning_does_not_duplicate_streamed_thinking() {
+        let req = req_with(None, &[]);
+        let (deltas, done) = run(
+            &req,
+            vec![
+                Response::ThinkingPart(InferenceThinkingStreamPart {
+                    text: "hmm".into(),
+                    ..Default::default()
+                }),
+                Response::ResponseInfo(InferenceResponseInfo {
+                    messages: vec![InferenceResponseMessage {
+                        reasoning_parts: vec![InferenceReasoningPart {
+                            text: "hmm".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                text("ok"),
+            ],
+            true,
+        );
+        assert_eq!(
+            deltas,
+            vec![Delta::Thinking("hmm".into()), Delta::Text("ok".into())]
+        );
+        assert_eq!(done.unwrap().thinking, "hmm");
+    }
+
+    #[test]
     fn a_stop_sequence_ends_the_stream_early() {
         let req = req_with(None, &["END"]);
         let (deltas, done) = run(&req, vec![text("abc END def"), text("never")], false);
@@ -1797,5 +2113,67 @@ mod tests {
             run(&req, vec![], true).1.is_ok(),
             "上游正常收尾但没内容，交回一个空回答"
         );
+    }
+
+    #[test]
+    fn cua_probe_ignores_early_opus_and_error_info() {
+        let mut acc = CuaRouteAcc::new("sand-cua");
+        acc.on_response_info(
+            "claude-opus-5-thinking-xhigh",
+            Some("This model is unavailable for Grok Bot inference"),
+        );
+        assert!(!acc.ready());
+        assert!(acc.chosen.is_none());
+
+        acc.on_response_info("claude-opus-5-thinking-xhigh", None);
+        assert!(acc.chosen.is_none(), "没出字的默认模型不当落点");
+
+        acc.on_output();
+        acc.on_response_info("gpt-5.6-luna-high", None);
+        assert!(acc.ready());
+        let p = acc.finish().unwrap();
+        assert_eq!(p.resolved_model.as_deref(), Some("gpt-5.6-luna-high"));
+    }
+
+    #[test]
+    fn cua_probe_trusts_grok47_without_waiting_for_tokens() {
+        let mut acc = CuaRouteAcc::new("sand-cua");
+        acc.on_response_info("grok-4-7-0910-xhigh", None);
+        assert!(acc.ready());
+        let p = acc.finish().unwrap();
+        assert_eq!(p.resolved_model.as_deref(), Some("grok-4-7-0910-xhigh"));
+    }
+
+    #[test]
+    fn cua_probe_thinking_without_model_explains_itself() {
+        let mut acc = CuaRouteAcc::new("sand-cua");
+        acc.on_output();
+        let p = acc.finish().unwrap();
+        assert!(p.resolved_model.is_none());
+        assert!(p.note.as_deref().unwrap().contains("出了字"));
+    }
+
+    #[test]
+    fn cua_probe_session_default_without_output_is_not_a_hit() {
+        let mut acc = CuaRouteAcc::new("sand-cua");
+        acc.on_response_info("claude-opus-5-thinking-xhigh", None);
+        let p = acc.finish().unwrap();
+        assert!(p.resolved_model.is_none());
+        assert!(p
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("claude-opus-5-thinking-xhigh"));
+        assert!(p.note.as_deref().unwrap().contains("不像"));
+    }
+
+    #[test]
+    fn cua_probe_accepts_unknown_shard_only_after_output() {
+        let mut acc = CuaRouteAcc::new("sand-cua");
+        acc.on_output();
+        acc.on_response_info("grok-4.8-preview", None);
+        assert!(!acc.ready(), "未知分片不提前挂断");
+        let p = acc.finish().unwrap();
+        assert_eq!(p.resolved_model.as_deref(), Some("grok-4.8-preview"));
     }
 }

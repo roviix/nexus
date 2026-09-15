@@ -3,6 +3,7 @@
 //! 上层（Tauri 命令）只跟它打交道，不用自己记「先刷 token 再查用量、刷出来的新
 //! refresh 要存回去」这套顺序。
 
+use crate::billing::{self, AccountBilling};
 use crate::model::{Account, NewAccount, Source};
 use crate::oauth::OauthTokens;
 use crate::repo::Accounts;
@@ -98,7 +99,8 @@ impl AccountsService {
         let Some(refresh) = self.repo.secret(id, AccountSecret::Refresh)? else {
             if account.has_access {
                 if account.has_live_access() {
-                    // 调用方要的是「一把全新的」（写进 Cursor / 踢会话后验活），仅会话的号给不了。
+                    // 调用方要的是「一把全新的」（踢会话后验活、有 refresh 时写进 Cursor）。
+                    // 仅会话的号给不了新的，切号那条路应走 `session()` 复用手上这把。
                     // 不是号坏了，别记失败。
                     return Err(AppError::new(
                         ErrorCode::SecretMissing,
@@ -112,8 +114,11 @@ impl AccountsService {
                     ErrorCode::Unauthorized,
                     format!("{} 的 session token 已过期。", account.email),
                 )
-                .with_hint("这个号没有 refresh_token，续不了；到凭证页粘一份新的 session token，或用密码授权一次拿到 refresh_token。");
-                self.repo.record_failure(id, &err.message, true)?;
+                .with_hint("这个号没有 refresh_token，续不了；到凭证页粘一份新的 session token、crsr_ API Key，或用密码授权一次拿到 refresh_token。");
+                // 还有 crsr_ 时别退回待登录：切号这条路确实走不通，但基础用量还能查。
+                if !account.has_api_key {
+                    self.repo.record_failure(id, &err.message, true)?;
+                }
                 return Err(err);
             }
             return Err(AppError::new(
@@ -161,13 +166,63 @@ impl AccountsService {
         id: &AccountId,
         day_start_ms: Option<i64>,
     ) -> Result<AccountUsage> {
+        let account = self.repo.get(id)?;
+        let can_session = account.has_refresh || account.has_live_access();
+
+        if can_session {
+            match self.dashboard_usage(id, day_start_ms).await {
+                Ok(u) => {
+                    self.repo.record_usage(id, &u)?;
+                    return Ok(u);
+                }
+                Err(err) => {
+                    if !account.has_api_key {
+                        return Err(err);
+                    }
+                    tracing::info!(
+                        email = %account.email,
+                        error = %err.message,
+                        "dashboard 用量失败，改走 crsr_ API Key"
+                    );
+                }
+            }
+        }
+
+        if account.has_api_key {
+            return self.api_key_usage(id, day_start_ms).await;
+        }
+
+        if !can_session {
+            // 没有会话、也没有 API Key：把原因说清，别绕去 exchange 报「缺 refresh」。
+            if account.session_only() {
+                let err = AppError::new(
+                    ErrorCode::Unauthorized,
+                    format!("{} 的 session token 已过期。", account.email),
+                )
+                .with_hint("这个号没有 refresh_token，续不了；到凭证页粘一份新的 session token、crsr_ API Key，或用密码授权一次。");
+                self.repo.record_failure(id, &err.message, true)?;
+                return Err(err);
+            }
+            return Err(AppError::new(
+                ErrorCode::SecretMissing,
+                format!("{} 还没有 refresh_token。", account.email),
+            )
+            .with_hint("点「登录」走一次授权，或到凭证页填一把 crsr_ API Key 查基础用量。"));
+        }
+
+        Err(AppError::upstream("拉取用量失败。"))
+    }
+
+    async fn dashboard_usage(
+        &self,
+        id: &AccountId,
+        day_start_ms: Option<i64>,
+    ) -> Result<AccountUsage> {
         let session = self.session(id).await?;
         let mut outcome =
             usage::fetch(&self.http, session.session_token.expose(), day_start_ms).await;
 
         if session.reused && matches!(&outcome, Err(e) if e.code == ErrorCode::Unauthorized) {
-            // 仅会话的号没有第二把可换：上游拒了就是这把 token 废了（被踢 / 提前失效）。
-            // 直接落「待登录」并把原因说清，不要绕去 exchange 报一个「换不出新会话」。
             if session.refresh_token.is_none() {
                 let err = AppError::unauthorized("session token 已被上游拒绝，需要重新粘一份。")
                     .with_hint(
@@ -181,6 +236,22 @@ impl AccountsService {
         }
 
         match outcome {
+            Ok(u) => Ok(u),
+            Err(err) => {
+                self.repo
+                    .record_failure(id, &err.message, err.code == ErrorCode::Unauthorized)?;
+                Err(err)
+            }
+        }
+    }
+
+    async fn api_key_usage(
+        &self,
+        id: &AccountId,
+        day_start_ms: Option<i64>,
+    ) -> Result<AccountUsage> {
+        let key = self.repo.require_secret(id, AccountSecret::ApiKey)?;
+        match usage::fetch_via_api_key(&self.http, key.expose(), day_start_ms).await {
             Ok(u) => {
                 self.repo.record_usage(id, &u)?;
                 Ok(u)
@@ -191,6 +262,82 @@ impl AccountsService {
                 Err(err)
             }
         }
+    }
+
+    /// 刷一个号的订阅账单（标价 / 折扣 / 发票），并写回库。
+    ///
+    /// 复用会话被拒时的重试规矩跟 `refresh_usage` 一样：先换一把再下结论，
+    /// 免得一把提前失效的 access 把号误判成已失效。门户读失败（没有个人账单、
+    /// 页面改了）不是凭证废了，不记 fatal。
+    pub async fn refresh_billing(&self, id: &AccountId) -> Result<AccountBilling> {
+        let session = self.session(id).await?;
+        let mut outcome = billing::fetch(&self.http, session.session_token.expose()).await;
+
+        if session.reused && matches!(&outcome, Err(e) if e.code == ErrorCode::Unauthorized) {
+            if session.refresh_token.is_none() {
+                let err = AppError::unauthorized("session token 已被上游拒绝，需要重新粘一份。")
+                    .with_hint(
+                        "这个号没有 refresh_token；到凭证页更新 session token，或用密码授权一次。",
+                    );
+                self.repo.record_failure(id, &err.message, true)?;
+                return Err(err);
+            }
+            let fresh = self.exchange(id).await?;
+            outcome = billing::fetch(&self.http, fresh.session_token.expose()).await;
+        }
+
+        match outcome {
+            Ok(b) => {
+                self.repo.record_billing(id, &b)?;
+                Ok(b)
+            }
+            Err(err) => {
+                if err.code == ErrorCode::Unauthorized {
+                    self.repo.record_failure(id, &err.message, true)?;
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// 改按需计费，成功后再刷一遍用量，让抽屉立刻看到新上限。
+    pub async fn set_on_demand(
+        &self,
+        id: &AccountId,
+        enabled: bool,
+        limit_cents: Option<f64>,
+        day_start_ms: Option<i64>,
+    ) -> Result<AccountUsage> {
+        let session = self.session(id).await?;
+        let mut outcome = usage::set_on_demand(
+            &self.http,
+            session.session_token.expose(),
+            enabled,
+            limit_cents,
+        )
+        .await;
+
+        if session.reused && matches!(&outcome, Err(e) if e.code == ErrorCode::Unauthorized) {
+            if session.refresh_token.is_none() {
+                let err = AppError::unauthorized("session token 已被上游拒绝，需要重新粘一份。")
+                    .with_hint(
+                        "这个号没有 refresh_token；到凭证页更新 session token，或用密码授权一次。",
+                    );
+                self.repo.record_failure(id, &err.message, true)?;
+                return Err(err);
+            }
+            let fresh = self.exchange(id).await?;
+            outcome = usage::set_on_demand(
+                &self.http,
+                fresh.session_token.expose(),
+                enabled,
+                limit_cents,
+            )
+            .await;
+        }
+
+        outcome?;
+        self.refresh_usage(id, day_start_ms).await
     }
 
     /// 批量刷。**一个失败不影响其余**——刷一批号时中途报错整批停掉是最没用的行为。

@@ -2,7 +2,7 @@
  * 通道选择：网关的几条（Cursor / ChatGPT / Grok Build / Kiro），一排卡里挑一张。
  *
  * 上一版只有一张「本地网关」卡，把四队号压成了一张，选完还得靠模型名前缀猜请求会走哪条。
- * 现在每条通道各一张卡：Cursor 是默认通道（不带前缀的都落它），其余各接各的模型。
+ * 现在每条通道各一张卡：用户指定的默认通道接裸名，其余要写 `{通道}/模型`。
  *
  * 卡的形状：名字顶格；底部一个大号数字（能接的号数）配一枚状态胶囊。选中靠描边 + 淡底（`.pick-on`）。
  * 这张卡还没法用（网关没开、没有号）时，补齐那一步的键就压在卡的右下角。
@@ -10,7 +10,7 @@
  * 地址、端口这类东西不在卡上：接入页的配置块里自然会写出来，用户不该在选通道的时候先看见 `:8787`。
  */
 import type { ReactNode } from "react";
-import { laneCount, localChannels, modelsOf, type LocalChannel, type LocalChannelId } from "../gateway/channels";
+import { defaultChannelId, laneCount, localChannels, modelsOf, type LocalChannel, type LocalChannelId } from "../gateway/channels";
 import type { LocalModel } from "../ipc/models";
 import type { GatewayStatus } from "../ipc/types";
 import { VendorLogo } from "./VendorLogo";
@@ -129,7 +129,7 @@ function localCard(ch: LocalChannel, gateway: GatewayStatus | null): { big: stri
   if (!gateway) return { big: null, bigColor: "var(--color-faint)", tone: "none", aside };
   if (!running) return { big: String(total), bigColor: "var(--color-faint)", tone: "off", aside };
   if (total === 0) {
-    // 订阅通道没号不是坏事（请求会走 Cursor）；Cursor 没号是真没有。
+    // 默认通道没号是真没有（裸名会被拒）；其余没号只是「要写前缀才走这里」。
     return { big: "0", bigColor: ch.isDefault ? "var(--warn)" : "var(--color-faint)", tone: ch.isDefault ? "uneven" : "none", toneLabel: "没有号", aside };
   }
   if (usable === 0) return { big: `0/${total}`, bigColor: "var(--bad)", tone: "down", toneLabel: "号都不可用", aside };
@@ -139,7 +139,7 @@ function localCard(ch: LocalChannel, gateway: GatewayStatus | null): { big: stri
 /**
  * 一排通道卡 + 「通道」小标题。模型广场和接入页共用。
  *
- * `channel` 是平台 id（`cursor` / `chatgpt` …）；`null` 按默认算（Cursor）。
+ * `channel` 是平台 id（`cursor` / `chatgpt` …）；`null` 按用户指定的默认通道算。
  */
 export function ChannelPicker({
   channel,
@@ -193,7 +193,7 @@ export function ChannelPicker({
             toneLabel={c.toneLabel}
             aside={c.aside}
             cta={cta}
-            on={(channel ?? "cursor") === ch.id}
+            on={(channel ?? defaultChannelId(gateway)) === ch.id}
             onPick={() => onChange(ch.id)}
           />
         );

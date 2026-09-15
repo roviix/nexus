@@ -649,6 +649,7 @@ fn classify_ssh_line(line: &str) -> Option<String> {
 mod tests {
     use super::*;
     use nexus_core::ErrorCode;
+    #[cfg(unix)]
     use tokio::net::TcpListener;
 
     #[test]
@@ -760,7 +761,9 @@ mod tests {
     }
 
     // ----------------------------------------------------------------- 真跑中继（本机 node）
+    // 启动器是给 Linux 远端写的 sh 脚本，本机模拟只在 Unix 上做。
 
+    #[cfg(unix)]
     fn have_node() -> bool {
         std::process::Command::new("node")
             .arg("--version")
@@ -773,6 +776,7 @@ mod tests {
 
     /// 用本机 `sh` 跑同一份启动器：中继在本机监听 `remote_port`，本机那头接到 `local_port`。
     /// 这就是远程会发生的事，只是两头都在这台机器上。
+    #[cfg(unix)]
     fn local_launcher() -> Launcher {
         Arc::new(|spec: &TunnelSpec| {
             let mut cmd = tokio::process::Command::new("sh");
@@ -783,11 +787,13 @@ mod tests {
         })
     }
 
+    #[cfg(unix)]
     async fn free_port() -> u16 {
         let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         l.local_addr().unwrap().port()
     }
 
+    #[cfg(unix)]
     async fn wait_phase(rx: &mut watch::Receiver<TunnelStatus>, want: TunnelPhase) -> bool {
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
@@ -804,6 +810,7 @@ mod tests {
     }
 
     /// 本机接收方：一个回显服务，收到什么原样写回，对面半关时自己也关。
+    #[cfg(unix)]
     async fn echo_server() -> u16 {
         let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = l.local_addr().unwrap().port();
@@ -824,6 +831,7 @@ mod tests {
 
     /// 整条链路：客户端连中继口 → 帧经「ssh」回来 → 本机回显 → 再回去。三路并发、各自 200K，
     /// 顺序和内容都不能错；对面关了这边也要看到 EOF。
+    #[cfg(unix)]
     #[tokio::test]
     async fn bytes_round_trip_through_the_relay_on_several_streams() {
         if !have_node() {
@@ -891,6 +899,7 @@ mod tests {
 
     /// HTTP/1.x 客户端的真实行为：发完请求**不**半关，等应答；服务端写完应答后自己关连接。
     /// 客户端必须拿到完整应答再看到 EOF——这正是 curl 在真机上报「Empty reply」时缺的那一段。
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_http_style_exchange_delivers_the_reply_before_closing() {
         if !have_node() {
@@ -959,6 +968,7 @@ mod tests {
     }
 
     /// 本机接收方没开（网关没跑）：远程客户端要立刻被拒，不能吊着。
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_missing_local_receiver_closes_the_stream_instead_of_hanging() {
         if !have_node() {
@@ -991,6 +1001,7 @@ mod tests {
     }
 
     /// 远程端口被占：中继报 EADDRINUSE，状态进入重连并把原因写清楚。
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_occupied_remote_port_is_reported_by_name() {
         if !have_node() {

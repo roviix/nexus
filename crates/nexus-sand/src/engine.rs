@@ -84,22 +84,36 @@ pub fn apply_refs<'a>(
                 legacy_injections,
             } => {
                 // 顺序：当前注入体在 → 幂等；任一旧形态在 → 原地换成当前形态（计 migrated），
-                // 这样「改了选项点重新安装」不是静默 no-op；本类 marker 在但两者都不是 →
-                // 不认识的变体，不动也不叠加；否则在锚点后插入。
-                // 旧形态（legacy_injections）可以带着 marker 表以外的 marker——已下线 Session
-                // 引擎的空 marker 就是这样——所以先查 legacy 再查 marker，否则会把注入体叠在它后面。
+                // 这样「改了选项点重新安装」不是静默 no-op；本类 marker 在但变体表对不上 →
+                // 按 `{MARKER…}` 整块剥再插入当前体（改过注入体的盘不必先卸）。剥不干净
+                // 才不动，避免叠一份。旧形态可以带着 marker 表以外的 marker——已下线
+                // Session 引擎的空 marker 就是这样——所以先查 legacy 再查 marker。
                 if out.contains(injection.as_str()) {
                     continue;
                 }
-                let migrated = legacy_injections
-                    .iter()
-                    .find(|old| out.contains(old.as_str()));
+                let migrated = longest_first(legacy_injections)
+                    .into_iter()
+                    .find(|old| out.contains(*old));
                 if let Some(old) = migrated {
                     let m = count(&out, old);
-                    out = out.replace(old.as_str(), injection);
+                    out = out.replace(old, injection);
                     *rule.id.slot(&mut report.migrated) += m;
                 } else if rule.id.markers().iter().any(|m| out.contains(m)) {
-                    continue;
+                    let mut stripped = out.clone();
+                    let mut n = 0u32;
+                    for marker in rule.id.markers() {
+                        let (next, k) = strip_anchored_marker_blocks(&stripped, marker);
+                        stripped = next;
+                        n += k;
+                    }
+                    if n > 0
+                        && rule.id.markers().iter().all(|m| !stripped.contains(m))
+                        && stripped.contains(anchor.as_str())
+                    {
+                        out =
+                            stripped.replacen(anchor.as_str(), &format!("{anchor}{injection}"), 1);
+                        *rule.id.slot(&mut report.migrated) += 1;
+                    }
                 } else if out.contains(anchor.as_str()) {
                     out = out.replacen(anchor.as_str(), &format!("{anchor}{injection}"), 1);
                     *rule.id.slot(&mut report.hits) += 1;
@@ -143,13 +157,29 @@ pub fn remove(content: &str, rules: &[PatchRule]) -> (String, MarkerCounts) {
                 legacy_injections,
                 ..
             } => {
-                for inj in std::iter::once(injection).chain(legacy_injections.iter()) {
-                    let n = count(&out, inj);
-                    if n > 0 {
-                        out = out.replace(inj.as_str(), "");
-                        *rule.id.slot(&mut removed) += n;
+                // 先按 `{MARKER…}` 整块剥：变体表对不上、或更短变体先匹配把完整体剥残时，
+                // 写后校验才不会剩 1 处 inference stream。再精确剥表内变体（含已下线
+                // Session 引擎那种不带花括号的空 marker）。
+                let mut n = 0u32;
+                for marker in rule.id.markers() {
+                    let (next, k) = strip_anchored_marker_blocks(&out, marker);
+                    if k > 0 {
+                        out = next;
+                        n += k;
                     }
                 }
+                let mut known: Vec<&str> = std::iter::once(injection.as_str())
+                    .chain(legacy_injections.iter().map(String::as_str))
+                    .collect();
+                known.sort_by_key(|s| std::cmp::Reverse(s.len()));
+                for inj in known {
+                    let k = count(&out, inj);
+                    if k > 0 {
+                        out = out.replace(inj, "");
+                        n += k;
+                    }
+                }
+                *rule.id.slot(&mut removed) += n;
             }
         }
     }
@@ -216,6 +246,71 @@ pub fn inspect(content: &str, rules: &[PatchRule]) -> FileInspection {
     ins
 }
 
+/// 变体表按从长到短匹配：完整体互相是子串时，先剥短的会留下带 marker 的残片。
+fn longest_first(injections: &[String]) -> Vec<&str> {
+    let mut out: Vec<&str> = injections.iter().map(String::as_str).collect();
+    out.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    out
+}
+
+/// 剥掉 `{/*MARKER*/ … }` 这一整块。Direct 注入体是锚点后一个平衡花括号对象；
+/// 变体表对不上时仍能卸干净 / 原地迁走。
+fn strip_anchored_marker_blocks(content: &str, marker: &str) -> (String, u32) {
+    let needle = format!("{{{marker}");
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    let mut n = 0u32;
+    while let Some(idx) = rest.find(&needle) {
+        out.push_str(&rest[..idx]);
+        match matching_brace_end(&rest[idx..]) {
+            Some(end) => {
+                rest = &rest[idx + end + 1..];
+                n += 1;
+            }
+            None => {
+                out.push_str(rest);
+                return (out, n);
+            }
+        }
+    }
+    out.push_str(rest);
+    (out, n)
+}
+
+/// `s` 以 `{` 开头时，返回配对 `}` 的字节下标（跳过引号字符串）。对不上则 `None`。
+fn matching_brace_end(s: &str) -> Option<usize> {
+    if !s.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                let quote = c;
+                while let Some((_, ch)) = chars.next() {
+                    if ch == '\\' {
+                        chars.next();
+                        continue;
+                    }
+                    if ch == quote {
+                        break;
+                    }
+                }
+            }
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn count(haystack: &str, needle: &str) -> u32 {
     if needle.is_empty() {
         return 0;
@@ -268,7 +363,7 @@ fn replace_guarded(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::SAND_MANAGED_LOCAL_ROUTE_MARKER;
+    use crate::rules::{SAND_DIRECT_STREAM_MARKER, SAND_MANAGED_LOCAL_ROUTE_MARKER};
 
     fn literal(id: RuleId, original: &str, patched: &str, legacy: &[&str]) -> PatchRule {
         PatchRule {
@@ -457,7 +552,7 @@ mod tests {
 
     /// 盘上是不在本类 marker 表里的旧形态（已下线 Session 引擎的空 marker）：不能再往锚点后
     /// 叠一份，而要走迁移分支原地换掉——所以 legacy 检查必须排在 marker 检查前面。
-    /// 反过来，本类 marker 在但既不是当前体也不是任何已知旧形态：不动、不叠加。
+    /// 本类 marker 在但变体表对不上：按 `{MARKER…}` 整块剥再插入当前体，不叠加。
     #[test]
     fn anchored_insert_migrates_legacy_shapes_outside_the_marker_table_and_never_stacks() {
         let rules = [PatchRule {
@@ -468,6 +563,7 @@ mod tests {
                 legacy_injections: vec![LEGACY_SESSION_STREAM_MARKER.into()],
             },
         }];
+        let src = "function hre(){ body }";
         let on_disk = format!("function hre(){{{LEGACY_SESSION_STREAM_MARKER} body }}");
         let before = inspect(&on_disk, &rules);
         assert_eq!((before.markers.inference_stream, before.legacy), (0, 1));
@@ -485,9 +581,16 @@ mod tests {
         assert!(!swapped.contains(LEGACY_SESSION_STREAM_MARKER));
 
         let unknown = "function hre(){{/*SAND_DIRECT_INFERENCE_STREAM_V1*/from-the-future} body }";
-        let (same, rep) = apply(unknown, &rules);
-        assert_eq!(same, unknown);
-        assert_eq!(rep.hits.total() + rep.migrated.total(), 0);
+        let (migrated, rep) = apply(unknown, &rules);
+        assert_eq!(migrated, swapped, "未知变体应整块换成当前体，不叠加");
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+        let (back, removed) = remove(unknown, &rules);
+        assert_eq!(back, src);
+        assert_eq!(removed.inference_stream, 1);
+        assert!(!back.contains(SAND_DIRECT_STREAM_MARKER));
     }
 
     /// 盘上装的是另一个变体（自摘要开关取反）时，apply 要原地换成当前变体：结果与对干净基线

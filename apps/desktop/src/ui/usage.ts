@@ -212,6 +212,47 @@ export function money(cents?: number | null, digits = 2): string {
   return `$${(cents / 100).toFixed(digits)}`;
 }
 
+/** Stripe 零小数币种：金额就是面值，不再除 100。 */
+const ZERO_DECIMAL = new Set([
+  "bif",
+  "clp",
+  "djf",
+  "gnf",
+  "jpy",
+  "kmf",
+  "krw",
+  "mga",
+  "pyg",
+  "rwf",
+  "ugx",
+  "vnd",
+  "vuv",
+  "xaf",
+  "xof",
+  "xpf",
+]);
+
+/**
+ * Stripe 金额：带上币种。门户国家不一定是美元（实测出现过日元标价）。
+ * 认不出的币种退回「CODE 12.34」，不要硬套 `$`。
+ */
+export function moneyFx(amount?: number | null, currency?: string | null, digits = 2): string {
+  if (amount == null || !Number.isFinite(amount)) return "—";
+  const ccy = (currency || "usd").toLowerCase();
+  const zero = ZERO_DECIMAL.has(ccy);
+  const major = zero ? amount : amount / 100;
+  try {
+    return new Intl.NumberFormat("zh-CN", {
+      style: "currency",
+      currency: ccy.toUpperCase(),
+      minimumFractionDigits: zero ? 0 : digits,
+      maximumFractionDigits: zero ? 0 : digits,
+    }).format(major);
+  } catch {
+    return `${ccy.toUpperCase()} ${major.toFixed(zero ? 0 : digits)}`;
+  }
+}
+
 /**
  * 卡片和账单里的「大数」用短一档的写法：`$8.40`、`$21`、`$1.2k`。
  * 两位小数留给对账的表格；扫一眼的地方，数字越短越先被读到。
@@ -222,6 +263,17 @@ export function moneyShort(cents?: number | null): string {
   if (Math.abs(d) >= 1000) return `$${(d / 1000).toFixed(1)}k`;
   if (Math.abs(d) >= 100) return `$${Math.round(d)}`;
   return `$${d.toFixed(2)}`;
+}
+
+/**
+ * Cursor 赠送积分。credit grant 存在美分里，仪表盘上的「25 / 100 积分」就是整美元。
+ * 非整美元才带分位，避免把 25 写成 $25.00 让人以为是另一套账。
+ */
+export function creditPoints(cents?: number | null): string {
+  if (cents == null || !Number.isFinite(cents)) return "—";
+  const d = cents / 100;
+  if (Math.abs(d - Math.round(d)) < 0.005) return String(Math.round(d));
+  return d.toFixed(2);
 }
 
 /* ── 花费节奏 ─────────────────────────────────────────────────────────────── */

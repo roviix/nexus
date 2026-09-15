@@ -27,6 +27,19 @@ import { timeAgo } from "../ui/format";
 import { InterceptCard } from "./sand/InterceptCard";
 import { RemoteHosts } from "./sand/RemoteHosts";
 
+const GROK45_CUA_KEY = "nexus.sand.grok45ViaCua";
+
+function readGrok45ViaCua(): boolean | null {
+  try {
+    const v = window.localStorage.getItem(GROK45_CUA_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch {
+    /* 读不到就当没选过 */
+  }
+  return null;
+}
+
 export const STEP_LABEL: Record<SandProgress["step"], string> = {
   preflight: "预检版本与锚点",
   backup: "备份改动前的文件",
@@ -129,6 +142,9 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
   // 自摘要关，这一页要做的正是把它们带到新默认——选项摆在明处、旁边标着「盘上：…」，点
   // 「重新安装」就原地切。
   const [selfSummary, setSelfSummary] = useState(true);
+  // 跟盘上走，并记住上次点过的值。默认关；重启 Nexus 后如果仍写死 false，
+  // 卸装再装会把已经开着的 4.5→CUA 又写回去。
+  const [grok45ViaCuaChoice, setGrok45ViaCuaChoice] = useState<boolean | null>(readGrok45ViaCua);
   const [modeGate, setModeGate] = useState<ModeGate>("all");
   const [relaunch, setRelaunch] = useState(true);
   // 「推理经本机网关」和自摘要相反：**跟着盘上状态初始化**（用户没碰之前 null = 盘上是什么就是什么）。
@@ -203,6 +219,18 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
   // 盘上装的自摘要开关和界面选的不同：重新安装会原地切换（只改 4884.js 两个字符）。
   const selfSummaryDiffers =
     !!status && status.selfSummary !== null && status.selfSummary !== selfSummary;
+  const grok45ViaCua = grok45ViaCuaChoice ?? status?.grok45ViaCua ?? false;
+  const grok45ViaCuaDiffers =
+    !!status && status.grok45ViaCua !== null && status.grok45ViaCua !== grok45ViaCua;
+
+  function setGrok45ViaCua(next: boolean) {
+    setGrok45ViaCuaChoice(next);
+    try {
+      window.localStorage.setItem(GROK45_CUA_KEY, next ? "1" : "0");
+    } catch {
+      /* 记不住就当次有效 */
+    }
+  }
   const installedEndpoint = status?.inferenceEndpoint ?? null;
   const viaGateway = viaGatewayChoice ?? installedEndpoint !== null;
   const passthroughUrl = passthroughUrlOf(gw);
@@ -222,6 +250,7 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
     (grokbotAuth === "direct" && !status?.grokbotDirectConfigured);
   const optionsForInstall = {
     selfSummary,
+    grok45ViaCua,
     modeGate,
     relaunch,
     inferenceEndpoint: wantEndpoint,
@@ -361,12 +390,12 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                 <Opt
                   icon="shield"
                   title="Bot 通道"
-                  desc="Agent 面板用 Grok Bot 的额度"
+                  desc="Agent 面板用 Grok Bot 的额度；选 GLM 5.2 会改走 premium，其它模型原样"
                   hint={
                     grokbotAuth === "box_relay"
                       ? "经 Grok Bot 客户端；和「推理经本机网关」互斥。"
                       : grokbotAuth === "direct"
-                        ? "用哪个号，在账号页打开该账号的「Grok Bot」页选。"
+                        ? "用哪个号，在账号页打开该账号的「Grok Bot」页选。要看实际解析模型，请同时开「推理经本机网关」。"
                         : undefined
                   }
                   tone={grokbotConflictsWithGateway ? "warn" : grokbotDiffers ? "warn" : grokbotAuth !== "off" ? "on" : undefined}
@@ -388,6 +417,31 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                       </option>
                     ))}
                   </select>
+                </Opt>
+                <Opt
+                  icon="shield"
+                  title="Grok 4.5 走 CUA"
+                  desc="面板选 Grok 4.5 时改发 sand-cua。只有部分号会落到 4.7，其余仍是 luna"
+                  hint={
+                    grokbotAuth === "off"
+                      ? "Bot 通道关着时这项写不进补丁。"
+                      : grok45ViaCua && status.grok45ViaCua === false
+                        ? "开关已开，但盘上还是关：必须再点一次安装，选 4.5 才会改发 sand-cua。"
+                        : "看「盘上」标签。开关开了还要再安装一次。Agent 日志里的 modelId 仍会写 grok-4.5，成功时会出现 [nexus-sand] resolved。"
+                  }
+                  tone={grok45ViaCuaDiffers ? "warn" : grok45ViaCua ? "on" : undefined}
+                >
+                  {status.grok45ViaCua !== null ? (
+                    <Tag tone={grok45ViaCuaDiffers ? "warn" : status.grok45ViaCua ? "ok" : "default"}>
+                      盘上：{status.grok45ViaCua ? "开" : "关"}
+                    </Tag>
+                  ) : null}
+                  <Switch
+                    checked={grok45ViaCua}
+                    disabled={busy || grokbotAuth === "off"}
+                    onChange={setGrok45ViaCua}
+                    label="Grok 4.5 走 CUA"
+                  />
                 </Opt>
                 <Opt
                   icon="gateway"
@@ -434,7 +488,19 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
 
               {viaGateway && !gatewayRunning ? (
                 <div style={{ marginTop: 12 }}>
-                  <Banner tone="warn" title="网关没在跑。" hint="装完到「本地网关」页开启，或打开自动启动。" />
+                  <Banner
+                    tone="warn"
+                    title="网关没在跑。"
+                    hint="安装时会自动打开网关和 Bot 通道。现在装也可以，不必先去「本地网关」页点。"
+                  />
+                </div>
+              ) : viaGateway && gw && !gw.grokbotStream.enabled ? (
+                <div style={{ marginTop: 12 }}>
+                  <Banner
+                    tone="warn"
+                    title="Bot 通道还没开。"
+                    hint="经网关的 Stream 必须用 grokBotToken。现在装会自动打开；也可以在下面拦截卡里先开。"
+                  />
                 </div>
               ) : null}
 
@@ -449,6 +515,27 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                     卸载，恢复原版
                   </button>
                 ) : null}
+                {status.installed ? (
+                  <button
+                    type="button"
+                    className="btn btn-soft"
+                    disabled={!canInstall || dryRunBlocks || grokbotConflictsWithGateway}
+                    title="先卸再装，逼 Cursor 丢掉内存里的旧补丁。开关保持现在这样。"
+                    onClick={() =>
+                      void run(async () => {
+                        await sand.uninstall(false);
+                        if (viaGateway) {
+                          if (!gw?.running) await gateway.start();
+                          if (!gw?.grokbotStream.enabled) await gateway.setGrokbotStream(true);
+                          await reloadGateway();
+                        }
+                        return sand.install(optionsForInstall);
+                      })
+                    }
+                  >
+                    卸载并重装
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -460,7 +547,16 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                         ? "Box Relay 与经本机网关互斥"
                         : "会退出 Cursor，改动前自动备份"
                   }
-                  onClick={() => void run(() => sand.install(optionsForInstall))}
+                  onClick={() =>
+                    void run(async () => {
+                      if (viaGateway) {
+                        if (!gw?.running) await gateway.start();
+                        if (!gw?.grokbotStream.enabled) await gateway.setGrokbotStream(true);
+                        await reloadGateway();
+                      }
+                      return sand.install(optionsForInstall);
+                    })
+                  }
                 >
                   {busy ? <Spinner /> : <Icon name="sand" size={14} />}
                   {status.complete ? "重新安装（应用当前选项）" : "安装 Sand 补丁"}
@@ -630,7 +726,17 @@ function OutcomeBanner({ outcome }: { outcome: SandOutcome }) {
   if (!outcome.wrote) {
     return (
       <div style={{ marginTop: 12 }}>
-        <Banner tone="default" title={`无需${verb}：已经是目标状态，Cursor 没有被改动。`} />
+        <Banner
+          tone="default"
+          title={`无需${verb}：文件已经是目标状态。`}
+          hint={
+            outcome.operation === "install"
+              ? outcome.cursorRelaunched
+                ? "已重启 Cursor，让它重新加载补丁。Agent 日志里的 modelId 仍会写 grok-4.5；成功时会出现 [nexus-sand] remap / resolved。"
+                : "请完全退出 Cursor（活动监视器里确认没了）再打开，否则它还在用内存里的旧 4884.js。"
+              : "Cursor 没有被改动。"
+          }
+        />
       </div>
     );
   }

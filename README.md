@@ -26,7 +26,8 @@ Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.
 ![概览](docs/images/overview.png)
 
 > 架构、关键机制与那些有意为之的取舍，见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)；
-> Sand 补丁与远程主机的决策记录见 [`docs/SAND.md`](./docs/SAND.md)。
+> 两条 Cursor 补丁通道的决策记录见 [`docs/SAND.md`](./docs/SAND.md) 与
+> [`docs/CRSR.md`](./docs/CRSR.md)。
 
 ## 能做什么
 
@@ -36,6 +37,9 @@ Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.
   OpenAI Responses、OpenAI Images。入站统一解析成一份中间表示再桥接到上游，流式 SSE 原样支持。
 - **多平台上游。** Cursor（`aiserver.v1.InferenceService/Stream`）、ChatGPT 订阅号
   （`chatgpt.com/backend-api/codex`）、Grok、Kiro。模型目录（`/v1/models`）按上游能力自动汇总。
+- **通道写在模型名里。** 目录主键是 `{通道}/{模型}`（`cursor/claude-opus-5`、`chatgpt/gpt-5`），
+  带前缀就强制走那条通道；不带前缀的走**你自己设的默认通道**。请求落到哪条号池是看得见、
+  改得动的，不靠网关猜。
 - **额度接力，不是负载均衡。** 一直用当前号，额度到线自动切到下一个；会话粘性天然成立，
   换号频率极低。
 - **模型名映射。** Claude Code 发 `claude-sonnet-4-5`、Codex 发 `gpt-5`，网关把它们对到上游认识的
@@ -64,9 +68,12 @@ Codex CLI（`~/.codex/config.toml`）、OpenCode 指到本地网关上；改之�
 ### 账号池
 
 - 添加 Cursor / ChatGPT / Grok / Kiro 账号：OAuth 走系统浏览器登录，应用后台收 token；也可以粘
-  refresh token 批量导入。
+  refresh token、`crsr_` API Key、Codex session JSON 批量导入（一次贴多个，格式自动认）。
 - 查看订阅、额度、重置时间；到期 / 封禁 / 额度耗尽自动标记。
-- 凭证存在权限收紧（`0700` / `0600`）的本地 SQLite 里，不进系统钥匙串，也不上传任何地方。
+- 额度和账单分两张卡：一张是还剩多少、什么时候重置，另一张是标价、券、下次扣多少、历史发票。
+  两者不是一个口径，不叠成一个数。
+- 凭证存在本地 SQLite 里，不进系统钥匙串，也不上传任何地方。macOS 上目录 / 文件收为
+  `0700` / `0600`；Windows 上靠 `%APPDATA%` 的默认 ACL。
 
 ![账号](docs/images/accounts.png)
 
@@ -83,11 +90,16 @@ Codex CLI（`~/.codex/config.toml`）、OpenCode 指到本地网关上；改之�
 
 ![游乐场](docs/images/playground.png)
 
-### Sand 补丁（可选，进阶）
+### 两条 Cursor 补丁通道（可选，进阶）
 
-把 Cursor IDE 内置的 Agent 面板也改道到本地网关，让 IDE 里的推理也走你的账号池；支持通过 SSH
-在远程开发机上安装。这一步会修改 Cursor 的应用文件，请先读
-[`docs/SAND.md`](./docs/SAND.md) 与下方的「风险与免责」。
+这两条都会**修改 Cursor 的应用文件**，占同一个挂点、只能装一条。装之前请先读对应文档与下方的
+「风险与免责」。
+
+- **Sand 通道**（[`docs/SAND.md`](./docs/SAND.md)）：把 Cursor IDE 内置的 Agent 面板改道到本地
+  网关，让 IDE 里的推理也走你的账号池；支持通过 SSH 在远程开发机上安装。
+- **CRSR 通道**（[`docs/CRSR.md`](./docs/CRSR.md)）：不改路由，只把面板请求的鉴权头换成某个账号
+  `crsr_` User API Key 兑出来的票据——面板还是原生的 `agent.v1.AgentService/Run`，只是换了个人
+  付账。票据续期由补丁自己完成，关掉 Nexus 也不会在写代码写到一半时突然 401。
 
 ## 安装
 
@@ -146,6 +158,7 @@ node scripts/test-package-release.mjs
 | `CURSOR_STATE_DB` | 直接指定 `state.vscdb`，指到副本上可以安全地试切号 |
 | `CURSOR_APP_PATH` | 覆盖 Cursor 应用本体位置（也可在应用「设置」里改） |
 | `SAND_INFERENCE_ENDPOINT` | 装 Sand 补丁时把 Cursor 的推理改道到这个端点 |
+| `NEXUS_CRSR_CREDENTIAL_FILE` | 把 CRSR 通道的凭证文件指到别处。Nexus 与被打补丁的 Cursor 是两个进程，要设在两边都看得见的地方才有效（见 [`docs/CRSR.md`](./docs/CRSR.md) §7） |
 | `NEXUS_PASSTHROUGH_DUMP_DIR` | 透传把入站推理请求体原样落盘到这个目录（会关掉流式转发；落盘的是业务明文，取证完就删） |
 
 ### 数据在哪
@@ -155,8 +168,9 @@ node scripts/test-package-release.mjs
 | macOS | `~/Library/Application Support/com.roviix.nexus/`、`~/Library/Logs/com.roviix.nexus/` | `~/Library/Application Support/Cursor` |
 | Windows | `%APPDATA%\com.roviix.nexus\`、同目录 `logs\` | `%APPDATA%\Cursor` |
 
-全部凭证都在应用数据目录下的 `nexus.db` 里，明文，不进系统钥匙串；目录收为 `0700`、文件收为
-`0600`（取舍与理由见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1）。整库搬家走
+全部凭证都在应用数据目录下的 `nexus.db` 里，明文，不进系统钥匙串；macOS 上目录收为 `0700`、
+文件收为 `0600`，Windows 上不改文件权限，靠 `%APPDATA%` 的默认 ACL（取舍与理由见
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1）。整库搬家走
 `~/.roviix/backups`；只搬账号可在账号页导出到 `~/.roviix/exports`，再在另一台机器「批量添加」
 中导入。导出文件含明文凭证，用完就删。
 
@@ -177,14 +191,15 @@ node scripts/test-package-release.mjs
 │   ├── nexus-gateway/              # 本地网关：方言口 + 透传口 + 额度接力 + 账本
 │   ├── nexus-connect/              # 一键接入：改 Claude Code / Codex / OpenCode 配置
 │   ├── nexus-playground/           # 游乐场的线程 / 消息存储
-│   └── nexus-sand/                 # Sand 补丁引擎（本机 + 远程 SSH）
+│   ├── nexus-sand/                 # Sand 补丁引擎（本机 + 远程 SSH）
+│   └── nexus-crsr/                 # CRSR 补丁：原生 Agent 面板走 crsr_ API Key
 ├── apps/desktop/
 │   ├── src-tauri/                  # Tauri 命令、事件、capabilities
 │   ├── src/                        # React 前端
 │   └── ui-preview/                 # 不起 Rust 也能跑的 UI 预览（mock core）
 ├── packages/design-tokens/         # CSS 变量
 ├── scripts/                        # 打包、签名、发布清单
-└── docs/                           # ARCHITECTURE.md / SAND.md
+└── docs/                           # ARCHITECTURE.md / SAND.md / CRSR.md
 ```
 
 **依赖只能向下**，且 `nexus-switcher` 与 `nexus-accounts` **互不依赖**——切号本与账号池是两个
@@ -193,7 +208,7 @@ node scripts/test-package-release.mjs
 
 ## 发布
 
-推一个 `v*` 标签（如 `v0.4.0`，须与 `Cargo.toml` / `package.json` / `tauri.conf.json` 里的版本一致），
+推一个 `v*` 标签（如 `v0.5.0`，须与 `Cargo.toml` / `package.json` / `tauri.conf.json` 里的版本一致），
 [`release.yml`](./.github/workflows/release.yml) 会在 macOS 与 Windows 上打包、生成 SHA-256 / MD5 与
 updater 用的 `latest.json`，并发到 GitHub Releases。自动更新端点固定为
 `https://github.com/roviix/nexus/releases/latest/download/latest.json`。
@@ -216,8 +231,10 @@ updater 用的 `latest.json`，并发到 GitHub Releases。自动更新端点固
 
 - Nexus 用你自己的订阅账号调用各平台的**非公开客户端接口**。这可能违反相关平台的服务条款，
   账号有被限流、警告或封禁的风险。请自行评估，**不要**用在你不能承受损失的账号上。
-- Sand 补丁会修改 Cursor 的应用文件。它是幂等、可逆、带版本护栏的，但仍属于对第三方软件的
-  改动；Cursor 升级后需要重新安装补丁。
+- Sand 与 CRSR 补丁会修改 Cursor 的应用文件。它们是幂等、可逆、带版本护栏的，但仍属于对第三方
+  软件的改动；Cursor 升级后需要重新安装补丁。两条占同一挂点，只能装一条。
+- CRSR 通道走的是 Cursor **API Key 的计费口径**，和订阅额度不是同一本账。用之前先确认你清楚
+  自己在花什么。
 - 本项目与 Cursor、OpenAI、xAI、Amazon 无任何关联，不受其背书。
 - 软件按「原样」提供，不附带任何担保，详见 [LICENSE](./LICENSE)。
 

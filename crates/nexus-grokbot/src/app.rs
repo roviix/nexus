@@ -1,6 +1,6 @@
 //! Grok Bot 客户端本体：装在哪、登没登录、拉起。
 
-use nexus_core::{AppError, ErrorCode, Result};
+use nexus_core::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -109,10 +109,11 @@ pub fn launch() -> Result<()> {
         if out.status.success() {
             return Ok(());
         }
-        return Err(
-            AppError::new(ErrorCode::CursorNotFound, "没找到 Grok Bot 应用。")
-                .with_hint("到 x.ai/bot 下载并登录一个有额度的账号。"),
-        );
+        return Err(AppError::new(
+            nexus_core::ErrorCode::CursorNotFound,
+            "没找到 Grok Bot 应用。",
+        )
+        .with_hint("到 x.ai/bot 下载并登录一个有额度的账号。"));
     }
     #[allow(unreachable_code)]
     Err(AppError::unsupported_platform("拉起 Grok Bot"))

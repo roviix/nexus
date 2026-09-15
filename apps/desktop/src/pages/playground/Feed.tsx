@@ -35,6 +35,7 @@ export function Feed({
   kind,
   messages,
   run,
+  model,
   artifact,
   onRegenerate,
   onRetryImage,
@@ -45,6 +46,8 @@ export function Feed({
   kind: Kind;
   messages: Message[];
   run: Run | undefined;
+  /** 这一会话选的模型。4.7 等思考模型首字前会空等，文案要跟普通模型分开。 */
+  model?: string;
   /** 对话会话才有：可预览的代码块画成卡片，点开进右侧预览区。 */
   artifact?: ArtifactChannel;
   onRegenerate: () => void;
@@ -115,7 +118,7 @@ export function Feed({
         {run && !run.done ? (
           <>
             {pendingPrompt != null ? <UserBubble content={pendingPrompt} images={run.attachments.map((a) => ({ id: a.id, src: a.url, alt: a.name }))} /> : null}
-            {run.kind === "chat" ? <StreamingReply run={run} artifact={artifact} /> : <GeneratingCard run={run} />}
+            {run.kind === "chat" ? <StreamingReply run={run} model={model} artifact={artifact} /> : <GeneratingCard run={run} />}
           </>
         ) : null}
       </div>
@@ -320,7 +323,23 @@ function useElapsed(since: number): number {
  * 超过几秒把秒数亮出来，再久一点说一句为什么——上游首字动辄两三秒、带思考的模型更久，
  * 用户要知道这不是卡死。
  */
-function Waiting({ since, what }: { since: number; what: string }) {
+function isSilentThinkModel(model: string | null | undefined): boolean {
+  const k = (model || "").toLowerCase();
+  return k.includes("grok-4.7") || k.includes("grok-4-7") || k.includes("4-7-0910") || k.includes("sand-cua");
+}
+
+function waitingLabel(selected?: string, routed?: string | null): string {
+  return isSilentThinkModel(routed) || isSilentThinkModel(selected) ? "模型在思考" : "正在连上游";
+}
+
+function waitingHint(selected?: string, routed?: string | null): string {
+  if (isSilentThinkModel(routed) || isSilentThinkModel(selected)) {
+    return "4.7 会先在上游想完再吐字，思考过程经常不流下来，所以这里会空等 20–40 秒。不是又卡死了。";
+  }
+  return "上游还没吐第一个字。带思考的模型首字常要十几秒；一直没动静可以停掉重发。";
+}
+
+function Waiting({ since, what, hint }: { since: number; what: string; hint: string }) {
   const s = useElapsed(since);
   return (
     <div className="pg-waiting">
@@ -333,14 +352,15 @@ function Waiting({ since, what }: { since: number; what: string }) {
         {what}
         {s >= 4 ? <span className="num pg-waiting-s"> · {s} s</span> : null}
       </span>
-      {s >= 15 ? <span className="pg-waiting-hint">上游还没吐第一个字。带思考的模型首字常要十几秒；一直没动静可以停掉重发。</span> : null}
+      {s >= 8 ? <span className="pg-waiting-hint">{hint}</span> : null}
     </div>
   );
 }
 
-function StreamingReply({ run, artifact }: { run: Run; artifact?: ArtifactChannel }) {
+function StreamingReply({ run, model, artifact }: { run: Run; model?: string; artifact?: ArtifactChannel }) {
   const waiting = !run.text && !run.thinking;
   const thinkingOnly = !run.text && Boolean(run.thinking);
+  const silent = isSilentThinkModel(model) || isSilentThinkModel(run.routed);
   // 流式中的那一轮还没落库：卡片坐标里的消息 id 用 LIVE_ARTIFACT 顶替，落库后工作台换回来。
   const link = useMemo(
     () => (artifact ? { messageId: LIVE_ARTIFACT, active: artifact.active, onOpen: artifact.onOpen } : undefined),
@@ -352,11 +372,11 @@ function StreamingReply({ run, artifact }: { run: Run; artifact?: ArtifactChanne
       <div className="pg-reply">
         <div className="pg-meta num">
           <span className="pg-meta-live">
-            <Spinner /> {waiting ? "等首字" : thinkingOnly ? "思考中" : "生成中"}
+            <Spinner /> {waiting ? (silent ? "思考中" : "等首字") : thinkingOnly ? "思考中" : "生成中"}
           </span>
           {run.routed ? <span className="mono pg-meta-model">{run.routed}</span> : null}
         </div>
-        {waiting ? <Waiting since={run.startedAt} what="正在连上游" /> : null}
+        {waiting ? <Waiting since={run.startedAt} what={waitingLabel(model, run.routed)} hint={waitingHint(model, run.routed)} /> : null}
         {/* 还没开始出正文时思考区默认展开：那会儿它是屏幕上唯一在动的东西。 */}
         {run.thinking ? <Thinking text={run.thinking} live={!run.text} open={!run.text} /> : null}
         {run.text ? (

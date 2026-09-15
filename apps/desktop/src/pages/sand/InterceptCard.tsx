@@ -146,7 +146,7 @@ export function InterceptCard({
         <Opt
           icon="shield"
           title="Bot 通道"
-          desc="经网关的 Agent 面板请求用 Grok Bot 的额度"
+          desc="经网关的 Agent 面板请求用 Grok Bot 的额度；选 GLM 5.2 会改走 premium，其它模型原样，下表「实际」是服务端落到的模型"
           hint={grok.enabled && !grokCredOk ? "还没选用哪个号：到账号页打开该账号的「Grok Bot」页选一个，或关掉。" : undefined}
           tone={grok.enabled ? (grokCredOk ? "on" : "warn") : undefined}
         >
@@ -237,7 +237,7 @@ export function InterceptCard({
                 <tr>
                   <th>时间</th>
                   <th>会话</th>
-                  <th>模型</th>
+                  <th>模型 → 实际</th>
                   <th className="n">消息</th>
                   <th className="n">输入 / 输出</th>
                   <th className="n">耗时</th>

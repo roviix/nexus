@@ -93,7 +93,7 @@ export function AccountsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
   return (
     <div>
       {platform === "chatgpt" ? (
-        <ChatGptAccounts tabs={tabs} onGo={onGo} />
+        <ChatGptAccounts tabs={tabs} />
       ) : platform === "grok" ? (
         <GrokAccounts tabs={tabs} onGo={onGo} />
       ) : platform === "kiro" ? (

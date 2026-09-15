@@ -10,9 +10,12 @@ use crate::commands::switcher::run_blocking;
 use crate::state::AppState;
 use nexus_accounts::{Account, NewAccount};
 use nexus_core::{AccountId, Result};
-use nexus_grokbot::{BoxRelayDescriptor, GrokBotIdentity, GrokBotStatus, StreamCredential};
+use nexus_grokbot::{
+    BoxRelayDescriptor, CuaProbe, GrokBotIdentity, GrokBotStatus, StreamCredential, CUA_PROBE_MODEL,
+};
 use nexus_store::activity;
 use serde::Serialize;
+use std::time::Duration;
 use tauri::State;
 
 /// 界面用的直连凭证摘要（不含 token）。
@@ -178,4 +181,105 @@ pub fn grokbot_clear_direct(state: State<'_, AppState>) -> Result<()> {
 pub fn grokbot_forget(state: State<'_, AppState>) -> Result<()> {
     state.grokbot.forget_secrets();
     Ok(())
+}
+
+/// 上次探过这个号的 `sand-cua` 落点（磁盘缓存，不含 token）。
+#[tauri::command(async)]
+pub fn grokbot_cua_probe_get(
+    state: State<'_, AppState>,
+    id: AccountId,
+) -> Result<Option<CuaProbe>> {
+    let account = state.accounts.repo.get(&id)?;
+    Ok(state.grokbot.cua_probe_for(&account.email))
+}
+
+/// 打一发 `sand-cua`，看这个号有没有 grok 4.7 灰度。
+///
+/// 等到已知分片（4.7 / luna）或出字后的干净 ResponseInfo 再挂断。
+/// 不覆盖本机正在用的直连凭证：当前凭证就是这个号才续用，否则内存里换一把。
+/// 副作用：会唤醒（或新建）这个号的 Box pod，并消耗很少额度。
+#[tauri::command]
+pub async fn grokbot_cua_probe(state: State<'_, AppState>, id: AccountId) -> Result<CuaProbe> {
+    let account = state.accounts.repo.get(&id)?;
+    let session = state.accounts.session(&id).await?;
+    let access = session.access_token.expose().to_string();
+    let machine_id = nexus_gateway::DeviceIdentity::derived(&access).machine_id;
+
+    let cred = match state
+        .grokbot
+        .stream_credential_for_probe(&account.email)
+        .await?
+    {
+        Some(c) => c,
+        None => {
+            state
+                .grokbot
+                .mint_direct_for_account_ephemeral(&account.email, &access, &machine_id)
+                .await?
+        }
+    };
+
+    let identity =
+        nexus_gateway::DeviceIdentity::pinned(&cred.grok_bot_token, cred.machine_id.clone());
+    // thinking 模型（4.7）首 token 可能要十几秒；总时长给够等 ResponseInfo。
+    let cfg = nexus_gateway::StreamConfig {
+        client_type: "sand".into(),
+        idle_timeout: Duration::from_secs(35),
+        max_turn: Duration::from_secs(55),
+        ..nexus_gateway::StreamConfig::default()
+    };
+    let client = nexus_gateway::http_client();
+    let probed = nexus_gateway::probe_routed_model(
+        &client,
+        &cfg,
+        &cred.grok_bot_token,
+        &identity,
+        CUA_PROBE_MODEL,
+    )
+    .await;
+
+    let now = nexus_grokbot::credential::now_ms();
+    let probe = match probed {
+        Ok(r) => match r.resolved_model {
+            Some(model) => CuaProbe {
+                email: account.email.clone(),
+                requested_model: CUA_PROBE_MODEL.into(),
+                resolved_model: Some(model.clone()),
+                has_grok47: nexus_gateway::models::is_grok47_request(&model),
+                probed_at_ms: now,
+                error: None,
+            },
+            None => CuaProbe {
+                email: account.email.clone(),
+                requested_model: CUA_PROBE_MODEL.into(),
+                resolved_model: None,
+                has_grok47: false,
+                probed_at_ms: now,
+                error: Some(r.note.unwrap_or_else(|| "上游没回落到哪个模型。".into())),
+            },
+        },
+        Err(e) => CuaProbe {
+            email: account.email.clone(),
+            requested_model: CUA_PROBE_MODEL.into(),
+            resolved_model: None,
+            has_grok47: false,
+            probed_at_ms: now,
+            error: Some(e.message),
+        },
+    };
+    state.grokbot.save_cua_probe(&probe)?;
+    activity::info(
+        &state.db,
+        "grokbot",
+        Some(&account.email),
+        match (probe.has_grok47, probe.resolved_model.as_deref()) {
+            (true, Some(m)) => format!("4.7 灰度：有（{m}）"),
+            (false, Some(m)) => format!("4.7 灰度：无（sand-cua → {m}）"),
+            _ => format!(
+                "4.7 灰度：未测到（{}）",
+                probe.error.as_deref().unwrap_or("无模型名")
+            ),
+        },
+    );
+    Ok(probe)
 }

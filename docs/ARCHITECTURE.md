@@ -26,9 +26,10 @@ Nexus 在 `127.0.0.1` 上起一个网关，用用户**自己的** Cursor / ChatG
 
 ### 1.2 边界：不做什么
 
-- **不改 Cursor 的字节**——除了 `nexus-sand`。网关、切号、账号池对 Cursor 本体只读不写，
-  Cursor 升级它们照样能用。Sand 补丁是这条规则唯一的、有意的例外，它改的是 Cursor 的
-  **代码**而不是**数据**，所以必须追着 Cursor 版本跑（见 §7.3 与 SAND.md）。
+- **不改 Cursor 的字节**——除了 `nexus-sand` 与 `nexus-crsr`。网关、切号、账号池对 Cursor 本体
+  只读不写，Cursor 升级它们照样能用。这两条补丁通道是这条规则仅有的、有意的例外，它们改的是
+  Cursor 的**代码**而不是**数据**，所以必须追着 Cursor 版本跑（见 §7.3 / §7.4 与
+  [SAND.md](./SAND.md) / [CRSR.md](./CRSR.md)）。
 - **不做浏览器自动化**。取 token 走 OAuth：浏览器是用户自己的，应用只做纯 HTTP 轮询（D5）。
 - **不做负载均衡**。一个用户一台机器，任何时刻一个号就够（§6.3）。
 - **不在主窗口加载远程内容**。需要开网页的地方一律交给系统浏览器。
@@ -36,7 +37,8 @@ Nexus 在 `127.0.0.1` 上起一个网关，用用户**自己的** Cursor / ChatG
   CI 里的 Linux job 只跑 lint 与测试，不出包。
 
 `nexus-gateway` 与 `nexus-sand` 都是对更早一版「不做本地网关 / 不做 sand 补丁」的**有意反转**，
-两个 crate 的模块注释里各写了一遍理由。反转的前提是它们能被整体拆卸（§3.4）。
+两个 crate 的模块注释里各写了一遍理由；`nexus-crsr` 沿用 Sand 那次反转的结论。反转的前提是
+它们能被整体拆卸（§3.4）。
 
 ---
 
@@ -113,7 +115,7 @@ Rust 侧只要一个 `reqwest`。
 ├──────────┬──────────┬──────────┬──────────┬──────────┬───────────┤
 │ switcher │ accounts │ chatgpt  │ gateway  │ playground│  connect  │  业务 crate
 │          │          │ grok kiro│  grokbot │           │           │  （互不依赖）
-│          │          │          │   sand   │           │           │
+│          │          │          │sand crsr │           │           │
 ├──────────┴────┬─────┴──────────┴──────────┴──────────┴───────────┤
 │ nexus-cursor  │  nexus-store（SQLite：数据 + 秘密 + 迁移）         │  基础能力
 ├───────────────┴──────────────────────────────────────────────────┤
@@ -141,6 +143,7 @@ Rust 侧只要一个 `reqwest`。
 | `nexus-playground` | 游乐场的线程 / 消息 / 图片 / 视频存储与编排。 |
 | `nexus-connect` | 一键接入：改 Claude Code / Codex / OpenCode / Grok CLI 的配置文件。 |
 | `nexus-sand` | Sand 补丁引擎（本机 + 远程 SSH）。 |
+| `nexus-crsr` | CRSR 补丁：原生 Agent 面板改用 `crsr_` API Key 兑的票据。复用 sand 的安装器骨架。 |
 
 ### 3.3 IPC 约定
 
@@ -157,14 +160,14 @@ Rust 侧只要一个 `reqwest`。
 
 ### 3.4 可拆卸的边界
 
-`nexus-gateway` 和 `nexus-sand` 是唯二要跟着第三方协议 / bundle 变化的模块，也就是**唯二会
-定期坏掉**的模块。它们因此被要求：
+`nexus-gateway`、`nexus-sand` 与 `nexus-crsr` 是要跟着第三方协议 / bundle 变化的模块，也就是
+**会定期坏掉**的那几个。它们因此被要求：
 
-1. 只向下依赖，不改任何现有 crate；
+1. 只向下依赖，不改任何现有 crate（`nexus-crsr` → `nexus-sand` 是一条显式的单向复用）；
 2. 默认关闭，用户不开就完全不起作用；
-3. 坏了只影响自己——网关挂了，切号与账号池照常。
+3. 坏了只影响自己——网关挂了，切号与账号池照常；补丁失配了，拒装而不是装坏。
 
-这条约束是那两次「有意反转」的前提。放宽它之前先想清楚坏掉的那天怎么办。
+这条约束是那几次「有意反转」的前提。放宽它之前先想清楚坏掉的那天怎么办。
 
 ### 3.5 Tauri 安全配置
 
@@ -315,11 +318,20 @@ ledger        记一行账（§6.5）
 Tauri 命令、前端 API 各抄一遍，加一个平台要摸十几处。现在收成一个实体：
 
 ```
-Channel = id + 前缀集合 + 一队号（Lane）+ 一个后端（Upstream）+ 门禁（ChannelGate）
+Channel         = id + 前缀集合 + 一队号（Lane）+ 一个后端（Upstream）+ 门禁（ChannelGate）
+ChannelRegistry = 若干通道 + 用户指定的默认通道
 ```
 
-`ChannelRegistry` 以 Cursor 为默认通道，其余按顺序注册。**选路只有三条规则**，对聊天 / 生图 /
-生视频一致：显式前缀强制；无前缀时按「声明拥有该模型**且此刻有号**」；都不认就走默认通道。
+**对外目录的主键是 `{通道}/{模型}`**（`cursor/claude-opus-5`），**选路只剩两条规则**，对聊天 /
+生图 / 生视频一致：显式前缀强制走那条通道，不看它此刻有没有号；裸名或空模型走**用户设的默认
+通道**。别名 `codex/` 与 `xai/` 只在请求前缀里认，不进目录。
+
+早先还有中间一条「无前缀时按『声明拥有该模型且此刻有号』反推归属」。它猜错的时候没法解释：
+同一个模型名在两条通道上都有，请求落到哪条取决于哪条恰好还有号，用户看到的是「昨天还好好的，
+今天换了个上游」。现在归属写在名字里，默认通道写在设置里，两处都是用户能看见、能改的。
+
+默认通道和注册表分开一把锁（`share_default`）：改设置不用重建通道，也不用重启网关，
+正在听的那一发下一次就照新的走。
 
 能力按维度建模（`Capability::{Chat, Image, Video}`），不是一组布尔。视频是异步任务，状态轮询
 必须回到**创建它的那个号**——任务是账号维度的，换个号去查就是 404。
@@ -379,13 +391,27 @@ Channel = id + 前缀集合 + 一队号（Lane）+ 一个后端（Upstream）+ �
 
 ### 7.3 Sand 补丁
 
-把 Cursor IDE 内置的 Agent 面板也改道到本地网关。**这是全仓库唯一会修改 Cursor 应用文件的地方**，
-决策记录、风险与完整的规则清单在 [SAND.md](./SAND.md)。
+把 Cursor IDE 内置的 Agent 面板也改道到本地网关。决策记录、风险与完整的规则清单在
+[SAND.md](./SAND.md)。
 
 这里只说结构上的一点：补丁改的是 Cursor 的**代码**，切号写的是 Cursor 的**数据**。前者追着版本跑，
 后者升级不失效——性质不同，所以是两个 crate、互不依赖，只共享 `nexus-cursor` 那层「定位 / 退出 /
 启动」。锚点是压缩后的精确字符串，**版本不等一律拒装，不做模糊匹配**：拒装的代价是用不了，
 模糊匹配的代价是装坏。
+
+### 7.4 CRSR 补丁
+
+第二条补丁通道，和 Sand 并列：只把 `applyAuthorization` 里的 Bearer 换成账号 `crsr_` User API Key
+兑出来的短期票据，**不改 client-type、不改 URL、不改路由**，面板走的还是原生
+`agent.v1.AgentService/Run`。决策记录在 [CRSR.md](./CRSR.md)。
+
+它和 Sand **占同一个挂点，安装器互相拒绝同时装**，备份目录也分开（`crsr/backups` 与
+`sand/backups`）——两条补丁的还原点混在一起，用户还原时就无从判断会回到哪个状态。
+`nexus-crsr` 复用 `nexus-sand` 的 `layout` / `backup` / `commit` / `integrity`，自己只写注入体
+和凭证，这是业务 crate 之间少数几条显式单向依赖之一。
+
+票据续期在**注入块里自己做**，不在 Nexus 进程里：否则用户关掉 Nexus 之后 IDE 会在某个时刻突然
+401，而那时他正在写代码，不会想到是另一个没开着的应用的问题。
 
 ---
 
@@ -402,11 +428,12 @@ CREATE TABLE accounts (
   status TEXT NOT NULL,             -- active | needs_login | dead
   note TEXT, tags TEXT,             -- tags 是 JSON array
   membership TEXT, signup_type TEXT,
-  usage_json TEXT, last_checked_at TEXT, last_error TEXT,
-  has_refresh INTEGER, has_password INTEGER,
+  usage_json TEXT, billing_json TEXT,   -- 额度快照 / 订阅实付快照，各一口径（§8.1）
+  last_checked_at TEXT, last_error TEXT,
+  has_refresh INTEGER, has_password INTEGER, has_api_key INTEGER,
   created_at TEXT, updated_at TEXT
 );
--- ref: acct/<id>/refresh, acct/<id>/access, …
+-- ref: acct/<id>/refresh, acct/<id>/access, acct/<id>/api_key, …
 
 CREATE TABLE switch_profiles (      -- 切号本；与 accounts 没有外键（R1）
   id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL,
@@ -428,13 +455,26 @@ CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
 机器码（`MachineProfile`）**不是秘密**：它们是随机数，泄露了换一套就行，所以直接进业务表，
 不走 `SecretStore`。
 
+CRSR 通道的凭证是个例外，它**不在库里**：补丁自己要读它，而补丁是 Cursor 进程里的一段 JS，
+打不开我们的 SQLite。所以它是应用数据目录下一个 `0600` 的 `crsr-agent-credential.json`
+（见 [CRSR.md](./CRSR.md) §3.2）。
+
+### 8.1 用量与账单是两本账
+
+`usage_json` 是**额度**（还剩多少次 / 多少 token、什么时候重置），`billing_json` 是**订阅实付**
+（标价、券、下次扣多少、历史发票）。两者不是同一口径，叠成一个大数会把「$0 的 Ultra」和
+「花了 $21 的按需用量」说成一句糊涂话，所以抽屉里也是上下两张卡。
+
+字段缺席一律是 `null`（未知），**不写成「没有折扣」「不会续费」**——页面改版、接口换字段的时候，
+「没读到」和「确实没有」必须能分开，否则界面会拿一个猜测去骗用户。
+
 ---
 
 ## 9. 安全模型
 
 | 面 | 做法 |
 |---|---|
-| 凭证静态 | 全在 `secrets` 表，**明文**；库文件 `0600`、目录 `0700`（§9.1）；内存里的 token 用 `zeroize` |
+| 凭证静态 | 全在 `secrets` 表，**明文**；Unix 上库文件 `0600`、目录 `0700`，Windows 上靠 `%APPDATA%` 的默认 ACL（§9.1）；内存里的 token 用 `zeroize` |
 | 凭证展示 | 默认打码；「显示明文」是显式动作且记活动日志 |
 | IPC | 最小命令集；capabilities 白名单；主窗口不加载远程内容 |
 | 切号 | 备份先行、白名单键、单事务、原始机器码永不覆盖 |
@@ -469,6 +509,11 @@ IPC 里的三个字段、两处界面横幅、一个专用错误码，以及一�
 **代价说在明处：库文件就是凭证文件。** `Db::open` 把它和所在目录收到 `0600` / `0700`，
 但拿得到这个文件的人就拿得到全部凭证。这里没有加密——密钥若跟密文放在一起只是好看，
 真要防得住就得进钥匙串，那就绕回了不走钥匙串的原因。**这是一个明确的取舍，不是疏忽。**
+
+**`0600` / `0700` 只在 Unix 上成立。** 收权限的那几处都是 `#[cfg(unix)]`，Windows 上一律不动
+文件——那边靠的是 `%APPDATA%` 在用户配置文件下的默认 ACL（同机其他标准用户读不到，管理员和
+本用户自己的任何进程读得到）。结论是一样的「同一台机器上信任本用户」，但**不要以为 Windows 上
+有一层等价的 chmod**。CRSR 的凭证文件同理。
 
 将来若要真正加密，正确的做法是用户口令派生的主密钥（KDF），而不是把钥匙串接回来。
 
@@ -505,8 +550,8 @@ CI（[`ci.yml`](../.github/workflows/ci.yml)）里有一个单独的 `check-wind
 - **凭证明文存在本地 SQLite。** 见 §9.1。
 - **网关监听 `127.0.0.1`，同机进程可访问。** 这是它存在的意义。
 - **账号导出文件含明文凭证。** 应用持续警告，用完就删。
-- **Sand 补丁会修改 Cursor 的应用文件。** 幂等、可逆、带版本护栏，但仍是对第三方软件的改动，
-  Cursor 升级后要重装。
+- **Sand 与 CRSR 补丁会修改 Cursor 的应用文件。** 幂等、可逆、带版本护栏，但仍是对第三方软件的
+  改动，Cursor 升级后要重装。两条占同一挂点，只能装一条。
 - **用的是各平台的非公开客户端接口。** 这可能违反对应平台的服务条款，账号有被限流或封禁的
   风险。不要用在你不能承受损失的账号上。
 - **只支持 macOS 与 Windows。**

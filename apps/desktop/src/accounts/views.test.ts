@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Account } from "../ipc/types";
-import { applyCredFilter, applyPlanFilter, canQueryUsage, credState, hasLiveAccess } from "../ui/accounts";
+import { applyCredFilter, applyPlanFilter, canQueryUsage, canUseDashboard, credState, hasLiveAccess } from "../ui/accounts";
 import {
   BUILTIN_VIEWS,
   DEFAULT_VIEW,
@@ -29,6 +29,7 @@ function acct(over: Partial<Account> = {}): Account {
     hasPassword: false,
     hasEmailPassword: false,
     hasRecoveryEmail: false,
+    hasApiKey: false,
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
     ...over,
@@ -66,6 +67,8 @@ describe("cred filter", () => {
     expect(credState(expired, now)).toBe("needsAuth");
     expect(canQueryUsage(expired, now)).toBe(false);
     expect(credState(nearlyExpired, now)).toBe("needsAuth");
+    expect(canQueryUsage(acct({ hasRefresh: false, hasAccess: true, accessExpiresAt: "2026-09-09T11:00:00Z", hasApiKey: true }), now)).toBe(true);
+    expect(canUseDashboard(acct({ hasRefresh: false, hasAccess: true, accessExpiresAt: "2026-09-09T11:00:00Z", hasApiKey: true }), now)).toBe(false);
     // 有 refresh 的号不看 access：哪怕 access 过期，refresh 一换就有新的。
     expect(credState(acct({ hasAccess: true, accessExpiresAt: "2026-09-09T11:00:00Z" }), now)).toBe("authorized");
   });

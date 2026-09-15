@@ -345,6 +345,7 @@ export function Workbench({
             kind={kind}
             messages={messages}
             run={run}
+            model={target.model}
             artifact={kind === "chat" ? artifactChannel : undefined}
             onRegenerate={() => selectedId && void startChat(selectedId, null)}
             onRetryImage={kind === "image" ? (prompt) => selectedId && void startImage(selectedId, { prompt, size: lastImageSize.current, n: 1 }) : undefined}

@@ -6,7 +6,8 @@
 use crate::commands::events;
 use crate::state::AppState;
 use nexus_chatgpt::{
-    ChatGptAccount, ChatGptService, CodexUsage, LoginHandle, LoginState, ManifestModel,
+    ChatGptAccount, ChatGptBilling, ChatGptService, CodexUsage, ImportOutcome, LocalTraffic,
+    LoginHandle, LoginState, ManifestModel,
 };
 use nexus_core::{AppError, ChatGptAccountId, ErrorCode, Result};
 use nexus_store::activity;
@@ -16,7 +17,32 @@ use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command(async)]
 pub fn chatgpt_list(state: State<'_, AppState>) -> Result<Vec<ChatGptAccount>> {
-    state.chatgpt.list()
+    let mut list = state.chatgpt.list()?;
+    attach_local_traffic(&state, &mut list);
+    Ok(list)
+}
+
+/// 账本按邮箱记。对不上（还没走过网关、或导入时没邮箱）就空着，别编 0。
+fn attach_local_traffic(state: &AppState, list: &mut [ChatGptAccount]) {
+    let Ok(rows) = state.gateway.channel_account_totals("chatgpt", 90) else {
+        return;
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let by_name: std::collections::HashMap<String, _> =
+        rows.into_iter().map(|r| (r.name.clone(), r)).collect();
+    for account in list {
+        let key = account.label().to_ascii_lowercase();
+        if let Some(row) = by_name.get(&key) {
+            account.traffic = Some(LocalTraffic {
+                requests: row.calls,
+                tokens: row.tokens,
+                errors: row.errors,
+                days: 90,
+            });
+        }
+    }
 }
 
 /// 上次从上游拉到的模型目录（按当时那个号的套餐筛过）。空 = 还没拉过，网关用静态清单。
@@ -146,27 +172,40 @@ pub async fn chatgpt_import_codex_cli(state: State<'_, AppState>) -> Result<Chat
     Ok(up.account)
 }
 
-/// 导入一段文本：`auth.json` 原文、`access----refresh`，或单独一个 refresh token。
-/// 只有 refresh token 时要先刷一次，所以可能联网。明文只进 Rust，不落日志。
+/// 导入一段文本：`auth.json`、sub2api 的 Codex session JSON（数组 / 多行）、
+/// `access----refresh`，或单独一个 refresh token。可以一次贴多个。只有 refresh
+/// token 的条目会先刷一次，所以可能联网。明文只进 Rust，不落日志。
 #[tauri::command]
 pub async fn chatgpt_import_text(
     state: State<'_, AppState>,
     text: String,
     note: Option<String>,
-) -> Result<ChatGptAccount> {
-    let up = state.chatgpt.import_text(&text, note.as_deref()).await?;
+) -> Result<ImportOutcome> {
+    let out = state.chatgpt.import_dump(&text, note.as_deref()).await?;
     activity::info(
         &state.db,
         "chatgpt",
-        Some(&up.account.label()),
-        if up.created {
-            "已导入 ChatGPT 账号"
-        } else {
-            "已更新 ChatGPT 账号凭证"
-        },
+        None,
+        format!(
+            "导入 ChatGPT 账号：新建 {}，更新 {}{}",
+            out.created,
+            out.updated,
+            if out.failed > 0 {
+                format!("，{} 个没进去", out.failed)
+            } else {
+                String::new()
+            }
+        ),
     );
-    refresh_models_soon(state.chatgpt.clone(), up.account.id.clone());
-    Ok(up.account)
+    if out.accepted() > 0 {
+        let chatgpt = state.chatgpt.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(err) = chatgpt.refresh_models_any().await {
+                tracing::info!(%err, "导入后拉模型目录失败，沿用现有清单");
+            }
+        });
+    }
+    Ok(out)
 }
 
 #[tauri::command(async)]
@@ -217,11 +256,25 @@ pub fn chatgpt_set_note(
 }
 
 /// 主动问一次额度（`/wham/usage`）。平时不用点：每次经网关的请求都会把额度头写回来。
+/// 用量到手后会顺带读一次订阅账单；账单失败不影响额度快照。
 #[tauri::command]
 pub async fn chatgpt_refresh_usage(state: State<'_, AppState>, id: String) -> Result<CodexUsage> {
     state
         .chatgpt
         .refresh_usage(&ChatGptAccountId::from_raw(id))
+        .await
+}
+
+/// 主动问一次订阅（`accounts/check`，必要时再问 `subscriptions`）。
+/// 没有标价和发票——Codex OAuth 打不开 ChatGPT 的 Stripe 门户。
+#[tauri::command]
+pub async fn chatgpt_refresh_billing(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ChatGptBilling> {
+    state
+        .chatgpt
+        .refresh_billing(&ChatGptAccountId::from_raw(id))
         .await
 }
 

@@ -19,7 +19,7 @@ const profile = (email: string): SwitchProfile => ({
 
 const gateway: GatewayStatus = {
   running: null,
-  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null },
+  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null, defaultChannel: "cursor" },
   restartNeeded: false,
   apiKeySet: true,
   channels: [],

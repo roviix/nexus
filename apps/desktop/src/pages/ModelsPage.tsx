@@ -8,7 +8,7 @@
  * 只能随手挑第一个，那不是用户想按的键。
  */
 import { useEffect, useMemo, useState } from "react";
-import { channelOfModel, localChannels, type LocalChannelId } from "../gateway/channels";
+import { channelOfModel, defaultChannelId, localChannels, type LocalChannelId } from "../gateway/channels";
 import type { Modality } from "../ipc/models";
 import { ChannelPicker } from "../relay/ChannelPicker";
 import { ModelCard } from "../relay/ModelCard";
@@ -23,7 +23,7 @@ const MODALITY_LABEL: Record<Modality, string> = { chat: "对话", image: "图�
 
 export function ModelsPage({ route, onGo }: { route: Route; onGo: (r: Route) => void }) {
   const relay = useRelay({ catalogs: true });
-  /** 哪一条通道（平台 id）；null 按默认（Cursor）。 */
+  /** 哪一条通道（平台 id）；null 按用户指定的默认通道算。 */
   const [channel, setChannel] = useState<string | null>(route.channel ?? null);
   const [filter, setFilter] = useState<CardFilter>({ query: "", vendor: "all", modality: "all" });
   /** 打开「试一下」时预选的模型；null = 抽屉关着。 */
@@ -34,7 +34,7 @@ export function ModelsPage({ route, onGo }: { route: Route; onGo: (r: Route) => 
   }, [route.channel]);
 
   const channels = useMemo(() => localChannels(relay.gateway, relay.local), [relay.gateway, relay.local]);
-  const localId: LocalChannelId = (channel as LocalChannelId | null) ?? "cursor";
+  const localId: LocalChannelId = (channel as LocalChannelId | null) ?? defaultChannelId(relay.gateway);
   /** 目录里归当前那条通道的模型。 */
   const localShown = useMemo(() => (relay.local ?? []).filter((m) => channelOfModel(channels, m.id) === localId), [relay.local, channels, localId]);
   const activeLocal = channels.find((c) => c.id === localId) ?? channels[0];
@@ -61,7 +61,7 @@ export function ModelsPage({ route, onGo }: { route: Route; onGo: (r: Route) => 
   /** 某条通道一个模型都没有时说清为什么：没号 / 网关没开。 */
   const emptyNote =
     !loading && groups.length === 0 && activeLocal
-      ? activeLocal.isDefault
+      ? activeLocal.id === "cursor"
         ? "Cursor 通道的目录是空的。"
         : `${activeLocal.label} 通道此刻没有号能接，它的模型不会出现在目录里。去「账号 → ${activeLocal.label}」加一个号。`
       : null;
@@ -97,9 +97,10 @@ export function ModelsPage({ route, onGo }: { route: Route; onGo: (r: Route) => 
             <p className="chan-cap">
               模型
               {shown.length ? <span className="chan-cap-n num">{shown.length}</span> : null}
-              {activeLocal && !activeLocal.isDefault && activeLocal.prefixes[0] ? (
+              {activeLocal ? (
                 <span className="chan-cap-n">
-                  · 加 <code className="mono">{activeLocal.prefixes[0]}</code> 前缀可强制走这条通道
+                  · 目录 id 是 <code className="mono">{activeLocal.id}/…</code>
+                  {activeLocal.isDefault ? " · 不带前缀也走这里" : " · 不带前缀走默认通道"}
                 </span>
               ) : null}
             </p>

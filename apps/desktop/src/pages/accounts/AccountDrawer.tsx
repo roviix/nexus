@@ -6,14 +6,15 @@
  *
  * 标题区把这个号的「身份」摆齐：邮箱、档位、健康度、来源、备注（可就地改）。
  * 动作也在标题区 —— 刷新 / 授权 / 切号 是来这一页最常按的三个键，不该藏在页脚。
- * 「切号」只是把人送到切号页：池内账号进入确认，池外账号先确认加入切号池。
+ * 「切号」就地热切：Cursor 在跑时不退出；只有开了「切换时同时切机器码」才会问一句。
+ * 仅会话（token 导入、没有 refresh）的号，有效期内同样能切。
  *
  * 标题区下面先答「它在哪儿被用着」：切号池里有没有、网关号池里有没有，各一行，能就地加入 /
  * 移出。账号总库是一份、两个使用池是子集（ARCHITECTURE §5.2），以前要走到那两页才知道一个号进了
  * 没进，现在在这个号自己的抽屉里就说清。
  *
- * 然后分三页：用量 / 账单 / 凭证。这是三种不同的来意（「还能不能用」「花了多少」
- * 「我要复制密码」），一次只有一种；摊在一屏里既长又逼着人略读。每页单列满宽。
+ * 然后分四页：用量 / 账单 / 凭证 / Grok Bot。来意不同，一次只有一种。
+ * 账单页拆成两张卡：上面是 Stripe 订阅实付（标价 / 券 / 发票），下面是用量花费。
  * 「踢掉其它会话」住在凭证页 —— 它管的是这个号的登录态，跟凭证是一回事。
  *
  * 页脚只剩两样：什么时候加的、删除。删除要按两次 —— 它会连凭证一起清掉，没有回头路。
@@ -21,31 +22,26 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { AccountPlacement } from "../../accounts/model";
 import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster, usePools } from "../../accounts/pools";
-import type { Account, KickOutcome, ModelUsage, SecretKind } from "../../ipc/types";
-import { accounts, gateway as gatewayApi, switcher as switcherApi } from "../../ipc/api";
-import { Banner, CopyButton, Drawer, ErrorNote, Gauge, Health, Icon, Reset, Spinner, Tag } from "../../ui/primitives";
+import type { Account, CrsrStatus, KickOutcome, SecretKind } from "../../ipc/types";
+import { accounts, crsr, gateway as gatewayApi, switcher as switcherApi } from "../../ipc/api";
+import { Banner, CopyButton, Drawer, ErrorNote, Gauge, Health, Icon, Reset, Spinner, Switch, Tag } from "../../ui/primitives";
 import { accountSourceLabel, timeAgo, timeUntil } from "../../ui/format";
-import { canQueryUsage, hasLiveAccess, sessionOnly } from "../../ui/accounts";
+import { canQueryUsage, canUseDashboard, hasLiveAccess, sessionOnly } from "../../ui/accounts";
 import { canAddToSwitchPool } from "../../ui/switcher";
-import { compactNumber } from "../../ui/traffic";
 import { GrokBotTab } from "./GrokBotTab";
+import { BillTab } from "./BillTab";
 import {
   accountProblem,
   blockReasonText,
   cycleProgress,
-  daysText,
   isFresh,
-  meterColor,
-  meterWidth,
   money,
-  moneyShort,
+  creditPoints,
   onDemandText,
-  pctText,
+  planBudget,
   planLabel,
   planTone,
   shortDate,
-  spendPace,
-  type SpendPace,
 } from "../../ui/usage";
 
 type Tab = "usage" | "bill" | "creds" | "grokbot";
@@ -80,8 +76,8 @@ export function AccountDrawer({
   onAuthorize: () => void;
   /** Cursor 此刻登着的就是这个号。那就没什么可切的 —— 按钮要说出来，不能装作能按。 */
   inCursor: boolean;
-  /** 去「切号」页。池外账号会先进入显式加入流程。 */
-  onSwitch: () => void;
+  /** 切入 Cursor。父级负责加入切号池并热切；这里只负责按钮的忙态。 */
+  onSwitch: () => void | Promise<void>;
   /** 从哪个页面打开，以及这个场景怎样使用它。 */
   placement?: AccountPlacement;
   /** 切号池的移出、网关池的“用这个 / 移出”等场景动作。 */
@@ -94,9 +90,20 @@ export function AccountDrawer({
   onRemove: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>("usage");
+  const [switching, setSwitching] = useState(false);
   const u = account.usage;
   const problem = accountProblem(account, u);
   const dead = account.status === "dead";
+  const switchable = canAddToSwitchPool(account);
+
+  async function switchNow() {
+    setSwitching(true);
+    try {
+      await onSwitch();
+    } finally {
+      setSwitching(false);
+    }
+  }
 
   const head = (
     <div className="dr-id">
@@ -127,7 +134,7 @@ export function AccountDrawer({
           <button
             type="button"
             className="btn btn-sm btn-icon btn-soft"
-            data-tip={refreshing ? "刷新中…" : "刷新用量"}
+            data-tip={refreshing ? "刷新中…" : account.hasApiKey && !account.hasRefresh && !hasLiveAccess(account) ? "刷新基础用量（API Key）" : "刷新用量"}
             aria-label="刷新用量"
             disabled={refreshing}
             onClick={onRefresh}
@@ -148,20 +155,22 @@ export function AccountDrawer({
           <button
             type="button"
             className="btn btn-sm btn-primary dr-cta"
-            disabled={!account.hasRefresh || dead}
-            onClick={onSwitch}
+            disabled={!switchable || switching}
+            onClick={() => void switchNow()}
             title={
-              !account.hasRefresh
-                ? sessionOnly(account)
-                  ? "只有 session token 切不进 Cursor：写进去的登录态到期没法自己续。授权一次拿到 refresh_token 即可"
-                  : "需要先授权拿到 refresh_token"
-                : dead
+              !switchable
+                ? dead
                   ? "这个号已失效"
-                  : "前往切号池"
+                  : sessionOnly(account)
+                    ? "session token 已过期，到凭证页粘一份新的"
+                    : "需要一份还活着的 session token，或授权一次拿到 refresh_token"
+                : sessionOnly(account)
+                  ? "切入 Cursor（仅会话，到期会掉登录；Cursor 在跑时不重启）"
+                  : "切入 Cursor（Cursor 在跑时不重启）"
             }
           >
-            <Icon name="switcher" size={13} />
-            切号
+            {switching ? <Spinner /> : <Icon name="switcher" size={13} />}
+            {switching ? "切换中" : "切号"}
           </button>
         )}
       </div>
@@ -210,8 +219,10 @@ export function AccountDrawer({
           ))}
         </div>
 
-        {tab === "usage" ? <UsageTab account={account} refreshing={refreshing} onRefresh={onRefresh} /> : null}
-        {tab === "bill" ? <BillTab account={account} /> : null}
+        {tab === "usage" ? (
+          <UsageTab account={account} refreshing={refreshing} onRefresh={onRefresh} onReload={onReload} />
+        ) : null}
+        {tab === "bill" ? <BillTab account={account} onReload={onReload} /> : null}
         {tab === "creds" ? <CredsTab account={account} onChanged={onReload} /> : null}
         {tab === "grokbot" ? <GrokBotTab account={account} /> : null}
       </div>
@@ -268,7 +279,7 @@ function UsedIn({ account, placement, onChanged }: { account: Account; placement
         type="button"
         className="btn btn-sm btn-soft"
         disabled={busy != null || !canAddToSwitchPool(account)}
-        title={canAddToSwitchPool(account) ? "把它的登录态拷进切号池，之后可以一键切进 Cursor" : dead ? "这个号已失效" : "需要先授权拿到 refresh_token"}
+        title={canAddToSwitchPool(account) ? "把它的登录态拷进切号池，之后可以一键切进 Cursor" : dead ? "这个号已失效" : sessionOnly(account) ? "session token 已过期，更新后再加入" : "需要一份还活着的 session token，或授权一次拿到 refresh_token"}
         onClick={() => void act("switcher", () => accounts.addToSwitchBook(account.id))}
       >
         {busy === "switcher" ? <Spinner /> : "加入"}
@@ -330,7 +341,7 @@ function UsedIn({ account, placement, onChanged }: { account: Account; placement
 /* ── 备注 ─────────────────────────────────────────────────────────────────── */
 
 /** 备注就地改。点文字进入编辑，回车保存、Esc 放弃。 */
-function NoteLine({ note, onSave }: { note: string; onSave: (note: string) => Promise<void> }) {
+export function NoteLine({ note, onSave }: { note: string; onSave: (note: string) => Promise<void> }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note);
   const [saving, setSaving] = useState(false);
@@ -485,7 +496,13 @@ function KickSessions({ accountId, onDone }: { accountId: string; onDone: () => 
  * 未上膛时是一个安静的文字键（红只出现在 hover）：页脚不该常驻一个红框，它会跟标题区
  * 那个主 CTA 抢注意力，而删除并不是这一屏想让人做的事。
  */
-function DeleteAccount({ onConfirm }: { onConfirm: () => Promise<void> }) {
+export function DeleteAccount({
+  onConfirm,
+  warning = "会连同 refresh_token 和密码一起从本机清除，不可恢复。",
+}: {
+  onConfirm: () => Promise<void>;
+  warning?: string;
+}) {
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -501,7 +518,7 @@ function DeleteAccount({ onConfirm }: { onConfirm: () => Promise<void> }) {
 
   return (
     <div className="confirm">
-      <span className="confirm-text">{error ? "删除失败，再试一次？" : "会连同 refresh_token 和密码一起从本机清除，不可恢复。"}</span>
+      <span className="confirm-text">{error ? "删除失败，再试一次？" : warning}</span>
       <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setArmed(false)}>
         取消
       </button>
@@ -530,18 +547,37 @@ function DeleteAccount({ onConfirm }: { onConfirm: () => Promise<void> }) {
 
 /* ── 用量 ─────────────────────────────────────────────────────────────────── */
 
-function UsageTab({ account, refreshing, onRefresh }: { account: Account; refreshing: boolean; onRefresh: () => void }) {
+function UsageTab({
+  account,
+  refreshing,
+  onRefresh,
+  onReload,
+}: {
+  account: Account;
+  refreshing: boolean;
+  onRefresh: () => void;
+  onReload: () => Promise<void>;
+}) {
   const u = account.usage;
   if (!u) {
     return (
       <div className="dr-blank">
         <p>还没查过这个号的用量。</p>
         {canQueryUsage(account) ? (
-          <button type="button" className="btn btn-sm" disabled={refreshing} onClick={onRefresh}>
-            {refreshing ? <Spinner /> : "拉一次"}
-          </button>
+          <>
+            <button type="button" className="btn btn-sm" disabled={refreshing} onClick={onRefresh}>
+              {refreshing ? <Spinner /> : "拉一次"}
+            </button>
+            {account.hasApiKey && !account.hasRefresh && !hasLiveAccess(account) ? (
+              <p className="faint tiny">走 API Key，只能看到花费流水，没有额度百分比。</p>
+            ) : null}
+          </>
         ) : (
-          <p className="faint tiny">{sessionOnly(account) ? "会话已过期，到凭证页粘一份新的 session token。" : "先授权拿到 refresh_token 才能查。"}</p>
+          <p className="faint tiny">
+            {sessionOnly(account)
+              ? "会话已过期，到凭证页粘一份新的 session token 或 crsr_ API Key。"
+              : "先授权拿到 refresh_token，或到凭证页填 crsr_ API Key 查基础用量。"}
+          </p>
         )}
       </div>
     );
@@ -550,16 +586,98 @@ function UsageTab({ account, refreshing, onRefresh }: { account: Account; refres
   const now = Date.now();
   const bot = u.bot;
   const cycle = cycleProgress(u, now);
+  const budget = planBudget(u);
+  const spend = u.spendCents;
+  const grantRemaining = u.creditGrantRemainingCents;
+  const grantTotal = u.creditGrantTotalCents;
+  const grantUsed = u.creditGrantUsedCents;
+  const hasGrant = grantRemaining != null || grantTotal != null;
+
+  if (u.via === "apiKey") {
+    const models = [...(u.byModel ?? [])].sort((a, b) => b.cents - a.cents);
+    return (
+      <div className="stack" style={{ gap: 20 }}>
+        <Banner tone="warn" title="基础用量" hint="session 不可用，这次是 crsr_ API Key 兑出来的逐条花费。没有额度百分比、账期和 Grok 周额。完整账单在「账单」页。" />
+        <section className="sect">
+          <div className="sect-cap">
+            <span>花费</span>
+            {u.plan ? <span className="sect-aside">{u.plan}</span> : null}
+          </div>
+          <dl className="facts">
+            <div>
+              <dt>合计</dt>
+              <dd>{money(spend)}</dd>
+              <small>这段时间的扣费合计</small>
+            </div>
+            <div>
+              <dt>今天</dt>
+              <dd>{u.today ? money(u.today.cents) : "—"}</dd>
+              <small>本地零点起</small>
+            </div>
+            <div>
+              <dt>近 7 天</dt>
+              <dd>{u.week ? money(u.week.cents) : "—"}</dd>
+              <small>含今天</small>
+            </div>
+          </dl>
+        </section>
+        <section className="sect">
+          <div className="sect-cap">
+            <span>按模型</span>
+            <span className="sect-aside">{models.length ? `${models.length} 个` : null}</span>
+          </div>
+          {models.length === 0 ? (
+            <p className="sect-none">这段时间没有按模型的消费明细。</p>
+          ) : (
+            <div className="kv">
+              {models.map((m) => (
+                <div key={m.model} className="kv-row">
+                  <span className="kv-k">{m.model}</span>
+                  <span className="kv-v num">{money(m.cents)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="stack" style={{ gap: 20 }}>
       <section className="sect">
         <div className="sect-cap">
-          <span>Bot 通道</span>
+          <span>赠送积分</span>
+          {hasGrant && grantTotal != null ? <span className="sect-aside">总额 {creditPoints(grantTotal)}</span> : null}
+        </div>
+        {!hasGrant ? (
+          <p className="sect-none">这个号没有 Cursor 赠送的 credit grant（25 / 100 那种）。</p>
+        ) : (
+          <dl className="facts">
+            <div>
+              <dt>剩余</dt>
+              <dd>{creditPoints(grantRemaining)}</dd>
+              <small>还能花的赠送额度</small>
+            </div>
+            <div>
+              <dt>已用</dt>
+              <dd>{creditPoints(grantUsed)}</dd>
+              <small>从赠送里扣掉的</small>
+            </div>
+            <div>
+              <dt>总额</dt>
+              <dd>{creditPoints(grantTotal)}</dd>
+              <small>1 积分 = $1</small>
+            </div>
+          </dl>
+        )}
+      </section>
+
+      <section className="sect">
+        <div className="sect-cap">
+          <span>Grok Bot</span>
           {bot?.planLabel ? <span className="sect-aside">{bot.planLabel}</span> : null}
         </div>
-        {/* 「什么时候能再用」和「用了多少」一样重要，所以重置时刻是一块正经的信息条，
-            不是缀在角落的一行灰字。没有这个通道时就不摆 —— 一个「—」什么也没说。 */}
         {bot?.resetAt ? (
           <Reset
             label="周额重置"
@@ -569,17 +687,17 @@ function UsageTab({ account, refreshing, onRefresh }: { account: Account; refres
           />
         ) : null}
         {!bot ? (
-          <p className="sect-none">这个号没有 Bot 通道（老档 pro-legacy 没有这套，属正常）。</p>
+          <p className="sect-none">这个号没有 Grok Bot 周额（老档 pro-legacy 没有这套，属正常）。</p>
         ) : bot.access === "blocked" ? (
           <Banner tone="bad" title="无权限" hint={bot.blockReason ? blockReasonText(bot.blockReason) : undefined} />
         ) : (
-          <Gauge label="周用量" percent={bot.percentUsed} />
+          <Gauge label="周用量" percent={bot.percentUsed} title="Grok Bot 通道的周额度；和下面月账期是两套计量" />
         )}
       </section>
 
       <section className="sect">
         <div className="sect-cap">
-          <span>月账期</span>
+          <span>月额度</span>
           <span className="sect-aside mono">
             {shortDate(u.cycleStart)} → {shortDate(u.cycleEnd)}
           </span>
@@ -589,335 +707,153 @@ function UsageTab({ account, refreshing, onRefresh }: { account: Account; refres
           at={u.cycleEnd}
           now={now}
           tag={isFresh(u.cycleStart, now) ? <Tag tone="ok">刚重置</Tag> : null}
-          // 账期走过多少：画在重置条里，它说的是「周期」不是「额度」，
-          // 混在下面三条额度条里会被当成第四个指标。
           progress={cycle}
         />
-        <Gauge label="总额度" percent={u.totalPercentUsed} title="月账期包含额度的整体已用比例" />
+        <dl className="facts">
+          <div>
+            <dt>已用</dt>
+            <dd>{money(spend)}</dd>
+            <small>本账期 included + 赠送已花</small>
+          </div>
+          <div>
+            <dt>订阅额度</dt>
+            <dd>{money(budget)}</dd>
+            <small>plan.limit</small>
+          </div>
+          <div>
+            <dt>剩余</dt>
+            <dd>{budget != null && spend != null ? money(Math.max(0, budget - spend)) : "—"}</dd>
+            <small>{budget != null && spend != null && spend > budget ? "超出的走按需" : "到重置前还能花"}</small>
+          </div>
+        </dl>
+        <Gauge
+          label="总额度"
+          percent={u.totalPercentUsed}
+          note={budget != null || spend != null ? `${money(spend)} / ${money(budget)}` : undefined}
+          title="月账期包含额度的整体已用比例"
+        />
         <Gauge label="Auto" percent={u.autoPercentUsed} title="composer / grok 等由 Cursor 调度的模型" />
         <Gauge label="API" percent={u.apiPercentUsed} title="点名调用的 claude / gpt 等；打满后这类模型调不动" />
       </section>
+
+      <OnDemandEditor account={account} onReload={onReload} />
     </div>
   );
 }
 
-/* ── 账单 ─────────────────────────────────────────────────────────────────── */
-
-/** 账单看哪一段：本账期是结算口径；近 7 天 / 今天来自刷用量时多问的两个时间窗。 */
-type BillRange = "cycle" | "week" | "today";
-
-const RANGE_LABEL: Record<BillRange, string> = { cycle: "本账期", week: "近 7 天", today: "今天" };
-const RANGE_HEAD: Record<BillRange, string> = { cycle: "本期消费", week: "近 7 天消费", today: "今天消费" };
-
-/** 一段范围里要画的东西：花费、按模型、tokens。三个范围长同一个形状，下面的组件才能不分叉。 */
-interface RangeView {
-  cents: number;
-  models: ModelUsage[];
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+function dollarsField(cents?: number | null): string {
+  if (cents == null || !Number.isFinite(cents)) return "";
+  const dollars = cents / 100;
+  return Number.isInteger(dollars) ? String(dollars) : dollars.toFixed(2);
 }
 
-function rangeView(u: NonNullable<Account["usage"]>, range: BillRange): RangeView {
-  if (range !== "cycle") {
-    const w = range === "week" ? u.week : u.today;
-    const models = [...(w?.byModel ?? [])].sort((a, b) => b.cents - a.cents);
-    return {
-      cents: w?.cents ?? 0,
-      models,
-      tokens: { input: w?.inputTokens ?? 0, output: w?.outputTokens ?? 0, cacheRead: w?.cacheReadTokens ?? 0, cacheWrite: w?.cacheWriteTokens ?? 0 },
-    };
-  }
-  const models = [...(u.byModel ?? [])].sort((a, b) => b.cents - a.cents);
-  const sum = (pick: (m: ModelUsage) => number) => models.reduce((s, m) => s + pick(m), 0);
-  return {
-    cents: u.spendCents ?? sum((m) => m.cents),
-    models,
-    tokens: {
-      input: u.inputTokens ?? sum((m) => m.input),
-      output: u.outputTokens ?? sum((m) => m.output),
-      cacheRead: u.cacheReadTokens ?? sum((m) => m.cacheRead),
-      cacheWrite: u.cacheWriteTokens ?? sum((m) => m.cacheWrite),
-    },
-  };
+function parseLimitCents(raw: string): number | null | "invalid" {
+  const t = raw.trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return "invalid";
+  return Math.round(n * 100);
 }
 
-/**
- * 账单：一个范围开关管整页 —— 本账期 / 近 7 天 / 今天，大数、分色条、模型排行、tokens 全跟着换。
- *
- * 钱是这一页唯一要紧的数，就该大；Auto 和 API 是分桶计量的（见用量页），花费也按这两桶分色，
- * 人一眼看出钱主要烧在哪条路上。本账期多一条**节奏**：花费进度对着时间进度画，再给日均、
- * 预计账期末、剩余额度三格 —— 「够不够撑到重置」这个问题，单看一个 42% 答不了。
- * 排行按花费从多到少，条子按第一名算比例 —— 「主力是哪个模型」比每一格的精确数字先被问到。
- */
-function BillTab({ account }: { account: Account }) {
+function OnDemandEditor({ account, onReload }: { account: Account; onReload: () => Promise<void> }) {
   const u = account.usage;
-  const [range, setRange] = useState<BillRange>("cycle");
-  if (!u) return <div className="dr-blank">还没查过用量，没有账单可看。</div>;
-
-  const now = Date.now();
-  const hasWindows = Boolean(u.today && u.week);
-  const shown: BillRange = hasWindows ? range : "cycle";
-  const view = rangeView(u, shown);
-  const pace = spendPace(u, now);
+  const enabled = Boolean(u?.onDemandEnabled);
+  const used = u?.onDemandUsedCents ?? 0;
+  const storedLimit = u?.onDemandLimitCents ?? null;
   const od = onDemandText(u);
-  const cycleSpend = u.spendCents ?? 0;
+  const can = canUseDashboard(account);
 
-  const byTier = view.models.reduce(
-    (acc, m) => {
-      if (m.tier === 2) acc.auto += m.cents;
-      else if (m.tier === 1) acc.api += m.cents;
-      else acc.other += m.cents;
-      return acc;
-    },
-    { auto: 0, api: 0, other: 0 },
-  );
-  const tierTotal = byTier.auto + byTier.api + byTier.other;
+  const [on, setOn] = useState(enabled);
+  const [limitText, setLimitText] = useState(dollarsField(enabled ? storedLimit : null));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
 
-  // 大数底下那一句：本账期说额度，时间窗说「占本期多少、和日均比怎样」。
-  let sub: ReactNode = null;
-  if (shown === "cycle") {
-    sub = pace?.budget != null ? (
-      <>
-        额度 <b className="num">{money(pace.budget)}</b>
-        <span className="bill-sub-sep">·</span>
-        {pace.remaining! >= 0 ? (
-          <>
-            还剩 <b className="num">{money(pace.remaining)}</b>
-          </>
-        ) : (
-          <span className="is-bad">
-            超支 <b className="num">{money(-pace.remaining!)}</b>
-          </span>
-        )}
-        {u.bonusCents ? (
-          <>
-            <span className="bill-sub-sep">·</span>含赠送 <b className="num">{money(u.bonusCents)}</b>
-          </>
-        ) : null}
-      </>
-    ) : (
-      <>
-        账期 <b className="num mono">{shortDate(u.cycleStart)} → {shortDate(u.cycleEnd)}</b>
-      </>
-    );
-  } else {
-    const share = cycleSpend > 0 ? Math.min(100, (view.cents / cycleSpend) * 100) : null;
-    const perDay = shown === "week" ? view.cents / 7 : null;
-    const vsAvg = shown === "today" && pace && pace.perDay > 0 ? ((view.cents - pace.perDay) / pace.perDay) * 100 : null;
-    sub = (
-      <>
-        {perDay != null ? (
-          <>
-            日均 <b className="num">{money(perDay)}</b>
-          </>
-        ) : null}
-        {vsAvg != null ? (
-          <>
-            本期日均 <b className="num">{money(pace!.perDay)}</b>
-            <span className="bill-sub-sep">·</span>
-            {Math.abs(vsAvg) < 5 ? "和日均差不多" : vsAvg > 0 ? <span className="is-warn">比日均高 {Math.round(vsAvg)}%</span> : <span className="is-ok">比日均低 {Math.round(-vsAvg)}%</span>}
-          </>
-        ) : null}
-        {share != null ? (
-          <>
-            <span className="bill-sub-sep">·</span>占本期 <b className="num">{share < 1 && view.cents > 0 ? "<1" : Math.round(share)}%</b>
-          </>
-        ) : null}
-      </>
-    );
+  useEffect(() => {
+    setOn(enabled);
+    setLimitText(dollarsField(enabled ? storedLimit : null));
+    setError(null);
+  }, [account.id, enabled, storedLimit]);
+
+  const parsed = parseLimitCents(limitText);
+  const currentLimit = enabled ? storedLimit : null;
+  const dirty = on !== enabled || (on && parsed !== "invalid" && parsed !== currentLimit);
+
+  async function save(nextOn: boolean, nextLimit: number | null) {
+    if (nextOn && !enabled) {
+      const cap =
+        nextLimit == null
+          ? "不设上限，额度用完会继续扣信用卡"
+          : `上限 $${(nextLimit / 100).toFixed(0)}，额度用完后按需扣到这个数`;
+      if (!window.confirm(`开启按需计费？${cap}。继续？`)) {
+        setOn(enabled);
+        return;
+      }
+    }
+    if (!nextOn && enabled && !window.confirm("关闭按需计费后，包含额度用完即停。继续？")) {
+      setOn(enabled);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await accounts.setOnDemand(account.id, nextOn, nextOn ? nextLimit : null);
+      await onReload();
+    } catch (err) {
+      setError(err);
+      setOn(enabled);
+      setLimitText(dollarsField(enabled ? storedLimit : null));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
-    <div className="stack" style={{ gap: 18 }}>
-      <section className="bill-hero">
-        <div className="bill-hero-top">
-          <div className="bill-hero-main">
-            <span className="bill-k">{RANGE_HEAD[shown]}</span>
-            <span className="bill-big num">{money(view.cents)}</span>
-            <span className="bill-sub">{sub}</span>
-          </div>
-          {hasWindows ? (
-            <div className="range" role="tablist" aria-label="账单范围">
-              {(Object.keys(RANGE_LABEL) as BillRange[]).map((r) => (
-                <button key={r} type="button" role="tab" className="range-opt" aria-selected={shown === r} onClick={() => setRange(r)}>
-                  {RANGE_LABEL[r]}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        {shown === "cycle" && pace?.budget != null ? <PaceBar pace={pace} /> : null}
-
-        {tierTotal > 0 ? (
-          <div className="bill-split">
-            <span className="bill-split-bar">
-              {byTier.auto > 0 ? <i className="is-auto" style={{ width: `${(byTier.auto / tierTotal) * 100}%` }} title={`Auto ${money(byTier.auto)}`} /> : null}
-              {byTier.api > 0 ? <i className="is-api" style={{ width: `${(byTier.api / tierTotal) * 100}%` }} title={`API ${money(byTier.api)}`} /> : null}
-              {byTier.other > 0 ? <i className="is-other" style={{ width: `${(byTier.other / tierTotal) * 100}%` }} title={`其他 ${money(byTier.other)}`} /> : null}
-            </span>
-            <span className="bill-legend">
-              {byTier.auto > 0 ? (
-                <span>
-                  <i className="is-auto" />
-                  Auto <b className="num">{money(byTier.auto)}</b>
-                </span>
-              ) : null}
-              {byTier.api > 0 ? (
-                <span>
-                  <i className="is-api" />
-                  API <b className="num">{money(byTier.api)}</b>
-                </span>
-              ) : null}
-              {byTier.other > 0 ? (
-                <span>
-                  <i className="is-other" />
-                  其他 <b className="num">{money(byTier.other)}</b>
-                </span>
-              ) : null}
-            </span>
-          </div>
-        ) : shown !== "cycle" ? (
-          <p className="bill-none">{shown === "today" ? "今天还没有消费。" : "近 7 天没有消费。"}</p>
-        ) : null}
-      </section>
-
-      {!hasWindows && canQueryUsage(account) ? <p className="sect-none">刷新一次用量，就能按「今天 / 近 7 天」看花费。</p> : null}
-
-      {shown === "cycle" && pace ? (
-        <section className="sect">
-          <div className="sect-cap">
-            <span>节奏</span>
-            <span className="sect-aside num">
-              账期第 {Math.ceil(pace.elapsedDays)} / {Math.round(pace.totalDays)} 天
-            </span>
-          </div>
-          <dl className="facts facts-4">
-            <div>
-              <dt>日均</dt>
-              <dd>{moneyShort(pace.perDay)}</dd>
-              <small>近 {daysText(pace.elapsedDays)}</small>
-            </div>
-            <div>
-              <dt>预计账期末</dt>
-              <dd className={pace.budget != null && pace.projected > pace.budget ? "is-warn" : undefined}>{moneyShort(pace.projected)}</dd>
-              <small>{pace.budget == null ? "照当前日均" : pace.projected > pace.budget ? `超额度 ${moneyShort(pace.projected - pace.budget)}` : "在额度内"}</small>
-            </div>
-            <div>
-              <dt>剩余额度</dt>
-              <dd className={pace.remaining != null && pace.remaining <= 0 ? "is-bad" : undefined}>{pace.remaining == null ? "—" : pace.remaining <= 0 ? "已用完" : moneyShort(pace.remaining)}</dd>
-              <small>
-                {pace.remaining == null
-                  ? "没有额度信息"
-                  : pace.remaining <= 0
-                    ? "超出的部分走按需"
-                    : pace.runwayDays == null
-                      ? "还没开始花"
-                      : pace.runwayDays >= pace.totalDays - pace.elapsedDays
-                        ? "够用到重置"
-                        : `照日均还能撑 ${daysText(pace.runwayDays)}`}
-              </small>
-            </div>
-            <div>
-              <dt>按需</dt>
-              <dd>{u.onDemandEnabled ? od.value : "未开启"}</dd>
-              <small>{u.onDemandEnabled ? od.sub : "额度用完即停"}</small>
-            </div>
-          </dl>
-        </section>
-      ) : null}
-
-      <section className="sect">
-        <div className="sect-cap">
-          <span>按模型</span>
-          <span className="sect-aside">{view.models.length ? `${view.models.length} 个模型 · 按花费` : null}</span>
-        </div>
-        {view.models.length === 0 ? (
-          <p className="sect-none">{shown === "cycle" ? "这个账期还没有按模型的消费明细。" : "这段时间没有按模型的消费明细。"}</p>
-        ) : (
-          <ModelRanking rows={view.models} />
-        )}
-      </section>
-
-      {view.tokens.input || view.tokens.output ? (
-        <section className="sect">
-          <div className="sect-cap">
-            <span>Tokens</span>
-            <span className="sect-aside">{RANGE_LABEL[shown]}</span>
-          </div>
-          <dl className="facts facts-4">
-            <div>
-              <dt>输入</dt>
-              <dd>{compactNumber(view.tokens.input)}</dd>
-            </div>
-            <div>
-              <dt>输出</dt>
-              <dd>{compactNumber(view.tokens.output)}</dd>
-            </div>
-            <div>
-              <dt>缓存读</dt>
-              <dd>{compactNumber(view.tokens.cacheRead)}</dd>
-            </div>
-            <div>
-              <dt>缓存写</dt>
-              <dd>{compactNumber(view.tokens.cacheWrite)}</dd>
-            </div>
-          </dl>
-        </section>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * 花费进度对着时间进度画：一条按额度填色的条，上面一道细刻度标着「账期走到哪了」。
- * 填色越过刻度 = 花得比时间快。一句话把结论说出来，人不用自己比两个百分比。
- */
-function PaceBar({ pace }: { pace: SpendPace }) {
-  const spentPct = pace.budget! > 0 ? Math.min(100, ((pace.budget! - pace.remaining!) / pace.budget!) * 100) : 0;
-  const timePct = Math.min(100, (pace.elapsedDays / pace.totalDays) * 100);
-  const ahead = pace.aheadPct ?? 0;
-  const verdict = pace.remaining! <= 0 ? { tone: "is-bad", text: "额度已用完" } : ahead > 8 ? { tone: "is-warn", text: `比时间快 ${Math.round(ahead)} 个点` } : ahead < -8 ? { tone: "is-ok", text: `比时间慢 ${Math.round(-ahead)} 个点` } : { tone: "", text: "节奏正常" };
-  return (
-    <div className="pace">
-      <span className="pace-track" title={`已用 ${Math.round(spentPct)}% · 账期过了 ${Math.round(timePct)}%`}>
-        <i className="pace-fill" style={{ width: `${meterWidth(spentPct)}%`, background: meterColor(spentPct) }} />
-        <i className="pace-tick" style={{ left: `${timePct}%` }} />
-      </span>
-      <span className="pace-legend num">
-        <span>
-          已用 <b>{pctText(spentPct)}</b>
+    <section className="sect">
+      <div className="sect-cap">
+        <span>按需</span>
+        <span className="sect-aside">{enabled ? od.sub : "额度用完即停"}</span>
+      </div>
+      <div className="od-bar">
+        <Switch
+          checked={on}
+          disabled={!can || busy}
+          label="按需计费"
+          onChange={setOn}
+        />
+        <span className="od-used">
+          已用 <b className="num">{money(used)}</b>
         </span>
-        <span className="pace-time">
-          <i />
-          账期过了 <b>{Math.round(timePct)}%</b>
-        </span>
-        <span className={`pace-verdict ${verdict.tone}`}>{verdict.text}</span>
-      </span>
-    </div>
-  );
-}
-
-function ModelRanking({ rows }: { rows: ModelUsage[] }) {
-  const top = rows[0]?.cents || 0;
-  return (
-    <div className="bill-rows">
-      {rows.map((m, i) => (
-        <div key={m.model} className="bill-row" title={`${m.model} · 输入 ${compactNumber(m.input)} · 输出 ${compactNumber(m.output)}${m.cacheRead ? ` · 缓存读 ${compactNumber(m.cacheRead)}` : ""}`}>
-          <span className="bill-i num">{i + 1}</span>
-          <span className="bill-model">
-            <span className="mono truncate">{m.model}</span>
-            {m.tier === 2 ? <span className="bill-tier is-auto">Auto</span> : m.tier === 1 ? <span className="bill-tier is-api">API</span> : null}
-          </span>
-          <span className="bill-bar">
-            <i className={m.tier === 2 ? "is-auto" : m.tier === 1 ? "is-api" : "is-other"} style={{ width: `${top > 0 ? Math.max(2, (m.cents / top) * 100) : 0}%` }} />
-          </span>
-          <span className="bill-cents num">{money(m.cents)}</span>
-          <span className="bill-tok num">
-            {compactNumber(m.input)} <span className="faint">/</span> {compactNumber(m.output)}
-          </span>
-        </div>
-      ))}
-    </div>
+        <input
+          className="input od-limit"
+          inputMode="decimal"
+          placeholder="不封顶"
+          disabled={!can || busy || !on}
+          value={limitText}
+          onChange={(e) => setLimitText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && dirty && parsed !== "invalid") {
+              void save(on, parsed);
+            }
+          }}
+          aria-label="按需上限（美元）"
+        />
+        <span className="od-unit">美元 / 月</span>
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          disabled={!can || busy || !dirty || parsed === "invalid"}
+          onClick={() => void save(on, parsed === "invalid" ? null : parsed)}
+        >
+          {busy ? <Spinner /> : "保存"}
+        </button>
+      </div>
+      {parsed === "invalid" ? <p className="sect-none">上限要是一个不小于 0 的数字；留空表示不封顶。</p> : null}
+      {!can ? <p className="sect-none">需要一份还活着的 session token 才能改。</p> : null}
+      {can && on && !limitText.trim() ? (
+        <p className="sect-none">不填上限也能开；Cursor 对「不封顶」有时不认，填一个美元整数更稳。</p>
+      ) : null}
+      <ErrorNote error={error} />
+    </section>
   );
 }
 
@@ -999,6 +935,7 @@ const SECRET_LABEL: Record<SecretKind, string> = {
   cursorPassword: "Cursor 密码",
   emailPassword: "邮箱密码",
   recoveryEmail: "辅助邮箱",
+  apiKey: "crsr_ API Key",
 };
 
 function CredsTab({ account, onChanged }: { account: Account; onChanged: () => Promise<void> }) {
@@ -1017,6 +954,7 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
     ["cursorPassword", account.hasPassword],
     ["emailPassword", account.hasEmailPassword],
     ["recoveryEmail", account.hasRecoveryEmail],
+    ["apiKey", account.hasApiKey],
   ];
   const accessExpiry = account.hasAccess && account.accessExpiresAt ? Date.parse(account.accessExpiresAt) : null;
 
@@ -1124,7 +1062,7 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
           })}
           {/* 派生物：cursor.com 的 WorkosCursorSessionToken cookie 值（user_xxx::access）。有 refresh 时过期自动换；
               仅会话的号只在 access 还活着时能拼出来。两种都拼不出的不摆。 */}
-          {canQueryUsage(account) ? (
+          {canUseDashboard(account) ? (
             <div className="kv-row">
               <span className="kv-k" title="user_xxx::<access jwt>，即 WorkosCursorSessionToken">
                 会话 cookie
@@ -1161,8 +1099,11 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
         </div>
       </section>
 
+      {account.hasApiKey ? <CrsrCredRow account={account} /> : null}
+
+
       {/* 会话管理跟凭证是一回事：都是这个号的登录态。放在这里，页脚就只剩「删除」一件事。 */}
-      {canQueryUsage(account) && account.status !== "dead" ? (
+      {canUseDashboard(account) && account.status !== "dead" ? (
         <section className="sect">
           <div className="sect-cap">
             <span>其它设备上的登录</span>
@@ -1173,5 +1114,75 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
         </section>
       ) : null}
     </div>
+  );
+}
+
+function CrsrCredRow({ account }: { account: Account }) {
+  const [st, setSt] = useState<CrsrStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  useEffect(() => {
+    void crsr
+      .status()
+      .then(setSt)
+      .catch(() => setSt(null));
+  }, [account.id]);
+
+  const cred = st?.credential ?? null;
+  const mine = !!cred && cred.accountId === account.id;
+  const ownerMatch = cred?.accountEmail?.toLowerCase() === account.email.toLowerCase();
+  const usingThis = mine || (ownerMatch && !cred?.accountId);
+
+  async function use() {
+    setBusy(true);
+    setError(null);
+    try {
+      await crsr.mintForAccount(account.id);
+      setSt(await crsr.status());
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="sect">
+      <div className="sect-cap">
+        <span>CRSR 通道</span>
+        <span className="sect-aside">原生 Agent 面板走这个号的 ide/cli 额度</span>
+      </div>
+      <ErrorNote error={error} />
+      <div className="usedin">
+        <div className={`usedin-row${usingThis ? " is-in is-live" : ""}`}>
+          <span className="usedin-ico">
+            <Icon name="crsr" size={13} />
+          </span>
+          <span className="usedin-k">当前凭证</span>
+          <span className="usedin-v">
+            {usingThis
+              ? cred!.expired
+                ? "这个号 · 下一发自动续"
+                : `这个号 · ${timeUntil(cred!.expiresAtMs)}续`
+              : cred
+                ? cred.accountEmail ?? "另一个号"
+                : st && !st.complete
+                  ? "补丁还没装，仍可先指定"
+                  : "未设置"}
+          </span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy}
+            title={st && !st.complete ? "先到「CRSR 通道」安装补丁；指定这个号不必等装完" : undefined}
+            onClick={() => void use()}
+          >
+            {busy ? <Spinner /> : null}
+            {usingThis ? "再兑一次" : "用作 CRSR 通道"}
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }

@@ -8,7 +8,7 @@ import type { GatewayStatus } from "../ipc/types";
 
 const base: GatewayStatus = {
   running: null,
-  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null },
+  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null, defaultChannel: "cursor" },
   restartNeeded: false,
   apiKeySet: true,
   channels: [
@@ -36,7 +36,6 @@ describe("GatewayStatus.channels", () => {
   it("summarises the ChatGPT channel from the snapshot", () => {
     const s = channelSummary(base.channels[0]!);
     expect(s.tone).toBe("default");
-    expect(s.text).toContain("GPT / Codex");
-    expect(s.text).toContain("Cursor");
+    expect(s.text).toContain("chatgpt/");
   });
 });

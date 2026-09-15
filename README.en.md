@@ -30,8 +30,9 @@ account system, no telemetry.
 > Localisation is not implemented yet; if you want to work on it, please open an issue first.
 
 > Architecture, key mechanisms and the deliberate trade-offs are documented in
-> [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (Chinese). The Sand patch and remote-host
-> decision record is in [`docs/SAND.md`](./docs/SAND.md) (Chinese).
+> [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (Chinese). Decision records for the two Cursor
+> patch channels are in [`docs/SAND.md`](./docs/SAND.md) and [`docs/CRSR.md`](./docs/CRSR.md)
+> (Chinese).
 
 ## What it does
 
@@ -43,6 +44,10 @@ account system, no telemetry.
 - **Multiple upstreams.** Cursor (`aiserver.v1.InferenceService/Stream`), ChatGPT subscriptions
   (`chatgpt.com/backend-api/codex`), Grok and Kiro. `/v1/models` aggregates the catalogue according
   to what each upstream can actually do.
+- **The channel is part of the model name.** Catalogue entries are keyed as `{channel}/{model}`
+  (`cursor/claude-opus-5`, `chatgpt/gpt-5`). A prefixed name is forced onto that channel; a bare name
+  goes to **the default channel you picked**. Which pool a request lands on is visible and editable
+  rather than something the gateway infers.
 - **Quota relay, not load balancing.** One user, one machine — one account is enough at any moment.
   Nexus keeps using the current account and only moves to the next when the quota runs out.
   Session stickiness therefore comes for free and accounts rotate very rarely.
@@ -76,10 +81,14 @@ if the file isn't valid JSON/TOML to begin with, Nexus refuses to edit it rather
 ### Account pool
 
 - Add Cursor / ChatGPT / Grok / Kiro accounts. OAuth opens your system browser and the app collects
-  the token in the background; you can also paste refresh tokens to import in bulk.
+  the token in the background; you can also bulk-import by pasting refresh tokens, `crsr_` API keys
+  or Codex session JSON — several at once, format detected automatically.
 - See plan, quota and reset times. Expired, banned and exhausted accounts are flagged automatically.
-- Credentials live in a local SQLite database with tightened permissions (`0700` / `0600`).
-  They do not go into the OS keychain and they are never uploaded anywhere — see
+- Quota and billing are two separate cards: one for what's left and when it resets, one for list
+  price, discounts, next charge and past invoices. They are different units and are never merged
+  into a single number.
+- Credentials live in a local SQLite database — `0700` / `0600` on macOS, the default `%APPDATA%`
+  ACL on Windows. They do not go into the OS keychain and they are never uploaded anywhere — see
   [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1 for why, including what that costs you.
 
 ![Accounts](docs/images/accounts.png)
@@ -100,13 +109,18 @@ model output — not to be yet another chat UI.
 
 ![Playground](docs/images/playground.png)
 
-### The Sand patch (optional, advanced)
+### Two Cursor patch channels (optional, advanced)
 
-Reroutes the Agent panel built into the Cursor IDE to the local gateway, so inference inside the IDE
-also runs on your account pool. It can be installed on a remote dev box over SSH.
+Both **modify Cursor's application files**. They occupy the same hook, so only one can be installed
+at a time. Read the corresponding document and the disclaimer below before you enable either.
 
-**This modifies Cursor's application files.** Read [`docs/SAND.md`](./docs/SAND.md) and the
-disclaimer below before you enable it.
+- **Sand** ([`docs/SAND.md`](./docs/SAND.md)) reroutes the Agent panel built into the Cursor IDE to
+  the local gateway, so inference inside the IDE also runs on your account pool. It can be installed
+  on a remote dev box over SSH.
+- **CRSR** ([`docs/CRSR.md`](./docs/CRSR.md)) changes no routing at all. It only swaps the
+  authorization header on panel requests for a short-lived token minted from one account's `crsr_`
+  User API Key — the panel still speaks native `agent.v1.AgentService/Run`, someone else is just
+  paying. The patch renews the token itself, so closing Nexus won't hand you a 401 mid-keystroke.
 
 ## Install
 
@@ -170,6 +184,7 @@ Without it, "CI is green" would only mean "it works on macOS".
 | `CURSOR_STATE_DB` | Point at a specific `state.vscdb` — aim it at a copy to test switching safely |
 | `CURSOR_APP_PATH` | Override where the Cursor application itself lives (also settable in the app) |
 | `SAND_INFERENCE_ENDPOINT` | Reroute Cursor's inference to this endpoint when installing the Sand patch |
+| `NEXUS_CRSR_CREDENTIAL_FILE` | Point the CRSR credential file elsewhere. Nexus and the patched Cursor are separate processes, so it has to be set where both can see it (see [`docs/CRSR.md`](./docs/CRSR.md) §7) |
 | `NEXUS_PASSTHROUGH_DUMP_DIR` | Dump inbound inference request bodies verbatim into this directory (disables streaming; the dumps are plaintext business data — delete them when you're done) |
 
 ### Where the data lives
@@ -180,8 +195,9 @@ Without it, "CI is green" would only mean "it works on macOS".
 | Windows | `%APPDATA%\com.roviix.nexus\` and its `logs\` | `%APPDATA%\Cursor` |
 
 All credentials sit in `nexus.db` under the app data directory, in plaintext, not in the OS
-keychain. The directory is `0700` and the file is `0600`. This is a deliberate trade-off, not an
-oversight — the reasoning is in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1.
+keychain. On macOS the directory is `0700` and the file is `0600`; on Windows no permissions are
+changed and protection relies on the default ACL of `%APPDATA%`. This is a deliberate trade-off,
+not an oversight — the reasoning is in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1.
 
 Whole-database moves go through `~/.roviix/backups`. To move accounts only, export from the accounts
 page into `~/.roviix/exports` and import on the other machine. **Export files contain plaintext
@@ -204,14 +220,15 @@ credentials — delete them when you're done.**
 │   ├── nexus-gateway/              # the local gateway: dialect port, passthrough port, quota relay, ledger
 │   ├── nexus-connect/              # one-click setup for Claude Code / Codex / OpenCode
 │   ├── nexus-playground/           # playground thread and message storage
-│   └── nexus-sand/                 # Sand patch engine (local + remote over SSH)
+│   ├── nexus-sand/                 # Sand patch engine (local + remote over SSH)
+│   └── nexus-crsr/                 # CRSR patch: native Agent panel on a crsr_ API key
 ├── apps/desktop/
 │   ├── src-tauri/                  # Tauri commands, events, capabilities
 │   ├── src/                        # React frontend
 │   └── ui-preview/                 # browser-only UI preview with a mocked core
 ├── packages/design-tokens/         # CSS variables
 ├── scripts/                        # packaging, signing, release manifests
-└── docs/                           # ARCHITECTURE.md / SAND.md
+└── docs/                           # ARCHITECTURE.md / SAND.md / CRSR.md
 ```
 
 **Dependencies only point downwards**, and `nexus-switcher` and `nexus-accounts` **do not depend on
@@ -221,7 +238,7 @@ dependency graph enforces it. The only data path between them is one explicit co
 
 ## Releasing
 
-Push a `v*` tag (for example `v0.4.0`, which must match the version in `Cargo.toml`,
+Push a `v*` tag (for example `v0.5.0`, which must match the version in `Cargo.toml`,
 `package.json` and `tauri.conf.json`). [`release.yml`](./.github/workflows/release.yml) builds on
 macOS and Windows, produces SHA-256 / MD5 sums and the `latest.json` the updater reads, and publishes
 a GitHub Release. The update endpoint is
@@ -247,9 +264,11 @@ See [CHANGELOG.md](./CHANGELOG.md) for what changed between versions.
 - Nexus calls each platform's **non-public client APIs** using your own subscription accounts. This
   may violate the terms of service of those platforms, and your accounts may be rate-limited,
   warned or banned. Assess that risk yourself, and **do not** use accounts you cannot afford to lose.
-- The Sand patch modifies Cursor's application files. It is idempotent, reversible and guarded by a
-  version check, but it is still a modification of third-party software, and you have to reinstall
-  it after Cursor updates.
+- The Sand and CRSR patches modify Cursor's application files. They are idempotent, reversible and
+  guarded by a version check, but they are still modifications of third-party software, and you have
+  to reinstall after Cursor updates. Both occupy the same hook, so only one can be installed.
+- The CRSR channel bills against Cursor's **API key** pricing, which is a different ledger from your
+  subscription quota. Make sure you know what you are spending before enabling it.
 - This project is not affiliated with or endorsed by Cursor, OpenAI, xAI or Amazon.
 - The software is provided "as is", without warranty of any kind. See [LICENSE](./LICENSE).
 

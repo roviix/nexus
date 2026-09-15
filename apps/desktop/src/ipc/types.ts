@@ -210,6 +210,10 @@ export interface AccountUsage {
   apiPercentUsed?: number;
   includedCents?: number;
   bonusCents?: number;
+  /** Cursor 赠送的 credit grant，单位美分。1 积分 = $1。没有赠送时缺席。 */
+  creditGrantTotalCents?: number;
+  creditGrantUsedCents?: number;
+  creditGrantRemainingCents?: number;
   spendCents?: number;
   planLimitCents?: number;
   onDemandEnabled?: boolean;
@@ -223,6 +227,77 @@ export interface AccountUsage {
   /** 今天（本地零点起）/ 近 7 天。老快照、或那两问没回来时缺席，界面退回只看本账期。 */
   today?: UsageWindow;
   week?: UsageWindow;
+  /** `apiKey`：这次快照来自 crsr_ 兑票后的逐条事件，没有额度百分比。 */
+  via?: string;
+}
+
+/**
+ * Stripe 门户读到的订阅账单。金额是 Stripe 最小货币单位（美元是美分，日元是日元）。
+ * 门户 URL / ephemeral key **不在这个结构里**。
+ */
+export type DiscountState = "unknown" | "none" | "active" | "expired";
+
+export interface BillingDiscount {
+  state?: DiscountState;
+  name?: string;
+  percentOff?: number;
+  amountOff?: number;
+  currency?: string;
+  /** `once` / `repeating` / `forever` */
+  duration?: string;
+  durationInMonths?: number;
+  /** 绑到订阅上的起止，epoch ms。 */
+  startsAt?: number;
+  endsAt?: number;
+}
+
+export interface BillingItem {
+  name?: string;
+  interval?: string;
+  unitAmount?: number;
+  quantity?: number;
+  currency?: string;
+}
+
+export interface BillingInvoiceLine {
+  description?: string;
+  amount?: number;
+  quantity?: number;
+}
+
+export interface BillingInvoice {
+  number?: string;
+  created?: number;
+  status?: string;
+  description?: string;
+  subtotal?: number;
+  total?: number;
+  amountDue?: number;
+  amountPaid?: number;
+  amountRemaining?: number;
+  currency?: string;
+  periodStart?: number;
+  periodEnd?: number;
+  discounts?: BillingDiscount[];
+  lines?: BillingInvoiceLine[];
+}
+
+export interface AccountBilling {
+  fetchedAt: string;
+  currency?: string;
+  collectionMethod?: string;
+  subscriptionStatus?: string;
+  interval?: string;
+  currentPeriodStart?: number;
+  currentPeriodEnd?: number;
+  cancelAtPeriodEnd?: boolean;
+  canceledAt?: number;
+  items?: BillingItem[];
+  listPrice?: number;
+  currentAmount?: number;
+  discountState: DiscountState;
+  discount?: BillingDiscount | null;
+  invoices?: BillingInvoice[];
 }
 
 export interface Account {
@@ -236,6 +311,7 @@ export interface Account {
   signupType?: string | null;
   workosUserId?: string | null;
   usage?: AccountUsage | null;
+  billing?: AccountBilling | null;
   lastCheckedAt?: string | null;
   lastError?: string | null;
   codeChannel: string;
@@ -249,11 +325,13 @@ export interface Account {
   hasPassword: boolean;
   hasEmailPassword: boolean;
   hasRecoveryEmail: boolean;
+  /** 长期 `crsr_…` User API Key。不能切号，session 过期后仍能查基础用量。 */
+  hasApiKey: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
-export type SecretKind = "refresh" | "access" | "cursorPassword" | "emailPassword" | "recoveryEmail";
+export type SecretKind = "refresh" | "access" | "cursorPassword" | "emailPassword" | "recoveryEmail" | "apiKey";
 
 /** 批量导入的预览：每一条会不会被收下、为什么。 */
 export interface ImportRow {
@@ -264,6 +342,7 @@ export interface ImportRow {
   hasPassword: boolean;
   hasEmailPassword: boolean;
   hasAccess?: boolean;
+  hasApiKey?: boolean;
 }
 
 export interface ImportPreview {
@@ -372,6 +451,11 @@ export interface SandInstallOptions {
   inferenceEndpoint?: string | null;
   /** Agent 面板 Stream 用 Grok Bot 额度的方式（默认 `box_relay`）。 */
   grokbotAuth?: GrokBotAuthMode;
+  /**
+   * Agent 面板选 grok-4.5 时改走 `sand-cua`。默认关。
+   * 只有部分号会落到 grok-4.7，其余仍是 luna。改完需重新安装补丁。
+   */
+  grok45ViaCua?: boolean;
 }
 
 /**
@@ -425,6 +509,16 @@ export interface GrokBotStatus {
 export interface GrokBotDirectMinted {
   accountEmail: string | null;
   expiresAtMs: number | null;
+}
+
+/** 某个号打 `sand-cua` 实际落到哪个模型（不含 token）。 */
+export interface GrokBotCuaProbe {
+  email: string;
+  requestedModel: string;
+  resolvedModel: string | null;
+  hasGrok47: boolean;
+  probedAtMs: number;
+  error?: string | null;
 }
 
 /** Grok Bot 客户端此刻登着谁（不含秘密）。要解钥匙串，所以是显式动作。 */
@@ -489,6 +583,8 @@ export interface SandStatus {
    * 与界面上的开关（要装什么）不同时，安装会原地切换，不必先卸载。
    */
   selfSummary: boolean | null;
+  /** 盘上注入体是否把 grok-4.5 改走 sand-cua；没装推理引擎时为 null。 */
+  grok45ViaCua: boolean | null;
   /** 盘上装着的推理端点改道地址；没改道为 null。与界面开关不同时安装会原地换 / 剥掉。 */
   inferenceEndpoint: string | null;
   /** 盘上装着的 Grok 鉴权形态；没装为 `off`。与界面选的不同时安装会原地切换。 */
@@ -535,6 +631,44 @@ export interface SandBackup {
   state: string;
   error: string | null;
 }
+
+// ── CRSR 补丁（原生 Agent 面板走 crsr_ API Key；和 Sand 互斥）────────────────
+
+/** 给界面看的、不含秘密的凭证摘要。 */
+export interface CrsrCredentialInfo {
+  accountEmail: string | null;
+  accountId: string | null;
+  expiresAtMs: number | null;
+  expired: boolean;
+  canRenew: boolean;
+}
+
+export interface CrsrStatus {
+  cursorVersion: string | null;
+  supportedVersion: string;
+  versionSupported: boolean;
+  installed: boolean;
+  complete: boolean;
+  hits: number;
+  expectedHits: number;
+  anchors: number;
+  patchedFiles: string[];
+  sandConflict: string | null;
+  backups: number;
+  credential: CrsrCredentialInfo | null;
+}
+
+export interface CrsrOutcome {
+  operation: SandOperation;
+  wrote: boolean;
+  filesWritten: number;
+  backupId: string | null;
+  cursorRelaunched: boolean;
+  status: CrsrStatus;
+}
+
+export type CrsrBackup = SandBackup;
+export type CrsrProgress = SandProgress;
 
 // ── 远程 Sand（remote SSH）─────────────────────────────────────────────────────
 // 与 `nexus_sand::remote` 和 `commands::sand_remote` 逐字段对齐。
@@ -668,6 +802,8 @@ export interface GatewaySettings {
   autostart: boolean;
   /** 强制上游模型；null/缺省 = 不强制。 */
   forceModel: string | null;
+  /** 裸名 / 空模型走哪条通道。出厂 cursor。 */
+  defaultChannel: string;
 }
 
 export interface GatewayRunning {
@@ -837,6 +973,25 @@ export interface ChatGptUsageWindow {
   windowMinutes: number | null;
 }
 
+/** `/wham/usage` 里按模型单独计的一桶（Spark 等）。与 Rust `RateLimitBucket` 对齐。 */
+export interface ChatGptRateLimitBucket {
+  name: string | null;
+  feature: string | null;
+  allowed: boolean | null;
+  limitReached: boolean | null;
+  primary: ChatGptUsageWindow | null;
+  secondary: ChatGptUsageWindow | null;
+}
+
+/** Codex 点数。没点数的号 `hasCredits=false`，别把 balance "0" 画成「有 0 点」。 */
+export interface ChatGptCredits {
+  hasCredits: boolean | null;
+  unlimited: boolean | null;
+  overageLimitReached: boolean | null;
+  balance: string | null;
+  resetAvailable: number | null;
+}
+
 /** 与 Rust `nexus_chatgpt::CodexUsage` 对齐。 */
 export interface ChatGptUsage {
   primary: ChatGptUsageWindow | null;
@@ -844,6 +999,36 @@ export interface ChatGptUsage {
   planType: string | null;
   checkedAt: string;
   /** response-headers | wham/usage */
+  source: string;
+  additional?: ChatGptRateLimitBucket[];
+  credits?: ChatGptCredits | null;
+  allowed?: boolean | null;
+  limitReached?: boolean | null;
+  userId?: string | null;
+}
+
+/** 本地网关走这个号的合计。不是 ChatGPT 网页上的终身用量。 */
+export interface ChatGptTraffic {
+  requests: number;
+  tokens: number;
+  errors: number;
+  days: number;
+}
+
+/**
+ * ChatGPT 订阅快照。与 Rust `nexus_chatgpt::ChatGptBilling` 对齐。
+ * 没有标价 / 券 / 发票——Codex OAuth 打不开网页 Stripe 门户。
+ * `null` 是「没读到」，不是「没有订阅 / 不会续费」。
+ */
+export interface ChatGptBilling {
+  planType: string | null;
+  subscriptionPlan: string | null;
+  hasActiveSubscription: boolean | null;
+  expiresAt: string | null;
+  willRenew: boolean | null;
+  billingPeriod: string | null;
+  checkedAt: string;
+  /** accounts/check | wham/accounts/check | subscriptions */
   source: string;
 }
 
@@ -856,17 +1041,22 @@ export interface ChatGptAccount {
   accountRef: string;
   email: string | null;
   planType: string | null;
+  userId: string | null;
+  organizationId: string | null;
+  organizationTitle: string | null;
   status: ChatGptStatus;
   /** 进不进网关接力队。 */
   enabled: boolean;
   note: string | null;
   usage: ChatGptUsage | null;
+  billing: ChatGptBilling | null;
   lastCheckedAt: string | null;
   lastError: string | null;
   hasRefresh: boolean;
   accessExpiresAt: string | null;
   createdAt: string;
   updatedAt: string;
+  traffic?: ChatGptTraffic | null;
 }
 
 /** 上游目录里的一条（已按套餐与客户端版本筛过）。与 Rust `nexus_chatgpt::ManifestModel` 对齐。 */
@@ -889,6 +1079,14 @@ export type ChatGptLoginState =
   | { state: "succeeded"; sessionId: string; account: ChatGptAccount; created: boolean }
   | { state: "failed"; sessionId: string; message: string; hint: string | null }
   | { state: "cancelled"; sessionId: string };
+
+/** 与 Rust `nexus_chatgpt::ImportOutcome` 对齐。凭证不回传。 */
+export interface ChatGptImportOutcome {
+  created: number;
+  updated: number;
+  failed: number;
+  errors: string[];
+}
 
 export type DeviceStatus = "active" | "needs_login" | "dead";
 

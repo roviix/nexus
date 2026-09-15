@@ -1,9 +1,21 @@
 import type { ReactNode } from "react";
 import {
+  chatgptOrgLabel,
+  chatgptPlanLabel,
+  chatgptProblem,
+  chatgptRailTone,
+  chatgptTrafficText,
+  chatgptSubscriptionText,
+  chatgptWindowViews,
+  planClass,
+} from "../pages/accounts/chatgpt";
+import {
   AccountLine,
   AccountResets,
   AccountSpend,
+  FootResets,
   QuotaBlank,
+  QuotaRows,
   QuotaStrip,
   QuotaSummary,
   type RailTone,
@@ -39,12 +51,23 @@ export function AccountCard({
   actions,
   onOpen,
 }: AccountCardProps) {
-  // 现在 union 只有 Cursor。以后新增平台时，这个 switch 会迫使 renderer 明确处理它，
-  // 而不是默默把 Cursor 四桶套到 ChatGPT / Claude 上。
+  // 平台 renderer 必须穷尽：不能默默把 Cursor 四桶套到 ChatGPT 的两个窗口上。
   switch (view.platform) {
     case "cursor":
       return (
         <CursorAccountCard
+          view={view}
+          highlighted={highlighted}
+          dimmed={dimmed}
+          badges={badges}
+          note={note}
+          actions={actions}
+          onOpen={onOpen}
+        />
+      );
+    case "chatgpt":
+      return (
+        <ChatGptAccountCard
           view={view}
           highlighted={highlighted}
           dimmed={dimmed}
@@ -76,7 +99,7 @@ function CursorAccountCard({
   ) : managed?.lastError ? (
     <span className="acct-problem">{managed.lastError}</span>
   ) : null;
-  const tone = accountTone(view);
+  const tone = cursorTone(view);
 
   return (
     <AccountLine
@@ -116,10 +139,74 @@ function CursorAccountCard({
   );
 }
 
+function ChatGptAccountCard({
+  view,
+  highlighted,
+  dimmed,
+  badges,
+  note,
+  actions,
+  onOpen,
+}: AccountCardProps & { view: Extract<AccountView, { platform: "chatgpt" }> }) {
+  const managed = view.managed;
+  const usage = view.usage.kind === "chatgpt" ? view.usage.value : null;
+  const problem = chatgptProblem(managed);
+  const defaultNote = problem ? (
+    <span className="acct-problem">{problem.label}</span>
+  ) : managed.lastError ? (
+    <span className="acct-problem">{managed.lastError}</span>
+  ) : null;
+  const plan = chatgptPlanLabel(view.membership);
+  const planCls = planClass(view.membership);
+  const org = chatgptOrgLabel(managed.organizationTitle);
+  const traffic = chatgptTrafficText(managed.traffic);
+  const remain = chatgptSubscriptionText(managed.billing);
+  const spend = [remain, traffic].filter(Boolean).join(" · ");
+
+  return (
+    <AccountLine
+      tone={chatgptRailTone(managed)}
+      dimmed={dimmed ?? managed.status === "dead"}
+      highlighted={highlighted}
+      onOpen={onOpen}
+      openLabel={onOpen ? `查看 ${view.label} 的账号详情` : undefined}
+      title={view.label}
+      badges={
+        <>
+          {plan && planCls ? <span className={planCls}>{plan}</span> : null}
+          {org !== "个人账户" ? <span className="plan">{org}</span> : null}
+          {badges}
+        </>
+      }
+      note={note ?? defaultNote}
+      quota={<AccountUsage usage={view.usage} />}
+      resets={
+        usage ? (
+          <FootResets
+            items={chatgptWindowViews(usage)
+              .filter((w) => w.resetAt)
+              .slice(0, 3)
+              .map((w) => ({ label: w.label, at: w.resetAt }))}
+          />
+        ) : null
+      }
+      spend={
+        spend ? (
+          <span title={traffic ? "订阅剩余来自 accounts/check；次数只算本机网关" : undefined}>{spend}</span>
+        ) : null
+      }
+      stamp={usage ? `${timeAgo(usage.checkedAt)}更新` : null}
+      actions={actions}
+    />
+  );
+}
+
 function AccountUsage({ usage }: { usage: AccountView["usage"] }) {
   switch (usage.kind) {
     case "cursor":
       return <QuotaStrip usage={usage.value} />;
+    case "chatgpt":
+      return <QuotaRows rows={chatgptWindowViews(usage.value)} />;
     case "summary":
       return <QuotaSummary label={usage.label} percentUsed={usage.percentUsed} />;
     case "unavailable":
@@ -127,7 +214,7 @@ function AccountUsage({ usage }: { usage: AccountView["usage"] }) {
   }
 }
 
-function accountTone(view: AccountView): RailTone {
+function cursorTone(view: Extract<AccountView, { platform: "cursor" }>): RailTone {
   if (view.managed) {
     return railTone(
       view.managed,

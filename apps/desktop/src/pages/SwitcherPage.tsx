@@ -17,6 +17,7 @@ import { onSwitchProgress } from "../ipc/api";
 import { go, type Route } from "../shell/nav";
 import { Banner, Empty, ErrorNote, Icon, Modal, Picker, Spinner, Tag } from "../ui/primitives";
 import { timeAgo } from "../ui/format";
+import { sessionOnly } from "../ui/accounts";
 import {
   buildSwitchPool,
   canAddToSwitchPool,
@@ -176,7 +177,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
       return;
     }
     if (entry && switchable(entry)) {
-      setConfirming(entry);
+      requestSwitch(entry);
       return;
     }
     if (account && canAddToSwitchPool(account)) {
@@ -184,7 +185,13 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
       setAdding(true);
       return;
     }
-    setNotice(account ? `${account.email} 需要先授权` : `${wanted} 不在账号中`);
+    setNotice(
+      account
+        ? sessionOnly(account)
+          ? `${account.email} 的 session token 已过期，更新后再切`
+          : `${account.email} 需要先授权或粘一份有效的 session token`
+        : `${wanted} 不在账号中`,
+    );
   }, [wanted, loaded, pool, known, onGo]);
 
   async function run(action: () => Promise<unknown>): Promise<void> {
@@ -204,6 +211,15 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     setConfirming(null);
     setProgress([]);
     await run(() => switcher.switchTo(entry.profile.id));
+  }
+
+  /** 热切不打断 Cursor，不必再确认；冷切会退出重启，仍要问一句。 */
+  function requestSwitch(entry: SwitchPoolEntry) {
+    if (overview?.cursorRunning && !switchMachineIds) {
+      void doSwitch(entry);
+      return;
+    }
+    setConfirming(entry);
   }
 
   function removeFromPool(entry: SwitchPoolEntry) {
@@ -329,7 +345,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
                 readOnly={readOnly}
                 open={entry.key === openKey}
                 onOpen={() => setOpenKey(entry.key)}
-                onSwitch={() => setConfirming(entry)}
+                onSwitch={() => requestSwitch(entry)}
                 onRemove={() => removeFromPool(entry)}
               />
             ))}
@@ -348,7 +364,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
             if (openEntry.isCurrent) {
               setNotice(`Cursor 当前已登录 ${openEntry.email}`);
             } else if (switchable(openEntry)) {
-              setConfirming(openEntry);
+              requestSwitch(openEntry);
             }
           }}
           placementActions={

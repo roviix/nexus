@@ -4,6 +4,7 @@
 //! 是秘密存储状态的投影，写凭证和写标记必须一起发生，否则界面会显示一个「有 token」
 //! 却取不出 token 的号。
 
+use crate::billing::{self, AccountBilling};
 use crate::model::{status_from_credentials, Account, AccountPatch, NewAccount, Source, Status};
 use crate::token;
 use crate::usage::AccountUsage;
@@ -113,6 +114,7 @@ impl Accounts {
             AccountSecret::RecoveryEmail,
             incoming.recovery_email.as_deref(),
         )?;
+        self.put_secret(&id, AccountSecret::ApiKey, incoming.api_key.as_deref())?;
         if let Some(note) = incoming.note.as_deref() {
             self.db.with(|c| {
                 c.execute(
@@ -189,6 +191,9 @@ impl Accounts {
         let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) else {
             return Ok(());
         };
+        if kind == AccountSecret::ApiKey && !token::looks_like_user_api_key(v) {
+            return Err(AppError::invalid("不是有效的 crsr_ API Key。").with_hint("形如 crsr_…"));
+        }
         self.secrets
             .set(&account_secret(id, kind), &Secret::new(v))?;
         self.sync_credential_flags(id)
@@ -228,6 +233,7 @@ impl Accounts {
         let has_password = has(AccountSecret::CursorPassword);
         let has_email_password = has(AccountSecret::EmailPassword);
         let has_recovery_email = has(AccountSecret::RecoveryEmail);
+        let has_api_key = has(AccountSecret::ApiKey);
         // access 的过期时刻从 JWT 里读出来落成一列：列表页判「仅会话的号还活着没」不用再解密。
         let access = self.secret(id, AccountSecret::Access)?;
         let has_access = access.is_some();
@@ -243,6 +249,7 @@ impl Accounts {
                    has_recovery_email = ?5,
                    has_access         = ?8,
                    access_expires_at  = ?9,
+                   has_api_key        = ?10,
                    -- 已判死的号不因为补了凭证就自动复活：那要走一次真正的刷新。
                    status = CASE WHEN status = 'dead' THEN status ELSE ?6 END,
                    updated_at = ?7
@@ -253,10 +260,11 @@ impl Accounts {
                     has_password,
                     has_email_password,
                     has_recovery_email,
-                    status_from_credentials(has_refresh, live_access).as_str(),
+                    status_from_credentials(has_refresh, live_access, has_api_key).as_str(),
                     now_iso(),
                     has_access,
                     access_expires_at,
+                    has_api_key,
                 ],
             )
         })?;
@@ -266,16 +274,43 @@ impl Accounts {
     // ── 用量与状态回写 ───────────────────────────────────────────────────────
 
     /// 记一次成功的用量拉取。
+    ///
+    /// dashboard 那条路成功 = 会话还活着，号标成 active。`crsr_` 兑票拉到的花费
+    /// **不算**会话复活：refresh 已经被拒的号不该因为还能查基础用量就重新变成可切号。
     pub fn record_usage(&self, id: &AccountId, usage: &AccountUsage) -> Result<()> {
         let now = now_iso();
         let json = serde_json::to_string(usage)?;
+        let via_api_key = usage.via.as_deref() == Some("apiKey");
         self.db.with(|c| {
             c.execute(
                 "UPDATE accounts SET
                    usage_json = ?2, membership = ?3, last_checked_at = ?4,
-                   last_error = NULL, status = 'active', updated_at = ?4
+                   last_error = NULL,
+                   status = CASE WHEN ?5 AND status = 'dead' THEN status ELSE 'active' END,
+                   updated_at = ?4
                  WHERE id = ?1",
-                rusqlite::params![id.as_str(), json, usage.plan.as_deref(), now],
+                rusqlite::params![id.as_str(), json, usage.plan.as_deref(), now, via_api_key],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// 记一次成功的订阅账单拉取。
+    ///
+    /// 不碰 `last_checked_at` / `last_error`：那两格是用量刷新的口径。门户读失败
+    /// 不该把一张好的用量快照标成「出错」。密钥进不了这一列——`snapshot_is_clean`
+    /// 是最后一道门。
+    pub fn record_billing(&self, id: &AccountId, billing: &AccountBilling) -> Result<()> {
+        if !billing::snapshot_is_clean(billing) {
+            return Err(AppError::internal(
+                "账单快照里出现了不该留下的门户密钥，已丢弃。",
+            ));
+        }
+        let json = serde_json::to_string(billing)?;
+        self.db.with(|c| {
+            c.execute(
+                "UPDATE accounts SET billing_json = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![id.as_str(), json, now_iso()],
             )
         })?;
         Ok(())
@@ -355,7 +390,7 @@ const SELECT: &str = "SELECT id, email, source, status, note, tags, membership, 
         workos_user_id, usage_json, last_checked_at, last_error, code_channel,
         code_channel_resolved, last_code_at, has_refresh, has_password,
         has_email_password, has_recovery_email, created_at, updated_at,
-        has_access, access_expires_at
+        has_access, access_expires_at, billing_json, has_api_key
  FROM accounts";
 
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
@@ -386,6 +421,10 @@ fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
         updated_at: row.get(20)?,
         has_access: row.get(21)?,
         access_expires_at: row.get(22)?,
+        billing: row
+            .get::<_, Option<String>>(23)?
+            .and_then(|j| serde_json::from_str(&j).ok()),
+        has_api_key: row.get(24)?,
     })
 }
 
@@ -472,7 +511,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(a.status, Status::Active);
-        assert!(a.session_only() && a.can_query_usage() && !a.can_switch());
+        assert!(a.session_only() && a.can_query_usage() && a.can_switch());
         assert_eq!(a.workos_user_id.as_deref(), Some("user_42"));
         assert!(a.access_expires_at.is_some());
         // 库里只有裸 JWT：前缀能从 JWT 算回来，存两份迟早对不上。
@@ -502,6 +541,63 @@ mod tests {
         let far = (time::OffsetDateTime::now_utc() + time::Duration::hours(3)).unix_timestamp();
         accounts.put_access(&a.id, &jwt_expiring_at(far)).unwrap();
         assert_eq!(accounts.get(&a.id).unwrap().status, Status::Active);
+    }
+
+    #[test]
+    fn an_api_key_alone_can_query_usage_but_cannot_switch() {
+        let (accounts, secrets) = setup();
+        let a = accounts
+            .upsert(NewAccount {
+                email: "k@example.com".into(),
+                api_key: Some("crsr_abc123DEF".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(a.status, Status::Active);
+        assert!(a.has_api_key && a.can_query_usage());
+        assert!(!a.can_switch());
+        let stored = secrets
+            .get(&account_secret(&a.id, AccountSecret::ApiKey))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.expose(), "crsr_abc123DEF");
+        accounts
+            .put_secret(&a.id, AccountSecret::ApiKey, Some("not-a-key"))
+            .unwrap_err();
+        assert!(accounts.get(&a.id).unwrap().has_api_key);
+    }
+
+    #[test]
+    fn api_key_usage_does_not_revive_a_dead_refresh() {
+        let (accounts, _) = setup();
+        let a = accounts.upsert(with_refresh("a@example.com")).unwrap();
+        accounts
+            .put_secret(&a.id, AccountSecret::ApiKey, Some("crsr_abc123DEF"))
+            .unwrap();
+        accounts
+            .record_failure(&a.id, "refresh 被拒", true)
+            .unwrap();
+        assert_eq!(accounts.get(&a.id).unwrap().status, Status::Dead);
+
+        accounts
+            .record_usage(
+                &a.id,
+                &AccountUsage {
+                    fetched_at: "t".into(),
+                    via: Some("apiKey".into()),
+                    spend_cents: Some(12.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let got = accounts.get(&a.id).unwrap();
+        assert_eq!(
+            got.status,
+            Status::Dead,
+            "crsr_ 查到花费不该把已死的 refresh 复活成可切号"
+        );
+        assert!(!got.can_switch());
+        assert_eq!(got.usage.as_ref().and_then(|u| u.spend_cents), Some(12.0));
     }
 
     #[test]
@@ -760,6 +856,30 @@ mod tests {
         assert_eq!(after.membership.as_deref(), Some("ultra"));
         assert_eq!(after.usage.unwrap().total_percent_used, Some(42.0));
         assert_eq!(after.status, Status::Active);
+    }
+
+    #[test]
+    fn recording_billing_does_not_touch_the_usage_error() {
+        let (accounts, _) = setup();
+        let a = accounts.upsert(with_refresh("a@example.com")).unwrap();
+        accounts.record_failure(&a.id, "网络超时", false).unwrap();
+
+        let billing = AccountBilling {
+            fetched_at: now_iso(),
+            discount_state: crate::billing::DiscountState::None,
+            list_price: Some(2000),
+            current_amount: Some(2000),
+            ..Default::default()
+        };
+        accounts.record_billing(&a.id, &billing).unwrap();
+
+        let after = accounts.get(&a.id).unwrap();
+        assert_eq!(after.last_error.as_deref(), Some("网络超时"));
+        assert_eq!(after.billing.as_ref().unwrap().list_price, Some(2000));
+        assert_eq!(
+            after.billing.as_ref().unwrap().discount_state,
+            crate::billing::DiscountState::None
+        );
     }
 
     #[test]

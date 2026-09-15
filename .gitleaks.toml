@@ -1,0 +1,46 @@
+# gitleaks 配置。CI 的 `.github/workflows/gitleaks.yml` 每次推 main 和每个 PR 都会扫全部历史。
+#
+# 为什么需要这份文件：这个仓库天生长得像在泄漏凭证——账号池处理的就是别人平台的 token，
+# 测试夹具里必然出现 JWT、`crsr_…`、`refresh_token` 这些形状。默认规则会把它们全部报出来，
+# 于是「扫描红了」变成日常，真出事的那一次反而没人看。
+#
+# 所以这里**逐条**放行已知的合成夹具，不放行整个文件、更不放行整个目录：
+# 新增夹具要么用下面已有的占位值，要么在这里加一条并说清它为什么不可能是真的。
+#
+# 判断标准很简单——一个值只有在「即使公开也无法用来登录任何东西」时才该出现在这里。
+
+[extend]
+useDefault = true
+
+# 默认规则抓不到 `crsr_` User API Key（实测：写成 `const API_KEY: &str = "crsr_<32 位十六进制>"`
+# 一声不吭）。而这恰好是本项目**自己**处理的那种凭证——CRSR 通道整条链路都绕着它转，
+# 真漏一把出去，对方拿着就能用你的号跑 Agent。所以单独加一条。
+#
+# 长度卡在 24：真的那种是 `crsr_` 加一长串随机；夹具用的 `crsr_abc123DEF` 只有 9 位，
+# 落在这条规则之外，不需要靠 allowlist 去救。
+[[rules]]
+id = "nexus-crsr-user-api-key"
+description = "Cursor User API Key（crsr_）"
+regex = '''crsr_[A-Za-z0-9]{24,}'''
+keywords = ["crsr_"]
+
+[[allowlists]]
+description = "合成测试夹具：占位 API Key 与 token。全部是人手编的固定字符串，不对应任何真实账号。"
+regexTarget = "match"
+regexes = [
+  # `crsr_` User API Key 的占位值。真的形如 `crsr_` + 一长串随机；这个是 abc123DEF。
+  '''crsr_abc123DEF''',
+  # Stripe 门户的 ephemeral key 占位。`ek_test_` 前缀本身就只用于 Stripe 测试模式。
+  '''ek_test_abcDEF123''',
+  # `alg: none` 的 JWT——没有签名，任何服务端都不会接受，只用来测解析。
+  '''eyJhbGciOiJub25lIn0\.[A-Za-z0-9_-]+\.sig''',
+  # ChatGPT 夹具里的假 refresh token，前缀写死 `rt-` 加场景名。
+  '''rt-[a-z0-9]+-0123456789abcdef''',
+]
+
+[[allowlists]]
+description = "设置项的键名，不是密钥。`nexus.sand.*` 是本地设置表的 key。"
+regexTarget = "match"
+regexes = [
+  '''nexus\.sand\.[A-Za-z0-9]+''',
+]

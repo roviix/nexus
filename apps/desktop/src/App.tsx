@@ -7,6 +7,7 @@ import { GatewayPage } from "./pages/GatewayPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { PlaygroundPage } from "./pages/PlaygroundPage";
+import { CrsrPage } from "./pages/CrsrPage";
 import { SandPage } from "./pages/SandPage";
 import { PreflightModal } from "./pages/settings/PreflightModal";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -122,6 +123,7 @@ function Shell() {
         {route.section === "accounts" ? <AccountsPage route={route} onGo={navigate} /> : null}
         {route.section === "switcher" ? <SwitcherPage route={route} onGo={navigate} /> : null}
         {route.section === "sand" ? <SandPage onGo={navigate} /> : null}
+        {route.section === "crsr" ? <CrsrPage onGo={navigate} /> : null}
         {route.section === "settings" ? <SettingsPage route={route} onGo={navigate} /> : null}
       </main>
 

@@ -515,7 +515,13 @@ async fn resolve_identity(
     ctx: &PassthroughContext,
 ) -> Result<Identity, UpstreamError> {
     if path == INFERENCE_STREAM_PATH {
-        if let Some(g) = ctx.grokbot.as_ref().filter(|g| g.enabled()) {
+        // `sand` 身份必须配 grokBotToken。开关关着却仍用接力队号去盖 `x-cursor-client-type: sand`
+        // 时，上游一律 401（Connect 16），Agent 面板看起来像网关坏了。
+        if let Some(g) = ctx
+            .grokbot
+            .as_ref()
+            .filter(|g| g.enabled() || ctx.client_type.eq_ignore_ascii_case("sand"))
+        {
             let credential = g.credential().await?;
             return Ok(Identity {
                 credential,
@@ -727,13 +733,28 @@ async fn handle_inference(call: InferenceCall) -> Response<ProxyBody> {
     }
 
     let rule = hub.rule();
-    let (out_bytes, info, rewritten) = match intercept::rewrite_request(&bytes, &rule) {
+    let (mut out_bytes, mut info, rewritten) = match intercept::rewrite_request(&bytes, &rule) {
         Ok(r) => (Bytes::from(r.body), r.info, r.rewritten),
         Err(err) => {
             tracing::warn!(%err, path, "IDE 拦截：请求解不开，按原样转发");
             (bytes, RequestInfo::default(), false)
         }
     };
+    if via_grokbot {
+        if let Some(target) =
+            intercept::grokbot_rewrite_target(info.model_id.as_deref().unwrap_or(""))
+        {
+            match intercept::force_requested_model(&out_bytes, target) {
+                Ok((body, forced)) => {
+                    out_bytes = Bytes::from(body);
+                    info = forced;
+                }
+                Err(err) => {
+                    tracing::warn!(%err, path, target, "IDE 拦截：Bot 通道改写模型失败，按原样转发");
+                }
+            }
+        }
+    }
     tracing::debug!(
         conversation = info.conversation_id.as_deref().unwrap_or("-"),
         model = info.model_id.as_deref().unwrap_or("-"),
@@ -1491,6 +1512,10 @@ mod tests {
     }
 
     fn inference_request_envelope(last_user: &str) -> Vec<u8> {
+        inference_request_envelope_model(last_user, "claude-opus-5")
+    }
+
+    fn inference_request_envelope_model(last_user: &str, model: &str) -> Vec<u8> {
         use crate::proto::{
             inference_core_message::Content, InferenceCoreMessage, InferenceRequestedModel,
             InferenceStreamRequest,
@@ -1515,7 +1540,7 @@ mod tests {
                 },
             ],
             requested_model: Some(InferenceRequestedModel {
-                model_id: "claude-opus-5".into(),
+                model_id: model.into(),
                 ..Default::default()
             }),
             conversation_id: Some("conv-e2e".into()),
@@ -1828,12 +1853,203 @@ mod tests {
         assert_eq!(h.get("authorization").unwrap(), "Bearer lane-token");
         assert_eq!(h.get("x-cursor-client-type").unwrap(), "cli");
 
-        // 关掉开关：Stream 也回到 Lane。
+        // 关掉开关：client_type 不是 sand，Stream 回到 Lane。
         grokbot.set_enabled(false);
         let (status, _) = h1_post(&gw, INFERENCE_STREAM_PATH, b"x".to_vec()).await;
         assert_eq!(status, StatusCode::OK);
         let h = seen.lock().unwrap().clone().unwrap();
         assert_eq!(h.get("authorization").unwrap(), "Bearer lane-token");
+    }
+
+    /// 网关 `client_type=sand` 时，即便 Bot 通道开关关着，Stream 也必须走 grokBotToken。
+    /// 用接力队号盖 sand 身份会被上游 401。
+    #[tokio::test]
+    async fn sand_client_type_uses_grokbot_even_when_toggle_off() {
+        use crate::grokbot::GrokBotStreamAuth;
+        use nexus_grokbot::{GrokBotService, StreamCredential};
+
+        let (upstream_addr, seen) = spawn_fake_upstream().await;
+        let lane: Arc<dyn Lane> = Arc::new(OneShotLane {
+            credential: cred("lane@x.com", "lane-token"),
+            oks: AtomicUsize::new(0),
+            errs: AtomicUsize::new(0),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        StreamCredential {
+            grok_bot_token: "g.r.ok".into(),
+            machine_id: "grokmachine".into(),
+            renewal_credential: Some("sbi_test".into()),
+            expires_at_ms: Some(u64::MAX / 2),
+            client_version: "0.44.0".into(),
+            namespace: "prod".into(),
+            account_email: Some("bot@x.com".into()),
+            account_slot: None,
+            source: None,
+            minted_at_ms: None,
+            renewed_at_ms: None,
+        }
+        .save(dir.path())
+        .unwrap();
+        let grokbot = Arc::new(GrokBotStreamAuth::new(
+            Arc::new(GrokBotService::offline(dir.path())),
+            false,
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gw = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let targets = Targets {
+            api2: Target {
+                authority: upstream_addr.clone(),
+                tls: false,
+            },
+            agent: Target {
+                authority: upstream_addr,
+                tls: false,
+            },
+        };
+        let ctx = Arc::new(
+            PassthroughContext::with_targets(lane, "sand".into(), targets).with_grokbot(grokbot),
+        );
+        tokio::spawn(serve(listener, ctx, std::future::pending()));
+
+        let (status, _) = h1_post(&gw, INFERENCE_STREAM_PATH, b"x".to_vec()).await;
+        assert_eq!(status, StatusCode::OK);
+        let h = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(h.get("authorization").unwrap(), "Bearer g.r.ok");
+        assert_eq!(h.get("x-cursor-client-type").unwrap(), "sand");
+    }
+
+    /// Bot 通道：只有 GLM 5.2 钉成 `premium`；账本请求名是 `premium`，实际模型仍来自 response_info。
+    #[tokio::test]
+    async fn grokbot_stream_forces_premium_and_records_routed() {
+        use crate::grokbot::GrokBotStreamAuth;
+        use crate::proto::InferenceStreamRequest;
+        use nexus_grokbot::{GrokBotService, StreamCredential};
+        use prost::Message;
+
+        let canned = canned_stream();
+        let (upstream_addr, seen) = spawn_inference_upstream(canned).await;
+        let lane: Arc<dyn Lane> = Arc::new(OneShotLane {
+            credential: cred("lane@x.com", "lane-token"),
+            oks: AtomicUsize::new(0),
+            errs: AtomicUsize::new(0),
+        });
+        let dir = tempfile::tempdir().unwrap();
+        StreamCredential {
+            grok_bot_token: "g.r.ok".into(),
+            machine_id: "grokmachine".into(),
+            renewal_credential: Some("sbi_test".into()),
+            expires_at_ms: Some(u64::MAX / 2),
+            client_version: "0.44.0".into(),
+            namespace: "prod".into(),
+            account_email: Some("bot@x.com".into()),
+            account_slot: None,
+            source: None,
+            minted_at_ms: None,
+            renewed_at_ms: None,
+        }
+        .save(dir.path())
+        .unwrap();
+        let grokbot = Arc::new(GrokBotStreamAuth::new(
+            Arc::new(GrokBotService::offline(dir.path())),
+            true,
+        ));
+        let hub = Arc::new(InterceptHub::new(crate::intercept::RewriteRule::default()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gw = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let targets = Targets {
+            api2: Target {
+                authority: upstream_addr.clone(),
+                tls: false,
+            },
+            agent: Target {
+                authority: upstream_addr,
+                tls: false,
+            },
+        };
+        let ctx = Arc::new(
+            PassthroughContext::with_targets(lane, "sand".into(), targets)
+                .with_intercept(hub.clone(), None)
+                .with_grokbot(grokbot),
+        );
+        tokio::spawn(serve(listener, ctx, std::future::pending()));
+
+        let (status, _) = h1_post(
+            &gw,
+            INFERENCE_STREAM_PATH,
+            inference_request_envelope_model("say it back", "glm-5.2"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let upstream_body = seen.lock().unwrap().clone().expect("上游该收到请求");
+        let req = InferenceStreamRequest::decode(&upstream_body[5..]).unwrap();
+        assert_eq!(
+            req.requested_model.as_ref().map(|m| m.model_id.as_str()),
+            Some(crate::intercept::GROKBOT_FORCED_MODEL_ID)
+        );
+        assert_eq!(
+            req.requested_model.as_ref().map(|m| m.max_mode),
+            Some(false)
+        );
+
+        let snap = {
+            let mut snap = hub.snapshot();
+            for _ in 0..50 {
+                if !snap.recent.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                snap = hub.snapshot();
+            }
+            snap
+        };
+        assert_eq!(snap.calls, 1);
+        assert_eq!(snap.rewritten, 0);
+        let rec = &snap.recent[0];
+        assert_eq!(rec.model, crate::intercept::GROKBOT_FORCED_MODEL_ID);
+        assert_eq!(rec.routed.as_deref(), Some("claude-opus-5-thinking-high"));
+        assert!(!rec.rewritten);
+
+        let (status, _) = h1_post(
+            &gw,
+            INFERENCE_STREAM_PATH,
+            inference_request_envelope_model("say it back", "grok-4.6"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let upstream_body = seen.lock().unwrap().clone().expect("上游该收到 grok 请求");
+        let req = InferenceStreamRequest::decode(&upstream_body[5..]).unwrap();
+        assert_eq!(
+            req.requested_model.as_ref().map(|m| m.model_id.as_str()),
+            Some("grok-4.6")
+        );
+        let snap = {
+            let mut snap = hub.snapshot();
+            for _ in 0..50 {
+                if snap.calls >= 2 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                snap = hub.snapshot();
+            }
+            snap
+        };
+        assert_eq!(snap.calls, 2);
+        assert_eq!(snap.recent[0].model, "grok-4.6");
+
+        let (status, _) = h1_post(
+            &gw,
+            INFERENCE_STREAM_PATH,
+            inference_request_envelope_model("say it back", "claude-opus-5"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let upstream_body = seen.lock().unwrap().clone().expect("上游该收到 opus 请求");
+        let req = InferenceStreamRequest::decode(&upstream_body[5..]).unwrap();
+        assert_eq!(
+            req.requested_model.as_ref().map(|m| m.model_id.as_str()),
+            Some("claude-opus-5")
+        );
     }
 
     /// 开着却没有凭证：Stream 回 502 + 能看懂的原因，不碰 Lane、不 panic。

@@ -18,6 +18,7 @@
 //! 推理路径本身（请求体怎么改、身份怎么按账号收敛、错误怎么分类）不在这里，在
 //! `nexus-gateway` 的 `codex` 模块——那是网关的事。
 
+pub mod billing;
 pub mod callback;
 pub mod model;
 pub mod oauth;
@@ -25,11 +26,15 @@ pub mod protocol;
 pub mod repo;
 pub mod service;
 
-pub use model::{ChatGptAccount, ChatGptStatus};
+pub use billing::ChatGptBilling;
+pub use model::{ChatGptAccount, ChatGptStatus, LocalTraffic};
 pub use oauth::{Identity, TokenSet, CALLBACK_PORT, REDIRECT_URI};
 pub use protocol::{
-    select_models, CodexUsage, Exhausted, ManifestModel, UsageWindow, CLIENT_VERSION,
-    DEFAULT_BACKEND_URL, ORIGINATOR,
+    select_models, CodexCredits, CodexUsage, Exhausted, ManifestModel, RateLimitBucket,
+    UsageWindow, CLIENT_VERSION, DEFAULT_BACKEND_URL, ORIGINATOR,
 };
 pub use repo::{ChatGptAccounts, Upserted};
-pub use service::{parse_import_text, ChatGptService, LoginHandle, LoginState, SETTING_MODELS};
+pub use service::{
+    parse_import_entries, parse_import_text, ChatGptService, ImportOutcome, LoginHandle,
+    LoginState, SETTING_MODELS,
+};

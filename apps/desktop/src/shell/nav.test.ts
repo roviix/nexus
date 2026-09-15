@@ -124,9 +124,9 @@ describe("sidebar groups", () => {
     expect([...placed].sort()).toEqual([...all].sort());
   });
 
-  it("keep Sand in a group of its own — it is not a way of using the pool", () => {
+  it("keep Sand and CRSR in the patch group — they are not a way of using the pool", () => {
     const sandGroup = NAV_GROUPS.find((g) => g.items.includes("sand"))!;
-    expect(sandGroup.items).toEqual(["sand"]);
+    expect(sandGroup.items).toEqual(["sand", "crsr"]);
     // 中转 API 一组按「看 → 用 → 接 → 引擎」排：先浏览模型，再在游乐场上手，再配客户端，
     // 最后是本机那台引擎。
     const relay = NAV_GROUPS.find((g) => g.id === "relay")!;

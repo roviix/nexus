@@ -10,6 +10,7 @@ use crate::pod::{self, ExecTarget};
 use crate::secrets::{self, GrokBotSecrets};
 use nexus_core::{AppError, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -89,6 +90,32 @@ pub struct ExportedAccount {
     pub email: String,
     pub refresh_token: String,
     pub subject: Option<String>,
+}
+
+/// 某个号打 `sand-cua` 实际落到哪个模型。不含 token。
+///
+/// Bot 通道上 grok 4.7 不在目录里，只能看这个别名的分片：有灰度的号落到
+/// `grok-4-7-0910-xhigh`，多数号仍是 `gpt-5.6-luna-high`。
+pub const CUA_PROBE_FILENAME: &str = "grokbot-cua-probes.json";
+pub const CUA_PROBE_MODEL: &str = "sand-cua";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CuaProbe {
+    pub email: String,
+    pub requested_model: String,
+    pub resolved_model: Option<String>,
+    pub has_grok47: bool,
+    pub probed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CuaProbeStore {
+    #[serde(default)]
+    probes: BTreeMap<String, CuaProbe>,
 }
 
 pub struct GrokBotService {
@@ -324,6 +351,28 @@ impl GrokBotService {
         session_token: &str,
         machine_id: &str,
     ) -> Result<StreamCredential> {
+        self.mint_direct_for_account_inner(email, session_token, machine_id, true)
+            .await
+    }
+
+    /// 同上，但**不覆盖**本机那份正在用的直连凭证。给「探这个号有没有 4.7 灰度」用。
+    pub async fn mint_direct_for_account_ephemeral(
+        &self,
+        email: &str,
+        session_token: &str,
+        machine_id: &str,
+    ) -> Result<StreamCredential> {
+        self.mint_direct_for_account_inner(email, session_token, machine_id, false)
+            .await
+    }
+
+    async fn mint_direct_for_account_inner(
+        &self,
+        email: &str,
+        session_token: &str,
+        machine_id: &str,
+        persist: bool,
+    ) -> Result<StreamCredential> {
         let ensured = pod::ensure_sandbox(session_token, machine_id).await?;
         let target = ExecTarget::from_ensure(&ensured)
             .ok_or_else(|| AppError::upstream("EnsureSandBox 没返回 exec daemon 地址。"))?;
@@ -342,8 +391,45 @@ impl GrokBotService {
             minted_at_ms: Some(credential::now_ms()),
             renewed_at_ms: None,
         };
-        cred.save(&self.data_dir)?;
+        if persist {
+            cred.save(&self.data_dir)?;
+        }
         Ok(cred)
+    }
+
+    /// 本机正在用的直连凭证如果就是这个号、还能用，就续一下拿来探——不必再 mint。
+    pub async fn stream_credential_for_probe(
+        &self,
+        email: &str,
+    ) -> Result<Option<StreamCredential>> {
+        let Some(mut cred) = StreamCredential::load(&self.data_dir)? else {
+            return Ok(None);
+        };
+        let owner = cred.account_email.as_deref().unwrap_or("");
+        if email_key(owner) != email_key(email) {
+            return Ok(None);
+        }
+        let now = credential::now_ms();
+        if cred.is_expired(now) && !cred.can_renew() {
+            return Ok(None);
+        }
+        if cred.renew_if_needed().await? {
+            cred.save(&self.data_dir)?;
+        }
+        Ok(Some(cred))
+    }
+
+    pub fn cua_probe_for(&self, email: &str) -> Option<CuaProbe> {
+        load_cua_probes(&self.data_dir)
+            .probes
+            .get(&email_key(email))
+            .cloned()
+    }
+
+    pub fn save_cua_probe(&self, probe: &CuaProbe) -> Result<()> {
+        let mut store = load_cua_probes(&self.data_dir);
+        store.probes.insert(email_key(&probe.email), probe.clone());
+        save_cua_probes(&self.data_dir, &store)
     }
 
     /// 本机直连凭证是不是 Grok Bot **当前**登着的号的。不解密：比槽 id。
@@ -454,6 +540,34 @@ fn active_slot_cheap() -> Result<String> {
         .ok_or_else(|| AppError::internal("no active slot"))
 }
 
+fn email_key(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
+}
+
+fn cua_probe_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(CUA_PROBE_FILENAME)
+}
+
+fn load_cua_probes(data_dir: &Path) -> CuaProbeStore {
+    let raw = std::fs::read_to_string(cua_probe_path(data_dir)).ok();
+    raw.and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_cua_probes(data_dir: &Path, store: &CuaProbeStore) -> Result<()> {
+    let p = cua_probe_path(data_dir);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&p, format!("{}\n", serde_json::to_string_pretty(store)?))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 fn clone_secrets(s: &GrokBotSecrets) -> GrokBotSecrets {
     GrokBotSecrets {
         machine_id: s.machine_id.clone(),
@@ -493,5 +607,27 @@ mod tests {
         let i = direct_info(&c);
         assert!(i.expired && i.can_renew);
         assert_eq!(i.account_email.as_deref(), Some("x@y"));
+    }
+
+    #[test]
+    fn cua_probe_is_keyed_by_email_case_insensitively_and_stores_no_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = GrokBotService::offline(dir.path());
+        assert!(svc.cua_probe_for("A@B.com").is_none());
+        svc.save_cua_probe(&CuaProbe {
+            email: "A@B.com".into(),
+            requested_model: CUA_PROBE_MODEL.into(),
+            resolved_model: Some("grok-4-7-0910-xhigh".into()),
+            has_grok47: true,
+            probed_at_ms: 1,
+            error: None,
+        })
+        .unwrap();
+        let p = svc.cua_probe_for("a@b.com").expect("cached");
+        assert!(p.has_grok47);
+        assert_eq!(p.resolved_model.as_deref(), Some("grok-4-7-0910-xhigh"));
+        let raw = std::fs::read_to_string(dir.path().join(CUA_PROBE_FILENAME)).unwrap();
+        assert!(!raw.contains("sbi_"));
+        assert!(!raw.contains("grokBotToken"));
     }
 }

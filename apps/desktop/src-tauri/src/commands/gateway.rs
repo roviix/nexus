@@ -98,9 +98,8 @@ pub fn gateway_set_intercept(
     state.gateway.set_intercept_rule(rule)
 }
 
-/// 模型广场的「本地」一列：网关能替客户端映射到的 Cursor 模型，带系列 / 档位 / 别名；
-/// 有可用的 ChatGPT 号时再并上 Codex 的对话模型与 `gpt-image-*`（和网关的路由条件一致）。
-/// 静态目录，不联网；某个号到底能不能跑其中某个模型，由上游在请求时裁决。
+/// 模型广场的「本地」一列：每条通道各自报 `{通道}/{模型}`，带系列 / 档位 / 别名。
+/// 订阅通道有号可接时才并进去。静态目录，不联网；某个号到底能不能跑其中某个模型，由上游在请求时裁决。
 #[tauri::command(async)]
 pub fn gateway_models(state: State<'_, AppState>) -> Vec<CatalogEntry> {
     state.gateway.catalog()

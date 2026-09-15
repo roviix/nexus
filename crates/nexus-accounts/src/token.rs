@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 const TOKEN_URL: &str = "https://api2.cursor.sh/oauth/token";
+const EXCHANGE_URL: &str = "https://api2.cursor.sh/auth/exchange_user_api_key";
 pub const DEFAULT_CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
 
 /// 一次刷新的产物。
@@ -183,6 +184,50 @@ fn decode_payload(jwt: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Cursor Dashboard 铸出来的长期 User API Key。
+pub fn looks_like_user_api_key(s: &str) -> bool {
+    let s = s.trim();
+    s.len() > 5 && s.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("crsr_"))
+}
+
+/// `crsr_` → 短期 access JWT（`type=api_key_token`，大约一小时）。
+///
+/// 这把 JWT **不是** 桌面 `WorkosCursorSessionToken`：cookie / 切号用不上，
+/// 但 `DashboardService/GetFilteredUsageEvents` 认它。
+pub async fn exchange_api_key(http: &reqwest::Client, api_key: &str) -> Result<String> {
+    let key = api_key.trim();
+    if !looks_like_user_api_key(key) {
+        return Err(AppError::invalid("不是有效的 crsr_ API Key。").with_hint("形如 crsr_…"));
+    }
+
+    let res = http
+        .post(EXCHANGE_URL)
+        .timeout(Duration::from_secs(15))
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|err| AppError::network(format!("兑换 API Key 请求失败：{err}")))?;
+
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(AppError::unauthorized("crsr_ API Key 已过期或无效。"));
+    }
+    if !status.is_success() {
+        let head: String = body.chars().take(160).collect();
+        return Err(AppError::upstream(format!(
+            "兑换 API Key 返回 {status}：{head}"
+        )));
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| AppError::upstream("兑换响应不是 JSON。"))?;
+    pick(&json, &["accessToken", "access_token"])
+        .ok_or_else(|| AppError::upstream("兑换响应缺少 accessToken。"))
+}
+
 /// 会话 token 只是拿来查用量的短期物；过期就重新刷。
 pub fn session_expired(access_expires_at: Option<&str>) -> bool {
     let Some(raw) = access_expires_at else {
@@ -310,6 +355,14 @@ mod tests {
     }
 
     #[test]
+    fn a_crsr_key_is_recognised_by_prefix() {
+        assert!(looks_like_user_api_key("crsr_abc123DEF"));
+        assert!(looks_like_user_api_key("  CRSR_abc  "));
+        assert!(!looks_like_user_api_key("cursor_abc"));
+        assert!(!looks_like_user_api_key("eyJhbGciOi"));
+    }
+
+    #[test]
     fn a_session_expiring_within_the_minute_is_treated_as_expired() {
         let soon = time::OffsetDateTime::now_utc() + time::Duration::seconds(30);
         let iso = soon
@@ -325,6 +378,13 @@ mod tests {
     async fn an_empty_refresh_token_fails_before_any_request() {
         let http = reqwest::Client::new();
         let err = refresh_to_session(&http, "   ").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn an_empty_api_key_fails_before_any_request() {
+        let http = reqwest::Client::new();
+        let err = exchange_api_key(&http, "   ").await.unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
     }
 

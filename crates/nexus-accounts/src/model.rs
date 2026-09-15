@@ -4,6 +4,7 @@
 //! Cursor 密码)。只有一次性 session token 的不收——它会过期成死号，收进来只是给用户
 //! 一个将来会失望的条目。
 
+use crate::billing::AccountBilling;
 use crate::usage::AccountUsage;
 use nexus_core::{AccountId, AppError, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 pub enum Source {
     /// 用户自己加的 / 自己 OAuth 授权的 / 从清单或备份导进来的。
     Local,
-    /// 商城买的，由用户从订单领进来。
+    /// 从外面买来的号（批量导入进来的那些），和自己注册的分开标。
     Purchased,
 }
 
@@ -66,9 +67,13 @@ impl Status {
     }
 }
 
-/// 从凭证推初始状态：有 refresh、或有一把还没过期的 access → 可用；只有密码 → 待登录。
-pub fn status_from_credentials(has_refresh: bool, has_live_access: bool) -> Status {
-    if has_refresh || has_live_access {
+/// 从凭证推初始状态：有 refresh、还活着的 access、或 crsr_ API Key → 可用；只有密码 → 待登录。
+pub fn status_from_credentials(
+    has_refresh: bool,
+    has_live_access: bool,
+    has_api_key: bool,
+) -> Status {
+    if has_refresh || has_live_access || has_api_key {
         Status::Active
     } else {
         Status::NeedsLogin
@@ -92,6 +97,8 @@ pub struct Account {
     /// WorkOS 用户 id（`user_xxx`）。拼 session cookie 用，不算秘密。
     pub workos_user_id: Option<String>,
     pub usage: Option<AccountUsage>,
+    /// Stripe 门户读到的订阅标价 / 折扣 / 发票。密钥不在这里。
+    pub billing: Option<AccountBilling>,
     pub last_checked_at: Option<String>,
     pub last_error: Option<String>,
     /// `auto` 或某条具体渠道。
@@ -108,6 +115,8 @@ pub struct Account {
     pub has_password: bool,
     pub has_email_password: bool,
     pub has_recovery_email: bool,
+    /// 长期 `crsr_…` User API Key。不能切号，session 过期后仍能查基础用量。
+    pub has_api_key: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -123,16 +132,20 @@ impl Account {
         !self.has_refresh && self.has_access
     }
 
-    /// 能不能拿到一把会话去干活（查用量、进网关、换 Grok 额度）：有 refresh 就永远行；
-    /// 没 refresh 就看手上那把 access 还活着没。
+    /// 能不能查用量：有 refresh 就永远行；没 refresh 看手上 access 还活着没；
+    /// 再不行还有 `crsr_` —— 只能拉逐条花费，没有额度百分比。
     pub fn can_query_usage(&self) -> bool {
-        self.has_refresh || self.has_live_access()
+        self.has_refresh || self.has_live_access() || self.has_api_key
     }
 
-    /// 能不能直接加进切号本 —— **必须有 refresh**。写进 Cursor 的登录态要能自己续期，
-    /// 只给一把几小时的 access 等于让 Cursor 到点就掉线。
+    /// 能不能加进切号本、写进 Cursor。
+    ///
+    /// 有 refresh 最好：写进去的登录态能自己续期。没有时，手上那把还活着的 session
+    /// token 也能切——token 导入的号经常只有这一把。到期后 Cursor 续不上会掉登录，
+    /// 和这个号本身「到期得重新粘」是同一回事，比一开始就拒收有用。
+    /// 云端号池仍要 refresh（那边没有浏览器、续不了短期会话），调用方自己看 `has_refresh`。
     pub fn can_switch(&self) -> bool {
-        self.has_refresh && self.status != Status::Dead
+        self.status != Status::Dead && (self.has_refresh || self.has_live_access())
     }
 }
 
@@ -146,12 +159,14 @@ pub struct NewAccount {
     pub cursor_password: Option<String>,
     pub email_password: Option<String>,
     pub recovery_email: Option<String>,
+    /// 长期 User API Key（`crsr_…`）。
+    pub api_key: Option<String>,
     pub note: Option<String>,
     pub source: Option<Source>,
 }
 
 impl NewAccount {
-    /// 托管门槛：邮箱 + (refresh_token | Cursor 密码 | session token)。
+    /// 托管门槛：邮箱 + (refresh_token | Cursor 密码 | session token | crsr_ API Key)。
     ///
     /// 挡在这里而不是入库后再说，是因为一个「只有邮箱」的条目对用户毫无用处，
     /// 却会一直占着列表位置让人以为它有用。
@@ -159,6 +174,8 @@ impl NewAccount {
     /// session token 单独也收：手里确实有一批只拿得到它的号，不收就完全用不起来。代价是
     /// 它几小时到几天就过期，到期后这个号退回「待登录」，得重新粘一份——界面上会把这类号
     /// 标成「仅会话」，让人知道它不是长期的。
+    ///
+    /// `crsr_` 单独也收：切不进 Cursor，但 session 过期后还能查基础用量。
     pub fn qualify(&self) -> Result<()> {
         let given = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
         if given(&self.refresh_token) || given(&self.cursor_password) {
@@ -169,11 +186,21 @@ impl NewAccount {
             crate::token::normalize_access(self.access_token.as_deref().unwrap_or(""))?;
             return Ok(());
         }
+        if given(&self.api_key) {
+            if crate::token::looks_like_user_api_key(self.api_key.as_deref().unwrap_or("")) {
+                return Ok(());
+            }
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                format!("{} 的 API Key 不是 crsr_ 开头。", self.email),
+            )
+            .with_hint("User API Key 形如 crsr_…"));
+        }
         Err(AppError::new(
             ErrorCode::InvalidInput,
             format!("{} 缺少凭证，收不进来。", self.email),
         )
-        .with_hint("至少要有 refresh_token、Cursor 登录密码、session token 之一。"))
+        .with_hint("至少要有 refresh_token、Cursor 登录密码、session token、crsr_ API Key 之一。"))
     }
 }
 
@@ -208,9 +235,13 @@ mod tests {
 
     #[test]
     fn status_is_derived_from_whether_there_is_a_usable_credential() {
-        assert_eq!(status_from_credentials(true, false), Status::Active);
-        assert_eq!(status_from_credentials(false, true), Status::Active);
-        assert_eq!(status_from_credentials(false, false), Status::NeedsLogin);
+        assert_eq!(status_from_credentials(true, false, false), Status::Active);
+        assert_eq!(status_from_credentials(false, true, false), Status::Active);
+        assert_eq!(status_from_credentials(false, false, true), Status::Active);
+        assert_eq!(
+            status_from_credentials(false, false, false),
+            Status::NeedsLogin
+        );
     }
 
     #[test]
@@ -291,6 +322,22 @@ mod tests {
     }
 
     #[test]
+    fn an_api_key_alone_qualifies() {
+        let a = NewAccount {
+            email: "a@example.com".into(),
+            api_key: Some("crsr_abc123DEF".into()),
+            ..Default::default()
+        };
+        assert!(a.qualify().is_ok());
+        let junk = NewAccount {
+            email: "a@example.com".into(),
+            api_key: Some("not-a-key".into()),
+            ..Default::default()
+        };
+        assert!(junk.qualify().is_err());
+    }
+
+    #[test]
     fn serialized_account_uses_camel_case() {
         let a = Account {
             id: AccountId::from_raw("x"),
@@ -303,6 +350,7 @@ mod tests {
             signup_type: None,
             workos_user_id: None,
             usage: None,
+            billing: None,
             last_checked_at: None,
             last_error: None,
             code_channel: "auto".into(),
@@ -314,12 +362,14 @@ mod tests {
             has_password: false,
             has_email_password: false,
             has_recovery_email: false,
+            has_api_key: false,
             created_at: "2026-09-02T00:00:00Z".into(),
             updated_at: "2026-09-02T00:00:00Z".into(),
         };
         let v = serde_json::to_value(&a).unwrap();
         assert_eq!(v["hasRefresh"], true);
         assert_eq!(v["hasAccess"], false);
+        assert_eq!(v["hasApiKey"], false);
         assert_eq!(v["codeChannel"], "auto");
         assert_eq!(v["source"], "purchased");
         assert_eq!(v["status"], "active");
@@ -339,6 +389,7 @@ mod tests {
             signup_type: None,
             workos_user_id: None,
             usage: None,
+            billing: None,
             last_checked_at: None,
             last_error: None,
             code_channel: "auto".into(),
@@ -350,6 +401,7 @@ mod tests {
             has_password: false,
             has_email_password: false,
             has_recovery_email: false,
+            has_api_key: false,
             created_at: String::new(),
             updated_at: String::new(),
         };
@@ -359,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_only_account_works_until_its_access_expires_but_never_switches() {
+    fn a_session_only_account_switches_while_its_access_lives() {
         let mut a = Account {
             id: AccountId::from_raw("x"),
             email: "a@example.com".into(),
@@ -371,6 +423,7 @@ mod tests {
             signup_type: None,
             workos_user_id: Some("user_1".into()),
             usage: None,
+            billing: None,
             last_checked_at: None,
             last_error: None,
             code_channel: "auto".into(),
@@ -382,13 +435,18 @@ mod tests {
             has_password: false,
             has_email_password: false,
             has_recovery_email: false,
+            has_api_key: false,
             created_at: String::new(),
             updated_at: String::new(),
         };
         assert!(a.session_only());
         assert!(a.can_query_usage(), "有效期内拿它查用量 / 进网关都行");
-        assert!(!a.can_switch(), "写进 Cursor 的登录态必须能自己续期");
+        assert!(a.can_switch(), "有效期内的 session token 也能写进 Cursor");
         a.access_expires_at = Some("2020-01-01T00:00:00Z".into());
         assert!(!a.can_query_usage());
+        assert!(!a.can_switch(), "过期之后切不进去，得重新粘一份");
+        a.has_api_key = true;
+        assert!(a.can_query_usage(), "session 过期后 crsr_ 还能查基础用量");
+        assert!(!a.can_switch(), "API Key 登不回 Cursor");
     }
 }

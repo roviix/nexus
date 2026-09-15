@@ -3,7 +3,7 @@
  *
  * 网关里的每一条通道（Cursor / ChatGPT / Grok Build / Kiro）摆成顶部一排卡，切一下，下面的
  * 模型候选和整份配置跟着换，而不是各抄一遍。几条通道共用同一个地址 —— 选哪条只决定
- * 「模型下拉里列谁」，网关按模型名把请求送到对应那队号上。
+ * 「模型下拉里列谁」；目录主键是 `{通道}/{模型}`，不带前缀的请求走用户设的默认通道。
  *
  * 通道、客户端、配置与连接测试是四个平级内容区。这里不做步骤轨道：它们是当前配置的四个
  * 组成部分，不是必须逐项完成的向导。
@@ -12,7 +12,7 @@
  * 和账号凭证同一套规矩）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { channelOfModel, localChannels, type LocalChannelId } from "../gateway/channels";
+import { channelOfModel, defaultChannelId, localChannels, splitModelId, type LocalChannelId } from "../gateway/channels";
 import { connect as connectApi, errorText, gateway as gatewayApi, type ConnectTool } from "../ipc/api";
 import type { ClientState, ConnectApplied, ConnectReverted } from "../ipc/types";
 import { Highlight } from "../relay/Highlight";
@@ -20,6 +20,7 @@ import { ModelPicker, type PickerOption } from "../relay/ModelPicker";
 import { VendorLogo } from "../relay/VendorLogo";
 import {
   claudeSettings,
+  clientModelId,
   clineFields,
   codexAuth,
   codexToml,
@@ -52,22 +53,21 @@ import { Icon, Spinner } from "../ui/primitives";
 const DEFAULT_PROMPT = "用一句话介绍你自己，并说出你是哪个模型。";
 
 /**
- * 每个工具打开时的默认模型：Claude Code 走 Anthropic 协议、默认 Claude 旗舰；Codex 走
- * Responses、默认 GPT 的快速档。协议壳能跑任意模型，默认值只求「对口又稳」。
- * 目录里没有时按顺序回落，最后取目录第一个。
+ * 每个工具打开时的默认模型：Claude Code 走 Anthropic 协议、默认 Claude 旗舰；Codex /
+ * SDK 在 ChatGPT 通道优先 gpt-6-astra。目录里没有时按顺序回落，最后取目录第一个。
  */
 const TOOL_DEFAULT_MODEL: Record<Tool, string[]> = {
   claude: ["claude-sonnet-5", "claude-opus-5"],
-  codex: ["gpt-5.6-sol-max-fast", "gpt-5.6-sol"],
-  opencode: ["grok-4.5", "gpt-5.6-sol"],
+  codex: ["gpt-6-astra", "gpt-5.4", "gpt-5.6-sol"],
+  opencode: ["gpt-6-astra", "gpt-5.4", "grok-4.5", "gpt-5.6-sol"],
   grok: ["grok-4.5", "grok-4.6"],
-  cline: ["claude-sonnet-5", "gpt-5.6-sol"],
-  sdk: ["claude-sonnet-5", "gpt-5.6-sol"],
+  cline: ["gpt-6-astra", "gpt-5.4", "claude-sonnet-5", "gpt-5.6-sol"],
+  sdk: ["gpt-6-astra", "gpt-5.4", "claude-sonnet-5", "gpt-5.6-sol"],
   cursor_agent: ["auto"],
 };
 
 function pickDefault(tool: Tool, ids: string[]): string {
-  return TOOL_DEFAULT_MODEL[tool].find((m) => ids.includes(m)) ?? ids[0] ?? TOOL_DEFAULT_MODEL[tool][0]!;
+  return TOOL_DEFAULT_MODEL[tool].find((m) => ids.some((id) => id === m || splitModelId(id).name === m)) ?? ids[0] ?? TOOL_DEFAULT_MODEL[tool][0]!;
 }
 
 export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) => void }) {
@@ -101,7 +101,7 @@ export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
   const meta = toolMeta(tool);
 
   const channels = useMemo(() => localChannels(relay.gateway, relay.local), [relay.gateway, relay.local]);
-  const localId: LocalChannelId = (channel as LocalChannelId | null) ?? "cursor";
+  const localId: LocalChannelId = (channel as LocalChannelId | null) ?? defaultChannelId(relay.gateway);
   /** 目录里归当前那条通道的模型；模型下拉只列它们。 */
   const localInChannel = useMemo(() => (relay.local ?? []).filter((m) => channelOfModel(channels, m.id) === localId), [relay.local, channels, localId]);
   const ids = useMemo(() => localInChannel.map((m) => m.id), [localInChannel]);
@@ -318,6 +318,10 @@ export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
 
             {tool === "codex" ? (
               <>
+                <p className="muted" style={{ margin: "0 0 8px", fontSize: 11.5, lineHeight: 1.6 }}>
+                  Codex 只认短名，配置里写成 <code className="mono">{clientModelId(model) || "gpt-5.4"}</code>
+                  。请把 ChatGPT 设为默认通道，裸名才会走这队号。
+                </p>
                 <ConfigBlock
                   title={homePath(".codex/config.toml")}
                   format="TOML"
@@ -528,7 +532,7 @@ function useApply(tool: Tool, model: string) {
     [load],
   );
 
-  const apply = useCallback(() => act(async () => ({ kind: "applied", r: await connectApi.apply(tool as ConnectTool, model) })), [act, tool, model]);
+  const apply = useCallback(() => act(async () => ({ kind: "applied", r: await connectApi.apply(tool as ConnectTool, clientModelId(model)) })), [act, tool, model]);
 
   const revert = useCallback(() => act(async () => ({ kind: "reverted", r: await connectApi.revert(tool as ConnectTool) })), [act, tool]);
 
@@ -542,7 +546,7 @@ function useApply(tool: Tool, model: string) {
     apply,
     revert,
     onThis,
-    modelDiffers: Boolean(onThis && state?.model != null && state.model !== model),
+    modelDiffers: Boolean(onThis && state?.model != null && state.model !== clientModelId(model)),
   };
 }
 
@@ -606,7 +610,7 @@ function ApplyNote({
     tone = "warn";
     body = (
       <>
-        配置文件里还是 <code className="mono">{ap.state?.model}</code>，重新写入才换成 <code className="mono">{model}</code>。
+        配置文件里还是 <code className="mono">{ap.state?.model}</code>，重新写入才换成 <code className="mono">{clientModelId(model)}</code>。
       </>
     );
   } else if (ap.state && !ap.onThis && ap.state.pointsTo === "other") {
@@ -693,7 +697,7 @@ function ModelHint({
   if (!local) {
     return (
       <span className="mhint muted">
-        目录里没有 <span className="mono">{id}</span>：网关认不出的名字会落到 <span className="mono">auto</span>。
+        目录里没有 <span className="mono">{id}</span>。不带通道前缀时走默认通道；写成 通道/名称 则强制那条。
       </span>
     );
   }

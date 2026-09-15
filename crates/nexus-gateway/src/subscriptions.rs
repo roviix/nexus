@@ -73,18 +73,30 @@ pub struct ChatGptGate {
     pub accounts: Arc<ChatGptService>,
 }
 
-/// 静态目录 ∪ 上游目录，去重、静态的在前。
-pub fn chatgpt_chat_models(accounts: &ChatGptService) -> Vec<String> {
-    let mut out: Vec<String> = crate::codex::protocol::CODEX_MODELS
+/// 这个号实际能用的对话模型。上游目录拉到过就以它为准（有 `gpt-6-astra` 就排第一）；
+/// 还没拉到则用静态表，且不把 Astra 排在默认位——很多号对它 400。
+pub fn merge_chatgpt_chat_models(live: &[String]) -> Vec<String> {
+    if live.is_empty() {
+        return crate::codex::protocol::CODEX_MODELS
+            .iter()
+            .filter(|s| **s != crate::codex::protocol::PREFERRED_CHAT_MODEL)
+            .map(|s| (*s).to_string())
+            .collect();
+    }
+    let mut out = live.to_vec();
+    if let Some(i) = out
         .iter()
-        .map(|s| s.to_string())
-        .collect();
-    for m in accounts.models() {
-        if !out.contains(&m.slug) {
-            out.push(m.slug);
-        }
+        .position(|m| m.eq_ignore_ascii_case(crate::codex::protocol::PREFERRED_CHAT_MODEL))
+    {
+        let preferred = out.remove(i);
+        out.insert(0, preferred);
     }
     out
+}
+
+pub fn chatgpt_chat_models(accounts: &ChatGptService) -> Vec<String> {
+    let live: Vec<String> = accounts.models().into_iter().map(|m| m.slug).collect();
+    merge_chatgpt_chat_models(&live)
 }
 
 impl ChannelGate for ChatGptGate {
@@ -330,4 +342,27 @@ pub fn subscription_lane(accounts: Arc<dyn SubscriptionAccounts>) -> crate::lane
         vec![Arc::new(SubscriptionSource::new(accounts)) as Arc<dyn crate::lane::Source>],
         Arc::new(crate::lane::Roster::open()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_catalog_puts_astra_first_when_the_account_has_it() {
+        let live = vec!["gpt-5.4".into(), "gpt-6-astra".into(), "gpt-5.5".into()];
+        assert_eq!(
+            merge_chatgpt_chat_models(&live)[0],
+            crate::codex::protocol::PREFERRED_CHAT_MODEL
+        );
+    }
+
+    #[test]
+    fn empty_live_catalog_does_not_default_to_astra() {
+        let models = merge_chatgpt_chat_models(&[]);
+        assert_eq!(models[0], crate::codex::protocol::DEFAULT_CHAT_MODEL);
+        assert!(!models
+            .iter()
+            .any(|m| m == crate::codex::protocol::PREFERRED_CHAT_MODEL));
+    }
 }

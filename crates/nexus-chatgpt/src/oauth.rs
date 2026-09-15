@@ -470,6 +470,8 @@ pub struct Identity {
     /// plus / pro / team / free …
     pub plan_type: Option<String>,
     pub organization_id: Option<String>,
+    /// JWT `organizations[].title` / `name`。个人工作区常常是 `Personal`。
+    pub organization_title: Option<String>,
 }
 
 fn str_of(v: Option<&serde_json::Value>) -> Option<String> {
@@ -517,6 +519,11 @@ pub fn identity_from_tokens(id_token: Option<&str>, access_token: Option<&str>) 
         user_id: auth("chatgpt_user_id").or_else(|| auth("user_id")),
         plan_type: auth("chatgpt_plan_type"),
         organization_id: default_org.and_then(|o| str_of(o.get("id"))),
+        organization_title: default_org.and_then(|o| {
+            str_of(o.get("title"))
+                .or_else(|| str_of(o.get("name")))
+                .or_else(|| str_of(o.get("description")))
+        }),
     }
 }
 
@@ -604,7 +611,10 @@ mod tests {
             "https://api.openai.com/auth": {
                 "chatgpt_account_id": "acct_123",
                 "chatgpt_plan_type": "plus",
-                "organizations": [{ "id": "org-a", "is_default": false }, { "id": "org-b", "is_default": true }],
+                "organizations": [
+                    { "id": "org-a", "title": "Other", "is_default": false },
+                    { "id": "org-b", "title": "Personal", "is_default": true }
+                ],
             }
         }));
         let access = jwt(serde_json::json!({
@@ -626,6 +636,7 @@ mod tests {
         );
         assert_eq!(who.plan_type.as_deref(), Some("plus"));
         assert_eq!(who.organization_id.as_deref(), Some("org-b"));
+        assert_eq!(who.organization_title.as_deref(), Some("Personal"));
 
         let only_access = identity_from_tokens(None, Some(&access));
         assert_eq!(only_access.email.as_deref(), Some("ignored@example.com"));

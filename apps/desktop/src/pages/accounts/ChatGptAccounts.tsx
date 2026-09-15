@@ -2,42 +2,48 @@
  * 账号 · ChatGPT —— 账号页的第二个平台页签。
  *
  * 用用户自己的 ChatGPT 订阅（Plus / Pro / Team）跑 Codex 模型：Codex CLI、Claude Code、OpenAI SDK
- * 指到本机网关，凭证只在这台机器上，请求从这台机器直接到 chatgpt.com。和 Cursor 的号是两队人：
- * 一个 GPT 请求先看这里有没有号，有就走 ChatGPT，没有才走 Cursor 的号。
+ * 指到本机网关，凭证只在这台机器上，请求从这台机器直接到 chatgpt.com。写成 `chatgpt/…` 走这里；
+ * 把 ChatGPT 设成默认通道后，裸名或不写模型也走这里。空模型优先这个号目录里的
+ * gpt-6-astra，没有就 gpt-5.4。官方 ChatGPT 应用不能改接口地址，接不了本机网关。
  *
  * 进来有三条路，都不用手抄 token：
  *  1. **授权登录** —— 桌面端就在用户机器上，Codex 的回调地址（localhost:1455）我们自己接得住，
  *     浏览器里点完同意就自动完成；1455 被占（`codex login` 在跑）时退回贴地址。
  *  2. **从本机 Codex CLI 导入** —— 读 `~/.codex/auth.json`，一步。
- *  3. **粘贴** —— auth.json 原文 / `access----refresh` / 单个 refresh token。
+ *  3. **粘贴** —— auth.json / sub2api 的 Codex session JSON（数组、多行、带 credentials 包一层）/
+ *     `access----refresh` / 单个 refresh token。可以一次贴多个。
  *
- * 加进来的号默认就在网关的队里（它在这个应用里只有这一个用途），想临时摘掉就关开关，比删了重授权轻。
- * 「正在用 / 耗尽 / 冷却」这些接力状态来自网关；网关没开时只显示号本身。
+ * 加进来的号默认就在网关的队里。列表只负责扫（卡片 + 抽屉，和 Cursor 同一套骨架）；
+ * 加入 / 移出本地网关、「用这个」都在抽屉里，不在卡上。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AccountCard } from "../../accounts/AccountCard";
+import { AccountInspector } from "../../accounts/AccountInspector";
+import { createChatGptAccountView } from "../../accounts/model";
+import { PoolChips } from "../../accounts/PoolChips";
 import { laneOf } from "../../gateway/channels";
 import { chatgpt, gateway, onChatGptLogin } from "../../ipc/api";
 import type {
   ChatGptAccount,
+  ChatGptImportOutcome,
   ChatGptLoginHandle,
   ChatGptLoginState,
   ChatGptManifestModel,
-  ChatGptUsage,
   GatewayCandidate,
   GatewayStatus,
 } from "../../ipc/types";
-import { go, type Route } from "../../shell/nav";
-import { timeAgo, timeUntil } from "../../ui/format";
-import { Banner, CopyButton, Empty, ErrorNote, Gauge, Icon, Modal, Switch, Tag } from "../../ui/primitives";
-import { labelOf, laneBadge, planClass, windowIsFull, windowLabel } from "./chatgpt";
+import { Banner, CopyButton, Empty, ErrorNote, Icon, Modal } from "../../ui/primitives";
+import { chatgptGatewayMembership, chatgptUsable, importSummary, labelOf } from "./chatgpt";
 
-export function ChatGptAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
+export function ChatGptAccounts({ tabs }: { tabs: ReactNode }) {
   const [accounts, setAccounts] = useState<ChatGptAccount[] | null>(null);
   const [manifest, setManifest] = useState<ChatGptManifestModel[]>([]);
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [working, setWorking] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState<Set<string>>(() => new Set());
 
   const reload = useCallback(async () => {
     try {
@@ -86,16 +92,40 @@ export function ChatGptAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Rou
     }
   }
 
-  async function remove(a: ChatGptAccount) {
-    const current = laneByLabel.get(labelOf(a).toLowerCase())?.state.kind === "current";
-    const warn = current ? "它正在被网关使用，进行中的对话会换号并丢上游缓存。" : "";
-    if (!window.confirm(`删除 ${labelOf(a)}？本机保存的凭证一起删除。${warn}`)) return;
-    await run(() => chatgpt.remove(a.id));
+  const list = accounts ?? [];
+  const active = list.filter((a) => a.enabled && chatgptUsable(a)).length;
+  const disabled = working;
+  const openAccount = list.find((a) => a.id === openId) ?? null;
+  const openView = openAccount
+    ? createChatGptAccountView({
+        account: openAccount,
+        lane: laneByLabel.get(labelOf(openAccount).toLowerCase()) ?? null,
+      })
+    : null;
+
+  function viewOf(a: ChatGptAccount) {
+    return createChatGptAccountView({
+      account: a,
+      lane: laneByLabel.get(labelOf(a).toLowerCase()) ?? null,
+    });
   }
 
-  const list = accounts ?? [];
-  const active = list.filter((a) => a.enabled && a.status === "active" && a.hasRefresh).length;
-  const disabled = working;
+  async function refreshOne(id: string) {
+    setRefreshing((p) => new Set(p).add(id));
+    try {
+      await chatgpt.refreshUsage(id);
+      setError(null);
+      await reload();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setRefreshing((p) => {
+        const next = new Set(p);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
 
   return (
     <>
@@ -140,25 +170,11 @@ export function ChatGptAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Rou
 
       <ErrorNote error={error} onRetry={() => void reload()} />
 
-      {list.length > 0 && status && !status.running ? (
-        <div style={{ marginBottom: 12 }}>
-          <Banner
-            tone="default"
-            title="本地网关没在跑，这些号此刻没人用。"
-            hint="ChatGPT 的号只有一个用途：给本机网关跑 GPT / Codex 模型。开了网关，Codex CLI、Claude Code 指到它就能用。"
-            action={
-              <button type="button" className="btn btn-sm" onClick={() => onGo(go("gateway"))}>
-                去本地网关
-              </button>
-            }
-          />
-        </div>
-      ) : null}
-
       {accounts === null ? (
-        <div className="stack" style={{ gap: 10 }}>
-          <div className="skeleton" style={{ height: 96 }} />
-          <div className="skeleton" style={{ height: 96 }} />
+        <div className="accts">
+          <div className="skeleton" style={{ height: 164 }} />
+          <div className="skeleton" style={{ height: 164 }} />
+          <div className="skeleton" style={{ height: 164 }} />
         </div>
       ) : list.length === 0 ? (
         <Empty
@@ -170,32 +186,52 @@ export function ChatGptAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Rou
             </button>
           }
         >
-          Plus / Pro / Team 订阅都行。加进来后 Codex CLI、Claude Code 指到本机网关就能用它跑 gpt-5.x：
-          凭证只在这台电脑上，请求从这里直接到 chatgpt.com。
+          Plus / Pro / Team 订阅都行。加进来后，在网关页把 ChatGPT 设为默认，Codex CLI、Claude Code、
+          OpenAI SDK 指到本机网关就能用：凭证只在这台电脑上，请求从这里直接到 chatgpt.com。
         </Empty>
       ) : (
-        <div className="card">
-          <div className="row" style={{ gap: 8, alignItems: "baseline", marginBottom: 12 }}>
-            <strong>{list.length} 个号</strong>
-            <span className="faint tiny">{active} 个可接 · GPT / Codex 模型优先走这里</span>
-          </div>
-          <div className="list">
-            {list.map((a) => (
-              <AccountRow
+        <div className="accts">
+          {list.map((a) => {
+            const view = viewOf(a);
+            const refreshingAccount = refreshing.has(a.id);
+            return (
+              <AccountCard
                 key={a.id}
-                account={a}
-                lane={laneByLabel.get(labelOf(a).toLowerCase()) ?? null}
-                disabled={disabled}
-                onToggle={(on) => void run(() => chatgpt.setEnabled(a.id, on))}
-                onUse={() => void run(() => chatgpt.setCurrent(labelOf(a)))}
-                onRefresh={() => void run(() => chatgpt.refreshUsage(a.id))}
-                onRelogin={() => setAdding(true)}
-                onRemove={() => void remove(a)}
+                view={view}
+                highlighted={a.id === openId}
+                onOpen={() => setOpenId(a.id)}
+                badges={<PoolChips membership={{ switcher: null, gateway: chatgptGatewayMembership(a, view.lane) }} />}
+                actions={
+                  chatgptUsable(a) ? (
+                    <button
+                      type="button"
+                      className="ibtn"
+                      disabled={refreshingAccount}
+                      onClick={() => void refreshOne(a.id)}
+                      aria-label="刷新用量"
+                    >
+                      <Icon name="refresh" size={13} className={refreshingAccount ? "is-spinning" : undefined} />
+                    </button>
+                  ) : (
+                    <button type="button" className="btn btn-sm btn-soft" onClick={() => setAdding(true)}>
+                      授权
+                    </button>
+                  )
+                }
               />
-            ))}
-          </div>
+            );
+          })}
         </div>
       )}
+
+      {openView ? (
+        <AccountInspector
+          view={openView}
+          onClose={() => setOpenId(null)}
+          onChanged={reload}
+          onReauth={() => setAdding(true)}
+        />
+      ) : null}
 
       {adding ? (
         <AddModal
@@ -204,123 +240,10 @@ export function ChatGptAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Rou
             setAdding(false);
             await reload();
           }}
+          onReload={reload}
         />
       ) : null}
     </>
-  );
-}
-
-function planTag(plan: string | null) {
-  const cls = planClass(plan);
-  return cls && plan ? <span className={cls}>{plan}</span> : null;
-}
-
-function laneTag(c: GatewayCandidate | null, enabled: boolean) {
-  const b = laneBadge(c, enabled);
-  if (!b) return null;
-  return b.tone === "default" ? <Tag>{b.text}</Tag> : <Tag tone={b.tone}>{b.text}</Tag>;
-}
-
-function AccountRow({
-  account: a,
-  lane,
-  disabled,
-  onToggle,
-  onUse,
-  onRefresh,
-  onRelogin,
-  onRemove,
-}: {
-  account: ChatGptAccount;
-  lane: GatewayCandidate | null;
-  disabled: boolean;
-  onToggle: (on: boolean) => void;
-  onUse: () => void;
-  onRefresh: () => void;
-  onRelogin: () => void;
-  onRemove: () => void;
-}) {
-  const isCurrent = lane?.state.kind === "current";
-  const needsLogin = a.status !== "active" || !a.hasRefresh;
-  const u = a.usage;
-  return (
-    <div className={isCurrent ? "list-row is-current" : "list-row"} style={{ alignItems: "flex-start" }}>
-      <div className="grow stack" style={{ gap: 8, minWidth: 0 }}>
-        <div className="row" style={{ gap: 8, minWidth: 0 }}>
-          <span className="mono selectable truncate" style={{ fontSize: 13 }}>
-            {labelOf(a)}
-          </span>
-          {planTag(a.planType)}
-          {laneTag(lane, a.enabled)}
-          {a.status === "dead" ? (
-            <Tag tone="bad">已停用</Tag>
-          ) : needsLogin ? (
-            <Tag tone="warn">需要重新授权</Tag>
-          ) : null}
-        </div>
-
-        {u ? (
-          <div className="row" style={{ gap: 14, alignItems: "flex-start" }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <UsageGauge window={u.primary} fallback="5 小时" />
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <UsageGauge window={u.secondary} fallback="7 天" />
-            </div>
-          </div>
-        ) : (
-          <span className="faint tiny">{needsLogin ? "授权后才有额度数据" : "还没有额度数据 · 跑一次请求就有"}</span>
-        )}
-
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          {a.lastError ? (
-            <span className="acct-problem" title={a.lastError}>
-              {a.lastError.slice(0, 90)}
-            </span>
-          ) : null}
-          {a.accessExpiresAt && !needsLogin ? (
-            <span className="faint tiny">凭证 {timeUntil(new Date(a.accessExpiresAt).getTime())} 后自动续期</span>
-          ) : null}
-          {u ? <span className="faint tiny">额度 {timeAgo(u.checkedAt)} 更新</span> : null}
-          {a.note ? <span className="faint tiny">{a.note}</span> : null}
-        </div>
-      </div>
-
-      <div className="row" style={{ gap: 6, flexShrink: 0 }}>
-        <span className="acct-hover row" style={{ gap: 2 }}>
-          <button type="button" className="btn btn-sm btn-icon btn-quiet" disabled={disabled || needsLogin} onClick={onRefresh} title="现在查一次额度" aria-label="查额度">
-            <Icon name="refresh" size={13} />
-          </button>
-          <button type="button" className="btn btn-sm btn-icon btn-soft btn-danger" disabled={disabled} onClick={onRemove} title="删除账号（连凭证）" aria-label="删除">
-            <Icon name="trash" size={13} />
-          </button>
-        </span>
-        {needsLogin ? (
-          <button type="button" className="btn btn-sm" disabled={disabled} onClick={onRelogin}>
-            重新授权
-          </button>
-        ) : (
-          <button type="button" className="btn btn-sm" disabled={disabled || isCurrent || !a.enabled} onClick={onUse}>
-            {isCurrent ? "使用中" : "用这个"}
-          </button>
-        )}
-        <Switch checked={a.enabled} disabled={disabled} label={a.enabled ? "暂停这个号" : "加入网关"} onChange={onToggle} />
-      </div>
-    </div>
-  );
-}
-
-function UsageGauge({ window: w, fallback }: { window: ChatGptUsage["primary"]; fallback: string }) {
-  const label = windowLabel(w?.windowMinutes, fallback);
-  const reset = w?.resetAtMs != null && windowIsFull(w) ? `${timeUntil(w.resetAtMs)}后重置` : null;
-  return (
-    <Gauge
-      label={label}
-      percent={w?.usedPercent ?? null}
-      compact
-      note={reset ? <span className="acct-problem">{reset}</span> : undefined}
-      title={w?.resetAtMs != null ? `窗口 ${timeUntil(w.resetAtMs)} 后重置` : undefined}
-    />
   );
 }
 
@@ -332,7 +255,15 @@ type Mode = "oauth" | "cli" | "paste";
  * 三条进来的路放一个弹窗里。默认「授权登录」：一键、最像官方 `codex login`。
  * 授权链接打开后这里只显示等待；回调自动到达就关弹窗。1455 被占时才露出「贴地址」的输入框。
  */
-function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => Promise<void> }) {
+function AddModal({
+  onClose,
+  onAdded,
+  onReload,
+}: {
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+  onReload: () => Promise<void>;
+}) {
   const [mode, setMode] = useState<Mode>("oauth");
   const [error, setError] = useState<unknown>(null);
   const [working, setWorking] = useState(false);
@@ -341,6 +272,7 @@ function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => Pr
   const [callback, setCallback] = useState("");
   const [paste, setPaste] = useState("");
   const [note, setNote] = useState("");
+  const [outcome, setOutcome] = useState<ChatGptImportOutcome | null>(null);
   const handleRef = useRef<ChatGptLoginHandle | null>(null);
   handleRef.current = handle;
 
@@ -413,8 +345,10 @@ function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => Pr
           ) : null}
           {mode === "paste" ? (
             <button type="button" className="btn btn-primary" disabled={working || !paste.trim()} onClick={() => void go(async () => {
-              await chatgpt.importText(paste, note.trim() || undefined);
-              await onAdded();
+              const next = await chatgpt.importText(paste, note.trim() || undefined);
+              setOutcome(next);
+              if (next.failed === 0) await onAdded();
+              else await onReload();
             })}>
               导入
             </button>
@@ -502,13 +436,23 @@ function AddModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => Pr
           <div className="stack" style={{ gap: 10 }}>
             <textarea
               className="textarea mono"
-              rows={5}
-              placeholder={"三种写法都认：\n· ~/.codex/auth.json 的原文\n· access_token----refresh_token\n· 单独一个 refresh token（会先刷一次拿身份）"}
+              rows={6}
+              placeholder={"可一次贴多个，这些写法都认：\n· ~/.codex/auth.json 原文\n· sub2api 的 Codex session JSON（数组 / 多行 / 带 credentials）\n· access_token----refresh_token\n· 单独一个 refresh token（会先刷一次拿身份）"}
               value={paste}
-              onChange={(e) => setPaste(e.target.value)}
+              onChange={(e) => {
+                setPaste(e.target.value);
+                setOutcome(null);
+              }}
               spellCheck={false}
             />
             <input className="input" placeholder="备注（可选）" value={note} onChange={(e) => setNote(e.target.value)} />
+            {outcome ? (
+              <Banner
+                tone={outcome.failed > 0 ? "warn" : "ok"}
+                title={importSummary(outcome)}
+                hint={outcome.errors.length ? outcome.errors.slice(0, 4).join(" · ") : undefined}
+              />
+            ) : null}
           </div>
         ) : null}
       </div>

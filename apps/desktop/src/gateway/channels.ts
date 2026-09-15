@@ -1,10 +1,10 @@
 /**
  * 网关通道的纯函数：从 `GatewayStatus` 里把所有通道摆成**同一种东西**，再算一句结论。
  *
- * 网关背后是好几队号：Cursor 的号（默认通道，不带前缀的请求都落这儿）、ChatGPT / Grok Build /
- * Kiro 的号（订阅通道，各接各的模型）。Rust 侧把 Cursor 放在 `status.lane`、其余放在
- * `status.channels`——那是选路实现上的主次；对用户来说它们是并列的四条通道，本地网关页、
- * 接入页、模型广场都该按并列摆。这里把两处并成一份 `LocalChannel[]`，Cursor 永远排第一。
+ * 网关背后是好几队号：Cursor / ChatGPT / Grok Build / Kiro。Rust 侧把 Cursor 放在
+ * `status.lane`、其余放在 `status.channels`——那是选路实现上的主次；对用户来说它们是并列
+ * 的四条通道。这里把两处并成一份 `LocalChannel[]`，Cursor 永远排第一。默认通道由用户指定，
+ * 不再写死 Cursor。
  */
 import type { LocalModel } from "../ipc/models";
 import type { ChannelSnapshot, GatewayCandidate, GatewayChannelId, GatewayLane, GatewayStatus } from "../ipc/types";
@@ -22,7 +22,7 @@ export interface LocalChannel {
   label: string;
   /** `/v1/models` 的 owned_by：cursor / openai / xai / aws。 */
   vendor: string;
-  /** 默认通道：不带前缀、别的通道不接的模型都落到它；号池在网关页管，不在账号页。 */
+  /** 用户指定的默认通道：裸名 / 空模型走这里。Cursor 的号池仍在网关页管。 */
   isDefault: boolean;
   /** 有没有号能接聊天。 */
   ready: boolean;
@@ -41,12 +41,30 @@ export interface LocalChannel {
  * Cursor 的模型清单不在快照里（它是静态表 + 兜底），给了 `local` 目录时按「不归任何就绪
  * 订阅通道」反推；没给就留空——网关页只关心号，不关心模型数。
  */
+export function defaultChannelId(status: GatewayStatus | null | undefined): LocalChannelId {
+  const id = status?.settings.defaultChannel;
+  if (id === "chatgpt" || id === "grok" || id === "kiro" || id === "cursor") return id;
+  return CURSOR;
+}
+
+/** `{通道}/{模型}` 的第一段。别名 `codex/` `xai/` 只认来源，不进目录。对不上已知通道时当裸名。 */
+export function splitModelId(id: string): { channel: LocalChannelId | null; name: string } {
+  const slash = id.indexOf("/");
+  if (slash <= 0) return { channel: null, name: id };
+  const head = id.slice(0, slash).toLowerCase();
+  const channel: LocalChannelId | null =
+    head === "cursor" ? "cursor" : head === "chatgpt" || head === "codex" ? "chatgpt" : head === "grok" || head === "xai" ? "grok" : head === "kiro" ? "kiro" : null;
+  if (channel) return { channel, name: id.slice(slash + 1) };
+  return { channel: null, name: id };
+}
+
 export function localChannels(status: GatewayStatus | null | undefined, local?: LocalModel[] | null): LocalChannel[] {
+  const defaultId = defaultChannelId(status);
   const extras: LocalChannel[] = (status?.channels ?? []).map((ch) => ({
     id: ch.id,
     label: ch.label,
     vendor: ch.vendor,
-    isDefault: false,
+    isDefault: ch.id === defaultId,
     ready: ch.ready,
     mediaReady: ch.mediaReady,
     lane: ch.lane,
@@ -56,25 +74,20 @@ export function localChannels(status: GatewayStatus | null | undefined, local?: 
     prefixes: ch.prefixes,
   }));
 
-  const claimed = new Set<string>();
-  for (const ch of extras) {
-    if (ch.ready) for (const m of ch.chatModels) claimed.add(m);
-    if (ch.mediaReady) for (const m of [...ch.imageModels, ...ch.videoModels]) claimed.add(m);
-  }
-  const cursorModels = (local ?? []).filter((m) => !claimed.has(m.id));
+  const cursorModels = (local ?? []).filter((m) => splitModelId(m.id).channel === CURSOR);
   const cursorLane = status?.lane ?? EMPTY_LANE;
   const cursor: LocalChannel = {
     id: CURSOR,
     label: "Cursor",
     vendor: "cursor",
-    isDefault: true,
+    isDefault: defaultId === CURSOR,
     ready: cursorLane.candidates.some(usableCandidate),
     mediaReady: cursorLane.candidates.some(usableCandidate),
     lane: cursorLane,
     chatModels: cursorModels.filter((m) => (m.modality ?? "chat") === "chat").map((m) => m.id),
     imageModels: cursorModels.filter((m) => m.modality === "image").map((m) => m.id),
     videoModels: cursorModels.filter((m) => m.modality === "video").map((m) => m.id),
-    prefixes: [],
+    prefixes: ["cursor/"],
   };
   return [cursor, ...extras];
 }
@@ -84,13 +97,16 @@ export function modelsOf(ch: LocalChannel): string[] {
   return [...ch.chatModels, ...ch.imageModels, ...ch.videoModels];
 }
 
-/** 这个本地模型此刻会走哪条通道。目录里没有的名字按默认通道（Cursor）算——网关也是这么兜底的。 */
+/** 这个本地模型此刻会走哪条通道。带前缀认前缀；裸名走用户默认通道。 */
 export function channelOfModel(channels: LocalChannel[], id: string): LocalChannelId {
+  const lower = id.toLowerCase();
   for (const ch of channels) {
-    if (ch.isDefault) continue;
-    if (modelsOf(ch).includes(id)) return ch.id;
+    if (lower.startsWith(`${ch.id}/`)) return ch.id;
+    if (ch.prefixes.some((p) => lower.startsWith(p.toLowerCase()))) return ch.id;
   }
-  return CURSOR;
+  const split = splitModelId(id);
+  if (split.channel) return split.channel;
+  return channels.find((c) => c.isDefault)?.id ?? CURSOR;
 }
 
 export function channelOf(status: GatewayStatus | null | undefined, id: GatewayChannelId): ChannelSnapshot | null {
@@ -120,20 +136,6 @@ export interface ChannelSummary {
   tone: Tone;
 }
 
-/** 这条通道的模型在没有号时会退到哪儿、怎么叫。 */
-function modelWord(ch: Pick<LocalChannel, "id" | "chatModels">): string {
-  switch (ch.id) {
-    case "chatgpt":
-      return "GPT / Codex 模型";
-    case "grok":
-      return "grok-*";
-    case "kiro":
-      return "kiro-claude-*";
-    default:
-      return ch.chatModels[0] ?? ch.id;
-  }
-}
-
 /** 一条通道里能接的号 / 总数 / 正在用的那个。 */
 export function laneCount(lane: GatewayLane): { usable: number; total: number; current: GatewayCandidate | null } {
   return {
@@ -144,10 +146,8 @@ export function laneCount(lane: GatewayLane): { usable: number; total: number; c
 }
 
 /**
- * 一句网关视角的结论：几个能接、谁在用、没有号时请求去哪。
- *
- * 订阅通道没有号不是坏消息（请求照旧走 Cursor），所以是 default；有号但全不可用才 warn。
- * Cursor 是兜底，它没有号就是真没有——请求会被拒，所以是 warn。
+ * 一句网关视角的结论：几个能接、谁在用。默认通道没号是真没有（裸名会被拒）；
+ * 其余通道没号只是「写成 {id}/… 才会走这里」，不是坏消息。
  */
 export function channelSummary(
   ch: Pick<LocalChannel, "id" | "label" | "lane" | "imageModels" | "videoModels" | "chatModels" | "mediaReady"> & { isDefault?: boolean },
@@ -158,9 +158,9 @@ export function channelSummary(
     if (usable === 0) return { text: `${total} 个号都不可用 · 请求会被拒`, tone: "warn" };
     return { text: `${usable} / ${total} 个号可接${current ? ` · 正在用 ${current.label}` : ""}`, tone: "ok" };
   }
-  const word = modelWord(ch);
-  if (total === 0) return { text: `没有 ${ch.label} 账号 · ${word} 会走 Cursor 的号`, tone: "default" };
-  if (usable === 0) return { text: `${total} 个 ${ch.label} 账号都不可用 · ${word} 请求会退回 Cursor 的号`, tone: "warn" };
+  const prefix = `${ch.id}/`;
+  if (total === 0) return { text: `没有 ${ch.label} 账号 · 写成 ${prefix}… 才走这里`, tone: "default" };
+  if (usable === 0) return { text: `${total} 个 ${ch.label} 账号都不可用 · ${prefix}… 请求会被拒`, tone: "warn" };
   const media = ch.imageModels.length + ch.videoModels.length > 0 ? (ch.mediaReady ? " · 可出图 / 出视频" : " · 无号可出媒体") : "";
   return {
     text: `${usable} / ${total} 个 ${ch.label} 账号可接${current ? ` · 正在用 ${current.label}` : ""}${media}`,

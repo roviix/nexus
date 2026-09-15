@@ -134,6 +134,28 @@ export function protocolBase(p: Protocol, ep: Endpoint): string {
   return PROTOCOL_INFO[p].base === "root" ? ep.root : ep.v1;
 }
 
+/**
+ * 写进客户端配置的模型名。目录主键是 `{通道}/{模型}`，但 Codex 等客户端会按自己的
+ * 白名单校验：带 `chatgpt/` 前缀会直接 400「not supported when using Codex with a
+ * ChatGPT account」。配置里只写短名，选路靠默认通道。
+ */
+export function clientModelId(id: string): string {
+  const slash = id.indexOf("/");
+  if (slash <= 0) return id;
+  const head = id.slice(0, slash).toLowerCase();
+  if (
+    head === "cursor" ||
+    head === "chatgpt" ||
+    head === "codex" ||
+    head === "grok" ||
+    head === "xai" ||
+    head === "kiro"
+  ) {
+    return id.slice(slash + 1);
+  }
+  return id;
+}
+
 // ── 各工具的配置 ─────────────────────────────────────────────────────────────
 
 /**
@@ -142,6 +164,7 @@ export function protocolBase(p: Protocol, ep: Endpoint): string {
  * 中转一律 BAD_MODEL_NAME。新版读 `*_MODEL_NAME`、老版读 `*_MODEL`，两套都写才不用管版本。
  */
 export function claudeSettings(ep: Endpoint, key: string, model: string): string {
+  model = clientModelId(model);
   return JSON.stringify(
     {
       env: {
@@ -168,6 +191,7 @@ export function claudeSettings(ep: Endpoint, key: string, model: string): string
  * `auth.json`，所以那份另给一段当兜底。
  */
 export function codexToml(ep: Endpoint, key: string, model: string): string {
+  model = clientModelId(model);
   return [
     `model_provider = "nexus"`,
     `model = "${model}"`,
@@ -190,6 +214,7 @@ export function codexAuth(key: string): string {
  * 不发明自定义 provider——否则丢掉 OpenCode 自带的模型元数据。
  */
 export function opencodeJson(ep: Endpoint, key: string, model: string): string {
+  model = clientModelId(model);
   return (
     JSON.stringify(
       {
@@ -211,6 +236,7 @@ export function opencodeJson(ep: Endpoint, key: string, model: string): string {
 
 /** 对齐 Grok CLI / CLIProxyAPI 的 named model，走 Responses。 */
 export function grokToml(ep: Endpoint, key: string, model: string): string {
+  model = clientModelId(model);
   return [
     `[models]`,
     `default = "grok"`,
@@ -230,6 +256,7 @@ export interface Field {
 
 /** Cline 这类只有设置面板的客户端：一行一个字段，各自能复制。 */
 export function clineFields(ep: Endpoint, key: string, model: string): Field[] {
+  model = clientModelId(model);
   return [
     { label: "API Provider", value: "OpenAI Compatible" },
     { label: "Base URL", value: ep.v1 },
@@ -259,6 +286,7 @@ export function envLines(
   model: string,
   platform: Platform = PLATFORM,
 ): string[] {
+  model = clientModelId(model);
   const pairs: Array<[string, string]> =
     tool === "claude"
       ? [
@@ -397,6 +425,7 @@ export function sdkSnippet(
   model: string,
   platform: Platform = PLATFORM,
 ): string {
+  model = clientModelId(model);
   if (lang === "python") return python(p, ep, key, model);
   if (lang === "js") return js(p, ep, key, model);
   return curl(p, ep, key, model, platform);

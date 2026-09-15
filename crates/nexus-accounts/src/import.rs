@@ -36,7 +36,7 @@ pub struct ParsedAccount {
     /// session / access token（`user_xxx::<jwt>` 或裸 JWT）。单独也收——有效期内能用，
     /// 到期退回待登录；界面上标「仅会话」。
     pub access_token: Option<String>,
-    /// 长期 API Key（`crsr_…`）。同样收不进来：登不回账号。
+    /// 长期 API Key（`crsr_…`）。切不进 Cursor，能查基础用量。
     pub api_key: Option<String>,
     pub note: Option<String>,
 }
@@ -57,6 +57,9 @@ pub struct ImportRow {
     /// 带了 session token（有效期内可用）。
     #[serde(default)]
     pub has_access: bool,
+    /// 带了 `crsr_` User API Key。
+    #[serde(default)]
+    pub has_api_key: bool,
 }
 
 /// 一次解析的完整结果。
@@ -88,7 +91,12 @@ pub fn preview(text: &str) -> (Vec<ParsedAccount>, ImportPreview) {
             .as_deref()
             .is_some_and(|t| crate::token::normalize_access(t).is_ok());
 
-        // 托管门槛：邮箱 + (refresh_token | Cursor 密码 | session token)。
+        let has_api_key = a
+            .api_key
+            .as_deref()
+            .is_some_and(crate::token::looks_like_user_api_key);
+
+        // 托管门槛：邮箱 + (refresh_token | Cursor 密码 | session token | crsr_)。
         let (ok, reason) = if has_refresh && has_password {
             (true, "refresh_token + 密码".to_string())
         } else if has_refresh {
@@ -98,19 +106,19 @@ pub fn preview(text: &str) -> (Vec<ParsedAccount>, ImportPreview) {
         } else if has_access {
             (
                 true,
-                "仅 session token（有效期内可用，到期需重新粘）".to_string(),
+                "仅 session token（有效期内可查用量、可切号，到期需重新粘）".to_string(),
             )
+        } else if has_api_key {
+            (true, "仅 API Key（可查基础用量，不能切号）".to_string())
         } else if a.access_token.is_some() {
             (false, "session token 不是合法的 JWT".to_string())
         } else if a.api_key.is_some() {
-            (
-                false,
-                "只有 API Key，登不回账号；需要 Cursor 密码或 refresh_token".to_string(),
-            )
+            (false, "API Key 不是 crsr_ 开头".to_string())
         } else {
             (
                 false,
-                "缺凭证；至少要 Cursor 密码或 refresh_token".to_string(),
+                "缺凭证；至少要 Cursor 密码、refresh_token、session token 或 crsr_ API Key"
+                    .to_string(),
             )
         };
 
@@ -122,6 +130,7 @@ pub fn preview(text: &str) -> (Vec<ParsedAccount>, ImportPreview) {
             has_password,
             has_email_password,
             has_access,
+            has_api_key,
         });
         if ok {
             out.accepted_count += 1;
@@ -142,6 +151,7 @@ impl From<ParsedAccount> for NewAccount {
             cursor_password: a.cursor_password,
             email_password: a.email_password,
             recovery_email: a.recovery_email,
+            api_key: a.api_key,
             note: a.note,
             source: None,
         }
@@ -601,14 +611,14 @@ mod tests {
             "ok1@example.com----{refresh}\n\
              ok2@example.com----pw\n\
              ok3@example.com----{session}\n\
-             bad2@example.com----crsr_key123\n\
+             ok4@example.com----crsr_key123\n\
              第9个：bad3@example.com"
         );
         let (accepted, report) = preview(&text);
 
-        assert_eq!(report.accepted_count, 3);
-        assert_eq!(report.rejected_count, 2);
-        assert_eq!(accepted.len(), 3);
+        assert_eq!(report.accepted_count, 4);
+        assert_eq!(report.rejected_count, 1);
+        assert_eq!(accepted.len(), 4);
 
         let by = |e: &str| report.rows.iter().find(|r| r.email == e).unwrap().clone();
         assert!(by("ok1@example.com").accepted && by("ok1@example.com").has_refresh);
@@ -617,7 +627,9 @@ mod tests {
         let s = by("ok3@example.com");
         assert!(s.accepted && s.has_access && !s.has_refresh);
         assert!(s.reason.contains("仅 session token"));
-        assert!(by("bad2@example.com").reason.contains("API Key"));
+        let k = by("ok4@example.com");
+        assert!(k.accepted && k.has_api_key && !k.has_refresh);
+        assert!(k.reason.contains("API Key"));
         assert!(by("bad3@example.com").reason.contains("缺凭证"));
     }
 

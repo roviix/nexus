@@ -7,6 +7,7 @@
 use crate::commands::sand_remote::RemoteSandHub;
 use nexus_accounts::{AccountsService, OauthSession};
 use nexus_chatgpt::ChatGptService;
+use nexus_crsr::CrsrService;
 use nexus_cursor::Cursor;
 use nexus_gateway::GatewayService;
 use nexus_grok::GrokService;
@@ -38,6 +39,8 @@ pub struct AppState {
     pub grokbot: Arc<GrokBotService>,
     /// Sand 补丁。与 switcher 一样只由用户点击触发；两者互不认识，只共享 nexus-cursor。
     pub sand: Arc<SandService>,
+    /// CRSR 补丁：原生 Agent 面板走账号里的 `crsr_` User API Key。和 Sand 互斥、备份分开。
+    pub crsr: Arc<CrsrService>,
     /// 远程 Cursor server 的 Sand 补丁 + 反向隧道。同一份规则表，只是对象在远端；
     /// 隧道端口跟着网关的透传端口走，所以它认识 gateway（组装在这一层完成）。
     pub sand_remote: Arc<RemoteSandHub>,
@@ -87,6 +90,13 @@ impl AppState {
         ));
 
         let accounts = Arc::new(AccountsService::new(db.clone(), secrets.clone()));
+        let crsr = Arc::new(CrsrService::new(
+            db.clone(),
+            data_dir,
+            cursor.paths.clone(),
+            Arc::new(cursor.control()),
+            accounts.clone(),
+        ));
         let chatgpt = Arc::new(ChatGptService::new(db.clone(), secrets.clone()));
         let grok = Arc::new(GrokService::new(db.clone(), secrets.clone()));
         let kiro = Arc::new(KiroService::new(db.clone(), secrets.clone()));
@@ -124,6 +134,7 @@ impl AppState {
             client_backups_dir: roviix_dir.join("backups").join("clients"),
             grokbot,
             sand,
+            crsr,
             sand_remote,
             chatgpt,
             grok,

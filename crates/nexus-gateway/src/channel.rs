@@ -1,26 +1,21 @@
 //! 通道（Channel）：网关里「一种号源」的实体。
 //!
-//! 之前 Cursor / ChatGPT / Grok / Kiro 是 `Gateway` 上四个平行的字段，`route()` 是一条手排的
-//! if 链，`/v1/models`、账本、状态快照各自再手写一遍。每加一个平台要摸十几处。这里把它收成
-//! 一个东西：
-//!
 //! ```text
 //! Channel = id + 前缀集合 + 一队号 (Lane) + 一个后端 (Upstream) + 门禁 (ChannelGate)
-//! ChannelRegistry = 默认通道 (Cursor) + 若干订阅通道，按 (模型名, 能力) 查表选路
+//! ChannelRegistry = 若干通道 + 用户指定的默认通道
 //! ```
 //!
-//! 选路规则只有三条，对聊天 / 生图 / 生视频一致：
+//! 选路只有两条，对聊天 / 生图 / 生视频一致，不按模型名猜该走谁：
 //! 1. 显式前缀（`chatgpt/` `grok/` `kiro/` `cursor/`）→ 强制该通道，不看它有没有号；
-//! 2. 没前缀 → 按注册顺序找**声明拥有该模型且此刻有号**的通道（生图 / 生视频还要过媒体门禁）；
-//! 3. 都不认 → 默认通道。
+//! 2. 裸名或空模型 → 用户设的默认通道。空模型再填该通道此刻目录里的第一个。
 //!
-//! 「有号才接」是为了 `gpt-5.6-sol` 这种两边都有的名字：ChatGPT 这边一个号都没有时，同名请求
-//! 照旧走 Cursor，而不是撞一个「没有 ChatGPT 账号」。
+//! 对外目录的主键是 `{通道}/{模型}`（`cursor/claude-opus-5`）。裸名还能打进来，是因为
+//! 用户把某条通道设成默认之后，客户端可以继续写短名字。
 
 use crate::lane::Lane;
 use crate::upstream::Upstream;
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub type ChannelId = &'static str;
 
@@ -28,6 +23,31 @@ pub const CURSOR: ChannelId = "cursor";
 pub const CHATGPT: ChannelId = "chatgpt";
 pub const GROK: ChannelId = "grok";
 pub const KIRO: ChannelId = "kiro";
+
+/// 规范通道 id。别名（`codex/` `xai/`）只在请求前缀里认，不进这一张表。
+pub fn parse_id(id: &str) -> Option<ChannelId> {
+    match id.trim().to_ascii_lowercase().as_str() {
+        "cursor" => Some(CURSOR),
+        "chatgpt" => Some(CHATGPT),
+        "grok" => Some(GROK),
+        "kiro" => Some(KIRO),
+        _ => None,
+    }
+}
+
+/// 目录 / 接入用的主键：`{通道}/{模型}`。已经带了本通道前缀的原样返回，避免叠两层。
+pub fn qualify(channel: &str, model: &str) -> String {
+    let model = model.trim();
+    if model.is_empty() {
+        return channel.to_string();
+    }
+    let prefix = format!("{channel}/");
+    if model.len() >= prefix.len() && model[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+        model.to_string()
+    } else {
+        format!("{channel}/{model}")
+    }
+}
 
 /// 一条通道能做的事。选路按能力问门禁：一个模型名在聊天目录里不代表它能出图。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -63,7 +83,7 @@ pub trait ChannelGate: Send + Sync {
     }
 }
 
-/// 永远开着、认一切的门禁——给默认通道（Cursor）用：它是别的通道都不认时的兜底。
+/// 永远开着、认一切的门禁——给 Cursor 用：它不靠目录把门，客户端叫得出的名字都往上送。
 pub struct OpenGate;
 
 impl ChannelGate for OpenGate {
@@ -100,7 +120,11 @@ impl Channel {
     pub fn strip_prefix<'m>(&self, model: &'m str) -> Option<&'m str> {
         let m = model.trim();
         for p in self.prefixes {
-            if m.len() > p.len() && m[..p.len()].eq_ignore_ascii_case(p) {
+            // 按**字节**比：前缀全是 ASCII，但 `model` 直接来自客户端请求体，可能是任意
+            // UTF-8。`m[..p.len()]` 在多字节字符中间切会 panic（`"中文模型"` 对 `"cursor/"`
+            // 就正好切在第三个字之内），而那是一条只要发个中文模型名就能踩到的路。
+            if m.len() >= p.len() && m.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()) {
+                // 前缀以 `/` 收尾，匹配上就保证 `p.len()` 落在字符边界上，这一刀是安全的。
                 return Some(&m[p.len()..]);
             }
         }
@@ -108,7 +132,7 @@ impl Channel {
     }
 }
 
-/// Cursor 通道：默认通道，`cursor/` 前缀显式要它，门禁常开。
+/// Cursor 通道：出厂默认，`cursor/` 前缀显式要它，门禁常开。
 pub fn cursor_channel(lane: Arc<dyn Lane>, upstream: Arc<dyn Upstream>) -> Channel {
     Channel {
         id: CURSOR,
@@ -133,14 +157,23 @@ pub struct Resolved<'a> {
 
 pub struct ChannelRegistry {
     channels: Vec<Channel>,
+    /// 用户指定的默认通道。和注册表分开一把锁，改设置不用重建通道、也不用重启网关。
+    default_id: Arc<RwLock<String>>,
 }
 
 impl ChannelRegistry {
-    /// 第一条就是默认通道。
-    pub fn new(default: Channel) -> Self {
+    /// 第一条是 Cursor（结构上的底），出厂默认也是它；用户之后可以改。
+    pub fn new(cursor: Channel) -> Self {
         Self {
-            channels: vec![default],
+            channels: vec![cursor],
+            default_id: Arc::new(RwLock::new(CURSOR.to_string())),
         }
+    }
+
+    /// 跟服务层共用同一把默认通道锁：设置一改，正在听的网关下一发就照新的走。
+    pub fn share_default(mut self, slot: Arc<RwLock<String>>) -> Self {
+        self.default_id = slot;
+        self
     }
 
     pub fn with(mut self, channel: Channel) -> Self {
@@ -153,8 +186,26 @@ impl ChannelRegistry {
         self
     }
 
+    pub fn default_id(&self) -> String {
+        self.default_id.read().expect("default channel").clone()
+    }
+
+    pub fn set_default(&self, id: &str) -> Result<(), String> {
+        let Some(parsed) = parse_id(id) else {
+            return Err(format!(
+                "默认通道只能是 cursor / chatgpt / grok / kiro，给的是 {id}"
+            ));
+        };
+        if self.get(parsed).is_none() {
+            return Err(format!("没有这条通道：{parsed}"));
+        }
+        *self.default_id.write().expect("default channel") = parsed.to_string();
+        Ok(())
+    }
+
     pub fn default_channel(&self) -> &Channel {
-        &self.channels[0]
+        let id = self.default_id();
+        self.get(&id).unwrap_or(&self.channels[0])
     }
 
     pub fn get(&self, id: &str) -> Option<&Channel> {
@@ -165,40 +216,48 @@ impl ChannelRegistry {
         self.channels.iter()
     }
 
-    /// 订阅通道（默认通道之外的）。
+    /// 订阅通道（Cursor 之外的）。
     pub fn extras(&self) -> impl Iterator<Item = &Channel> {
         self.channels.iter().skip(1)
     }
 
     pub fn resolve(&self, model: &str, cap: Capability) -> Resolved<'_> {
+        let model = model.trim();
         for ch in &self.channels {
             if let Some(rest) = ch.strip_prefix(model) {
+                let base = if rest.trim().is_empty() {
+                    fallback_model(ch, cap)
+                } else {
+                    rest.to_string()
+                };
                 return Resolved {
                     channel: ch,
-                    base_model: rest.to_string(),
+                    base_model: base,
                     forced: true,
                 };
             }
         }
-        let base = model.trim();
-        for ch in self.extras() {
-            let ok = match cap {
-                Capability::Chat => ch.gate.ready(),
-                Capability::Image | Capability::Video => ch.gate.media_ready(),
-            };
-            if ok && ch.gate.owns(cap, base) {
-                return Resolved {
-                    channel: ch,
-                    base_model: base.to_string(),
-                    forced: false,
-                };
-            }
-        }
+        let ch = self.default_channel();
+        let base = if model.is_empty() {
+            fallback_model(ch, cap)
+        } else {
+            model.to_string()
+        };
         Resolved {
-            channel: self.default_channel(),
-            base_model: base.to_string(),
+            channel: ch,
+            base_model: base,
             forced: false,
         }
+    }
+}
+
+fn fallback_model(ch: &Channel, cap: Capability) -> String {
+    if let Some(id) = ch.gate.models(cap).into_iter().next() {
+        return id;
+    }
+    match cap {
+        Capability::Chat | Capability::Image => "auto".into(),
+        Capability::Video => String::new(),
     }
 }
 
@@ -293,25 +352,43 @@ mod tests {
         );
     }
 
+    /// `model` 整个来自客户端请求体，可能是任意 UTF-8。按字节切前缀时若切在多字节字符中间
+    /// 会 panic，而这条路发一个中文模型名就能踩到。
     #[test]
-    fn unprefixed_owned_model_needs_a_ready_channel_else_falls_back() {
+    fn a_multibyte_model_name_does_not_panic() {
+        let r = registry(true, true);
+        for name in ["中文模型", "модель", "🙂", "グロック", "xai/中文模型"] {
+            let got = r.resolve(name, Capability::Chat);
+            // 只有最后那个带前缀的才该被强制到 Grok；其余是裸名，走默认通道。
+            let expect_forced = name.starts_with("xai/");
+            assert_eq!(got.forced, expect_forced, "{name}");
+            assert_eq!(
+                got.channel.id,
+                if expect_forced { GROK } else { CURSOR },
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_names_go_to_the_user_default_not_whoever_owns_them() {
+        let r = registry(true, true);
+        assert_eq!(r.resolve("grok-4.5", Capability::Chat).channel.id, CURSOR);
         assert_eq!(
-            registry(false, false)
-                .resolve("grok-4.5", Capability::Chat)
+            r.resolve("grok-imagine-image", Capability::Image)
                 .channel
                 .id,
             CURSOR
         );
+        r.set_default(GROK).unwrap();
+        assert_eq!(r.resolve("grok-4.5", Capability::Chat).channel.id, GROK);
         assert_eq!(
-            registry(true, false)
-                .resolve("grok-4.5", Capability::Chat)
-                .channel
-                .id,
+            r.resolve("claude-sonnet-5", Capability::Chat).channel.id,
             GROK
         );
+        assert_eq!(r.resolve("", Capability::Chat).base_model, "grok-4.5");
         assert_eq!(
-            registry(true, false)
-                .resolve("claude-sonnet-5", Capability::Chat)
+            r.resolve("cursor/claude-sonnet-5", Capability::Chat)
                 .channel
                 .id,
             CURSOR
@@ -319,22 +396,12 @@ mod tests {
     }
 
     #[test]
-    fn media_routing_uses_the_media_gate_not_the_chat_gate() {
-        let r = registry(true, false);
+    fn qualify_does_not_double_the_channel_prefix() {
+        assert_eq!(qualify(CURSOR, "claude-opus-5"), "cursor/claude-opus-5");
         assert_eq!(
-            r.resolve("grok-imagine-image", Capability::Image)
-                .channel
-                .id,
-            CURSOR
+            qualify(CURSOR, "cursor/claude-opus-5"),
+            "cursor/claude-opus-5"
         );
-        let r = registry(true, true);
-        assert_eq!(
-            r.resolve("grok-imagine-image", Capability::Image)
-                .channel
-                .id,
-            GROK
-        );
-        // 聊天目录里的名字不算能出图。
-        assert_eq!(r.resolve("grok-4.5", Capability::Image).channel.id, CURSOR);
+        assert_eq!(qualify("chatgpt", ""), "chatgpt");
     }
 }

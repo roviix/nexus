@@ -134,6 +134,9 @@ impl SandService {
         let self_summary = contents
             .values()
             .find_map(|c| rules::installed_self_summary(c));
+        let grok45_via_cua = contents
+            .values()
+            .find_map(|c| rules::installed_grok45_via_cua(c));
         let gb = self.grokbot.status();
         let grokbot_relay_configured = gb.relay.is_some();
         let grokbot_direct_configured = !gb.direct_stale
@@ -156,6 +159,7 @@ impl SandService {
             dry_run,
             backups,
             self_summary,
+            grok45_via_cua,
             inference_endpoint,
             grokbot_auth,
             grokbot_relay_configured,
@@ -229,6 +233,13 @@ impl SandService {
         }
         let contents = read_targets(&layout)?;
         check_preflight_anchors(&contents)?;
+        if contents.values().any(|c| c.contains("/*CRSR_AUTH_V1*/")) {
+            return Err(
+                AppError::invalid("CRSR 通道占用了同一处鉴权挂点，不能和 Sand 同时装。").with_hint(
+                    "先到「CRSR 通道」页卸载，再装 Sand。两条补丁改的是同一段 applyAuthorization。",
+                ),
+            );
+        }
         if options.grokbot_auth == GrokBotAuthMode::BoxRelay && options.inference_endpoint.is_some()
         {
             return Err(AppError::invalid(
@@ -279,13 +290,23 @@ impl SandService {
             build_plan_with_strip(&layout, &contents, &rules, Mode::Apply, &strip)?;
         if plan.is_empty() {
             if is_complete(&before, layout.profile) {
+                // 文件已是目标状态，但 Cursor 可能还攥着装之前的 4884.js。
+                // 不重启的话，界面「盘上：开」和 Agent 实际发出去的模型会对不上。
+                let relaunched = if options.relaunch {
+                    progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
+                    let _ = self.control.quit(QUIT_TIMEOUT);
+                    self.maybe_launch(true, progress)
+                } else {
+                    false
+                };
+                progress(SandProgress::new(SandStep::Done, "完成"));
                 let status = self.status()?;
                 return Ok(SandOutcome {
                     operation: Operation::Install,
                     wrote: false,
                     files_written: 0,
                     backup_id: None,
-                    cursor_relaunched: false,
+                    cursor_relaunched: relaunched,
                     status,
                 });
             }
@@ -384,9 +405,17 @@ impl SandService {
         progress(SandProgress::new(SandStep::Preflight, "检查已安装的标记"));
         let layout = SandLayout::resolve(&self.paths)?;
         let contents = read_targets(&layout)?;
-        // 端点 URL 是规则文本的一部分：卸载要用装的时候那一个才反向得了，所以从盘上读。
+        // 端点 URL / Grok 鉴权形态是规则文本的一部分：卸载要用装的时候那一个才反向得了。
+        let grokbot_auth = installed_grokbot_auth(&contents);
         let rules = rules::catalog_with_installed(
-            &InstallOptions::default(),
+            &InstallOptions {
+                grokbot_auth: if grokbot_auth.is_on() {
+                    grokbot_auth
+                } else {
+                    InstallOptions::default().grokbot_auth
+                },
+                ..InstallOptions::default()
+            },
             installed_endpoint(&contents).as_deref(),
         )?;
         let before = aggregate(&layout, &contents, &rules);
@@ -430,7 +459,11 @@ impl SandService {
                 if after.markers.total() + after.legacy + after.foreign > 0 {
                     return Err(AppError::new(
                         ErrorCode::SandIntegrity,
-                        format!("卸载后仍有 {} 处 Sand 标记。", after.markers.total()),
+                        format!(
+                            "卸载后仍有 {} 处 Sand 标记（{}）。",
+                            after.markers.total() + after.legacy + after.foreign,
+                            leftover_marker_labels(&after)
+                        ),
                     ));
                 }
                 verify_integrity(&layout)
@@ -617,6 +650,27 @@ pub(crate) fn aggregate(
         }
     }
     agg
+}
+
+fn leftover_marker_labels(after: &Aggregate) -> String {
+    let mut bits: Vec<String> = RuleId::ALL
+        .iter()
+        .filter_map(|id| {
+            let n = id.get(&after.markers);
+            (n > 0).then(|| format!("{} {n} 处", id.name()))
+        })
+        .collect();
+    if after.legacy > 0 {
+        bits.push(format!("旧版 {} 处", after.legacy));
+    }
+    if after.foreign > 0 {
+        bits.push(format!("外部 {} 处", after.foreign));
+    }
+    if bits.is_empty() {
+        "未知".into()
+    } else {
+        bits.join("、")
+    }
 }
 
 /// 等价于安装器的 `stream_mode_installed`。期望值随安装形态走（remote server 少 4 个目标文件）。

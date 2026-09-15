@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Account, SwitchProfile } from "../ipc/types";
-import { buildSwitchPool, listAvailableSwitchAccounts } from "./switcher";
+import { buildSwitchPool, canAddToSwitchPool, listAvailableSwitchAccounts } from "./switcher";
 
 function account(
   email: string,
@@ -18,6 +18,7 @@ function account(
     hasPassword: false,
     hasEmailPassword: false,
     hasRecoveryEmail: false,
+    hasApiKey: false,
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
     ...overrides,
@@ -84,18 +85,57 @@ describe("listAvailableSwitchAccounts", () => {
   it("only offers usable accounts that are not already enrolled", () => {
     const enrolled = account("enrolled@example.com");
     const available = account("available@example.com");
+    const sessionLive = account("session@example.com", {
+      hasRefresh: false,
+      hasAccess: true,
+      accessExpiresAt: "2099-01-01T00:00:00Z",
+    });
     const missingRefresh = account("missing@example.com", {
       hasRefresh: false,
     });
     const dead = account("dead@example.com", { status: "dead" });
 
     const candidates = listAvailableSwitchAccounts(
-      [enrolled, missingRefresh, dead, available],
+      [enrolled, sessionLive, missingRefresh, dead, available],
       [profile(enrolled.email)],
     );
 
     expect(candidates.map((candidate) => candidate.email)).toEqual([
       available.email,
+      sessionLive.email,
     ]);
+  });
+});
+
+describe("canAddToSwitchPool", () => {
+  it("lets a live session-token account join, but not an expired or dead one", () => {
+    expect(
+      canAddToSwitchPool(
+        account("live@example.com", {
+          hasRefresh: false,
+          hasAccess: true,
+          accessExpiresAt: "2099-01-01T00:00:00Z",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      canAddToSwitchPool(
+        account("expired@example.com", {
+          hasRefresh: false,
+          hasAccess: true,
+          accessExpiresAt: "2020-01-01T00:00:00Z",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      canAddToSwitchPool(
+        account("dead@example.com", {
+          hasRefresh: false,
+          hasAccess: true,
+          accessExpiresAt: "2099-01-01T00:00:00Z",
+          status: "dead",
+        }),
+      ),
+    ).toBe(false);
   });
 });

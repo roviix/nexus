@@ -62,6 +62,31 @@ pub struct UsageWindow {
     pub window_minutes: Option<u32>,
 }
 
+/// `/wham/usage` 里按模型单独计的一桶（Spark 等）。主窗口之外，缺了就当没有，不画成 0%。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitBucket {
+    pub name: Option<String>,
+    /// `codex_bengalfox` 这类计量键；调度仍按主窗口，这里只给人看。
+    pub feature: Option<String>,
+    pub allowed: Option<bool>,
+    pub limit_reached: Option<bool>,
+    pub primary: Option<UsageWindow>,
+    pub secondary: Option<UsageWindow>,
+}
+
+/// Codex 点数 / 超限额度。没有点数的号 `has_credits=false`、`balance="0"`，别写成「有 0 点」。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexCredits {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub overage_limit_reached: Option<bool>,
+    pub balance: Option<String>,
+    /// `rate_limit_reset_credits.available_count`：还能手动重置几次。
+    pub reset_available: Option<i64>,
+}
+
 impl UsageWindow {
     fn is_empty(&self) -> bool {
         self.used_percent.is_none() && self.reset_at_ms.is_none() && self.window_minutes.is_none()
@@ -83,11 +108,132 @@ pub struct CodexUsage {
     pub checked_at: String,
     /// `response-headers` | `wham/usage`。
     pub source: String,
+    #[serde(default)]
+    pub additional: Vec<RateLimitBucket>,
+    #[serde(default)]
+    pub credits: Option<CodexCredits>,
+    #[serde(default)]
+    pub allowed: Option<bool>,
+    #[serde(default)]
+    pub limit_reached: Option<bool>,
+    /// 额度接口顶层带回的 `user_id`，登录 JWT 里没有时用它补。
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 fn iso(t: OffsetDateTime) -> String {
     t.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default()
+}
+
+fn text(v: Option<&serde_json::Value>) -> Option<String> {
+    v.and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn text_or_num(v: Option<&serde_json::Value>) -> Option<String> {
+    text(v).or_else(|| {
+        v.and_then(|v| v.as_f64())
+            .filter(|n| n.is_finite())
+            .map(|n| {
+                if n.fract() == 0.0 {
+                    format!("{}", n as i64)
+                } else {
+                    n.to_string()
+                }
+            })
+    })
+}
+
+fn window_from_value(w: &serde_json::Value, now_ms: i64) -> Option<UsageWindow> {
+    if !w.is_object() {
+        return None;
+    }
+    let num = |k: &str| w.get(k).and_then(|v| v.as_f64()).filter(|n| n.is_finite());
+    let reset_at_ms = num("reset_after_seconds")
+        .filter(|s| *s > 0.0)
+        .map(|s| now_ms + (s * 1000.0) as i64)
+        .or_else(|| {
+            num("reset_at")
+                .filter(|s| *s > 0.0)
+                .map(|s| (s * 1000.0) as i64)
+        });
+    let out = UsageWindow {
+        used_percent: num("used_percent"),
+        reset_at_ms,
+        window_minutes: num("limit_window_seconds").map(|s| (s / 60.0).round() as u32),
+    };
+    (!out.is_empty()).then_some(out)
+}
+
+fn additional_buckets(raw: Option<&serde_json::Value>, now_ms: i64) -> Vec<RateLimitBucket> {
+    match raw {
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| rate_limit_bucket(v, None, now_ms))
+            .collect(),
+        Some(serde_json::Value::Object(map)) => map
+            .iter()
+            .filter_map(|(k, v)| rate_limit_bucket(v, Some(k.as_str()), now_ms))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn rate_limit_bucket(
+    v: &serde_json::Value,
+    fallback_name: Option<&str>,
+    now_ms: i64,
+) -> Option<RateLimitBucket> {
+    let rl = v.get("rate_limit").unwrap_or(v);
+    let name = text(v.get("limit_name"))
+        .or_else(|| text(v.get("name")))
+        .or_else(|| fallback_name.map(str::to_string));
+    let feature = text(v.get("metered_feature")).or_else(|| text(v.get("limit_id")));
+    let primary = rl
+        .get("primary_window")
+        .and_then(|w| window_from_value(w, now_ms));
+    let secondary = rl
+        .get("secondary_window")
+        .and_then(|w| window_from_value(w, now_ms));
+    if name.is_none() && feature.is_none() && primary.is_none() && secondary.is_none() {
+        return None;
+    }
+    Some(RateLimitBucket {
+        name,
+        feature,
+        allowed: rl.get("allowed").and_then(|x| x.as_bool()),
+        limit_reached: rl.get("limit_reached").and_then(|x| x.as_bool()),
+        primary,
+        secondary,
+    })
+}
+
+fn credits_from_wham(payload: &serde_json::Value) -> Option<CodexCredits> {
+    let c = payload.get("credits");
+    let reset = payload
+        .get("rate_limit_reset_credits")
+        .and_then(|v| v.get("available_count"))
+        .and_then(|v| v.as_i64());
+    let out = CodexCredits {
+        has_credits: c
+            .and_then(|v| v.get("has_credits"))
+            .and_then(|v| v.as_bool()),
+        unlimited: c.and_then(|v| v.get("unlimited")).and_then(|v| v.as_bool()),
+        overage_limit_reached: c
+            .and_then(|v| v.get("overage_limit_reached"))
+            .and_then(|v| v.as_bool()),
+        balance: text_or_num(c.and_then(|v| v.get("balance"))),
+        reset_available: reset,
+    };
+    let empty = out.has_credits.is_none()
+        && out.unlimited.is_none()
+        && out.overage_limit_reached.is_none()
+        && out.balance.is_none()
+        && out.reset_available.is_none();
+    (!empty).then_some(out)
 }
 
 fn header_num(headers: &reqwest::header::HeaderMap, name: &str) -> Option<f64> {
@@ -128,46 +274,60 @@ impl CodexUsage {
             plan_type: None,
             checked_at: iso(now),
             source: "response-headers".into(),
+            ..Default::default()
         })
     }
 
     /// `GET /wham/usage` 的形状：`rate_limit.{primary_window,secondary_window}` 各带
     /// `used_percent` / `reset_after_seconds` / `limit_window_seconds`，顶层 `plan_type`。
+    /// `additional_rate_limits` 是按模型单独计的桶（Spark 的 `codex_bengalfox`），以前丢掉了。
     pub fn from_wham(payload: &serde_json::Value, now: OffsetDateTime) -> Self {
         let now_ms = (now.unix_timestamp_nanos() / 1_000_000) as i64;
-        let win = |key: &str| -> Option<UsageWindow> {
-            let w = payload.get("rate_limit")?.get(key)?;
-            if !w.is_object() {
-                return None;
-            }
-            let num = |k: &str| w.get(k).and_then(|v| v.as_f64()).filter(|n| n.is_finite());
-            let reset_at_ms = num("reset_after_seconds")
-                .filter(|s| *s > 0.0)
-                .map(|s| now_ms + (s * 1000.0) as i64)
-                .or_else(|| {
-                    num("reset_at")
-                        .filter(|s| *s > 0.0)
-                        .map(|s| (s * 1000.0) as i64)
-                });
-            let out = UsageWindow {
-                used_percent: num("used_percent"),
-                reset_at_ms,
-                window_minutes: num("limit_window_seconds").map(|s| (s / 60.0).round() as u32),
-            };
-            (!out.is_empty()).then_some(out)
-        };
+        let rl = payload.get("rate_limit");
         Self {
-            primary: win("primary_window"),
-            secondary: win("secondary_window"),
-            plan_type: payload
-                .get("plan_type")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string),
+            primary: rl.and_then(|r| window_from_value(r.get("primary_window")?, now_ms)),
+            secondary: rl.and_then(|r| window_from_value(r.get("secondary_window")?, now_ms)),
+            plan_type: text(payload.get("plan_type")),
             checked_at: iso(now),
             source: "wham/usage".into(),
+            additional: additional_buckets(payload.get("additional_rate_limits"), now_ms),
+            credits: credits_from_wham(payload),
+            allowed: rl.and_then(|r| r.get("allowed")).and_then(|v| v.as_bool()),
+            limit_reached: rl
+                .and_then(|r| r.get("limit_reached"))
+                .and_then(|v| v.as_bool()),
+            user_id: text(payload.get("user_id")),
         }
+    }
+
+    /// 响应头只有主窗口。网关每次请求用头覆盖时，别把 `/wham/usage` 问到的 Spark / 点数冲掉。
+    pub fn overlay_on(&self, previous: Option<&Self>) -> Self {
+        let Some(prev) = previous else {
+            return self.clone();
+        };
+        if self.source != "response-headers" {
+            return self.clone();
+        }
+        let mut out = self.clone();
+        if out.additional.is_empty() {
+            out.additional = prev.additional.clone();
+        }
+        if out.credits.is_none() {
+            out.credits = prev.credits.clone();
+        }
+        if out.user_id.is_none() {
+            out.user_id = prev.user_id.clone();
+        }
+        if out.allowed.is_none() {
+            out.allowed = prev.allowed;
+        }
+        if out.limit_reached.is_none() {
+            out.limit_reached = prev.limit_reached;
+        }
+        if out.plan_type.is_none() {
+            out.plan_type = prev.plan_type.clone();
+        }
+        out
     }
 
     /// 任一窗口用满就是不可派；恢复时刻取满了的窗口里最晚的那个。
@@ -448,5 +608,98 @@ mod tests {
         assert!(fine.exhausted().is_none());
         assert_eq!(fine.percent_used(), Some(12.0));
         assert!(fine.secondary.is_none());
+    }
+
+    #[test]
+    fn wham_keeps_spark_buckets_credits_and_user_id() {
+        let v = serde_json::json!({
+            "user_id": "user_abc",
+            "plan_type": "pro",
+            "rate_limit": {
+                "allowed": true,
+                "limit_reached": false,
+                "primary_window": { "used_percent": 34, "reset_after_seconds": 600, "limit_window_seconds": 18000 },
+                "secondary_window": { "used_percent": 37, "reset_after_seconds": 86400, "limit_window_seconds": 604800 }
+            },
+            "additional_rate_limits": [
+                {
+                    "limit_name": "GPT-5.3-Codex-Spark",
+                    "metered_feature": "codex_bengalfox",
+                    "rate_limit": {
+                        "allowed": true,
+                        "limit_reached": false,
+                        "primary_window": { "used_percent": 100, "reset_after_seconds": 18000, "limit_window_seconds": 18000 },
+                        "secondary_window": { "used_percent": 12, "reset_after_seconds": 519837, "limit_window_seconds": 604800 }
+                    }
+                }
+            ],
+            "credits": { "has_credits": false, "unlimited": false, "overage_limit_reached": false, "balance": "0" },
+            "rate_limit_reset_credits": { "available_count": 0 }
+        });
+        let u = CodexUsage::from_wham(&v, now());
+        assert_eq!(u.user_id.as_deref(), Some("user_abc"));
+        assert_eq!(u.allowed, Some(true));
+        assert_eq!(u.limit_reached, Some(false));
+        assert_eq!(u.additional.len(), 1);
+        assert_eq!(u.additional[0].name.as_deref(), Some("GPT-5.3-Codex-Spark"));
+        assert_eq!(u.additional[0].feature.as_deref(), Some("codex_bengalfox"));
+        assert_eq!(u.additional[0].primary.unwrap().used_percent, Some(100.0));
+        assert_eq!(u.additional[0].primary.unwrap().window_minutes, Some(300));
+        assert_eq!(u.credits.as_ref().unwrap().balance.as_deref(), Some("0"));
+        assert_eq!(u.credits.as_ref().unwrap().reset_available, Some(0));
+        assert!(
+            u.exhausted().is_none(),
+            "Spark 满了不该把主 Codex 窗口判成耗尽"
+        );
+        assert_eq!(u.percent_used(), Some(37.0));
+
+        let map_form = CodexUsage::from_wham(
+            &serde_json::json!({
+                "additional_rate_limits": {
+                    "GPT-Reserve": { "secondary_window": { "used_percent": 8, "limit_window_seconds": 604800 } }
+                }
+            }),
+            now(),
+        );
+        assert_eq!(map_form.additional[0].name.as_deref(), Some("GPT-Reserve"));
+        assert_eq!(
+            map_form.additional[0].secondary.unwrap().used_percent,
+            Some(8.0)
+        );
+
+        let headers = CodexUsage {
+            primary: Some(UsageWindow {
+                used_percent: Some(90.0),
+                reset_at_ms: Some(1),
+                window_minutes: Some(300),
+            }),
+            source: "response-headers".into(),
+            checked_at: "t".into(),
+            ..Default::default()
+        };
+        let merged = headers.overlay_on(Some(&u));
+        assert_eq!(merged.primary.unwrap().used_percent, Some(90.0));
+        assert_eq!(merged.additional.len(), 1, "头覆盖不能冲掉 Spark");
+        assert_eq!(merged.user_id.as_deref(), Some("user_abc"));
+        assert_eq!(
+            u.overlay_on(Some(&headers)).additional.len(),
+            1,
+            "整份 wham 快照覆盖旧头"
+        );
+    }
+
+    #[test]
+    fn old_usage_json_without_additional_still_deserializes() {
+        let u: CodexUsage = serde_json::from_value(serde_json::json!({
+            "primary": { "usedPercent": 10, "resetAtMs": 1, "windowMinutes": 300 },
+            "secondary": null,
+            "planType": "plus",
+            "checkedAt": "t",
+            "source": "wham/usage"
+        }))
+        .unwrap();
+        assert!(u.additional.is_empty());
+        assert!(u.credits.is_none());
+        assert_eq!(u.primary.unwrap().used_percent, Some(10.0));
     }
 }

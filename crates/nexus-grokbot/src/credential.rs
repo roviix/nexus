@@ -189,6 +189,10 @@ struct RenewalBody {
 pub async fn renew(renewal_credential: &str) -> Result<Renewed> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
+        .no_proxy()
+        .http2_keep_alive_interval(Duration::from_secs(10))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
         .build()
         .map_err(|e| AppError::internal(format!("建 HTTP 客户端失败：{e}")))?;
     let resp = client

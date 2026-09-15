@@ -16,6 +16,9 @@ use std::time::Duration;
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const TIMEOUT: Duration = Duration::from_secs(20);
 const AGGREGATED_URL: &str = "https://cursor.com/api/dashboard/get-aggregated-usage-events";
+const SET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/set-hard-limit";
+const GET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/get-hard-limit";
+const CREDIT_GRANTS_URL: &str = "https://cursor.com/api/dashboard/get-credit-grants-balance";
 const DAY_MS: i64 = 86_400_000;
 
 /// Bot（Cursor 内部代号 sand，界面上叫 "Grok Bot Plan"）通道的**周**额度。
@@ -114,6 +117,16 @@ pub struct AccountUsage {
     pub included_cents: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bonus_cents: Option<f64>,
+    /// Cursor 赠送的 credit grant 余额（`GetCreditGrantsBalance`），单位美分。
+    ///
+    /// 和上面的 `bonus_cents` 不是一回事：那个是本账期从「赠送额度」里**花掉**的钱；
+    /// 这个是还剩多少赠送积分（仪表盘上常见 25 / 100 那种）。没有赠送时整组缺席。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_grant_total_cents: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_grant_used_cents: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_grant_remaining_cents: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spend_cents: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,6 +157,9 @@ pub struct AccountUsage {
     pub today: Option<UsageWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub week: Option<UsageWindow>,
+    /// `apiKey`：这次快照来自 `crsr_` 兑票后的逐条事件，没有额度百分比 / Bot 周额。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 /// 拉一个号的完整账况。
@@ -169,7 +185,8 @@ pub async fn fetch(
     let today_start = day_start_ms.filter(|s| *s > 0 && *s <= now_ms && now_ms - *s <= 2 * DAY_MS);
     let week_start = today_start.map(|s| s - 6 * DAY_MS);
 
-    let (summary, stripe, me, agg, sand_usage, sand_access, today, week) = tokio::join!(
+    let access = access_from_session(token);
+    let (summary, stripe, me, agg, sand_usage, sand_access, today, week, grants, hard_limit) = tokio::join!(
         call(http, "https://cursor.com/api/usage-summary", &cookie, None),
         call(http, "https://cursor.com/api/auth/stripe", &cookie, None),
         call(http, "https://cursor.com/api/auth/me", &cookie, None),
@@ -191,6 +208,14 @@ pub async fn fetch(
         ),
         ranged(http, &cookie, today_start, now_ms),
         ranged(http, &cookie, week_start, now_ms),
+        connect_or_rest(
+            http,
+            access,
+            &cookie,
+            "GetCreditGrantsBalance",
+            CREDIT_GRANTS_URL
+        ),
+        connect_or_rest(http, access, &cookie, "GetHardLimit", GET_HARD_LIMIT_URL),
     );
 
     if unauthenticated(summary.as_ref()) || unauthenticated(me.as_ref()) {
@@ -212,9 +237,209 @@ pub async fn fetch(
         sand_usage.as_ref(),
         sand_access.as_ref(),
     );
+    apply_credit_grants(&mut usage, grants.as_ref());
+    apply_hard_limit(&mut usage, hard_limit.as_ref());
     usage.today = today_start.and_then(|s| window(s, now_ms, today.as_ref()));
     usage.week = week_start.and_then(|s| window(s, now_ms, week.as_ref()));
     Ok(usage)
+}
+
+const DASHBOARD_SERVICE: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService";
+
+/// 用 `crsr_` 兑一把短期 access，再拉逐条用量。
+///
+/// 没有额度百分比、Bot 周额、账期：那些只在 cookie dashboard 上。这里能给的是
+/// 花费合计、按模型、以及（给了本地零点时）今天 / 近 7 天窗口。
+pub async fn fetch_via_api_key(
+    http: &reqwest::Client,
+    api_key: &str,
+    day_start_ms: Option<i64>,
+) -> Result<AccountUsage> {
+    let access = crate::token::exchange_api_key(http, api_key).await?;
+    let now_ms = now_millis();
+    let today_start = day_start_ms.filter(|s| *s > 0 && *s <= now_ms && now_ms - *s <= 2 * DAY_MS);
+    let week_start = today_start.map(|s| s - 6 * DAY_MS);
+    let start_ms = week_start.unwrap_or(now_ms - 30 * DAY_MS).max(0);
+    let events = usage_events(http, &access, start_ms, now_ms).await?;
+    Ok(events_to_usage(&events, now_ms, today_start, week_start))
+}
+
+#[derive(Debug, Clone, Default)]
+struct UsageEvent {
+    ts: i64,
+    model: String,
+    charged_cents: f64,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write: i64,
+    plan: Option<String>,
+}
+
+async fn usage_events(
+    http: &reqwest::Client,
+    access: &str,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<UsageEvent>> {
+    let mut events = Vec::new();
+    for page in 1..=10 {
+        let body = serde_json::json!({
+            "page": page,
+            "pageSize": 100,
+            "startDate": start_ms.to_string(),
+            "endDate": end_ms.to_string(),
+        });
+        let json = dashboard_call(http, access, "GetFilteredUsageEvents", &body).await?;
+        let rows = json
+            .get("usageEventsDisplay")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let n = rows.len();
+        for row in rows {
+            if let Some(ev) = parse_usage_event(&row) {
+                events.push(ev);
+            }
+        }
+        if n < 100 {
+            break;
+        }
+    }
+    Ok(events)
+}
+
+async fn dashboard_call(
+    http: &reqwest::Client,
+    access: &str,
+    method: &str,
+    body: &Value,
+) -> Result<Value> {
+    let url = format!("{DASHBOARD_SERVICE}/{method}");
+    let res = http
+        .post(&url)
+        .timeout(TIMEOUT)
+        .header("authorization", format!("Bearer {access}"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("connect-protocol-version", "1")
+        .json(body)
+        .send()
+        .await
+        .map_err(|err| AppError::network(format!("{method} 请求失败：{err}")))?;
+
+    let status = res.status();
+    let text = res.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(AppError::unauthorized(format!(
+            "{method} 被拒绝（{status}）。API Key 可能已失效。"
+        )));
+    }
+    if !status.is_success() {
+        let head: String = text.chars().take(160).collect();
+        return Err(AppError::upstream(format!(
+            "{method} 返回 {status}：{head}"
+        )));
+    }
+    if text.trim().is_empty() {
+        return Ok(Value::Object(Default::default()));
+    }
+    serde_json::from_str(&text).map_err(|_| AppError::upstream(format!("{method} 响应不是 JSON。")))
+}
+
+fn parse_usage_event(row: &Value) -> Option<UsageEvent> {
+    let tu = row.get("tokenUsage");
+    let model = text(row.get("model")).unwrap_or_default();
+    Some(UsageEvent {
+        ts: int(row.get("timestamp")),
+        model,
+        charged_cents: num(row.get("chargedCents"))
+            .or_else(|| num(tu.and_then(|v| v.get("totalCents"))))
+            .unwrap_or(0.0),
+        input: int(tu.and_then(|v| v.get("inputTokens"))),
+        output: int(tu.and_then(|v| v.get("outputTokens"))),
+        cache_read: int(tu.and_then(|v| v.get("cacheReadTokens"))),
+        cache_write: int(tu.and_then(|v| v.get("cacheWriteTokens"))),
+        plan: text(row.get("subscriptionProductId")),
+    })
+}
+
+fn events_to_usage(
+    events: &[UsageEvent],
+    now_ms: i64,
+    today_start: Option<i64>,
+    week_start: Option<i64>,
+) -> AccountUsage {
+    let mut usage = AccountUsage {
+        fetched_at: now_iso(),
+        via: Some("apiKey".into()),
+        spend_cents: Some(events.iter().map(|e| e.charged_cents).sum()),
+        input_tokens: Some(events.iter().map(|e| e.input).sum()),
+        output_tokens: Some(events.iter().map(|e| e.output).sum()),
+        cache_read_tokens: Some(events.iter().map(|e| e.cache_read).sum()),
+        cache_write_tokens: Some(events.iter().map(|e| e.cache_write).sum()),
+        plan: events.iter().find_map(|e| e.plan.clone()),
+        ..Default::default()
+    };
+    let by = aggregate_models(events);
+    if !by.is_empty() {
+        usage.by_model = Some(by);
+    }
+    usage.today = today_start.and_then(|s| event_window(events, s, now_ms));
+    usage.week = week_start.and_then(|s| event_window(events, s, now_ms));
+    usage
+}
+
+fn aggregate_models(events: &[UsageEvent]) -> Vec<ModelUsage> {
+    use std::collections::BTreeMap;
+    let mut by: BTreeMap<String, ModelUsage> = BTreeMap::new();
+    for e in events {
+        let name = e.model.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let row = by.entry(name.to_string()).or_insert_with(|| ModelUsage {
+            model: name.to_string(),
+            ..Default::default()
+        });
+        row.cents += e.charged_cents;
+        row.input += e.input;
+        row.output += e.output;
+        row.cache_read += e.cache_read;
+        row.cache_write += e.cache_write;
+    }
+    let mut rows: Vec<_> = by.into_values().collect();
+    rows.sort_by(|a, b| {
+        b.cents
+            .partial_cmp(&a.cents)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    rows
+}
+
+fn event_window(events: &[UsageEvent], start: i64, end: i64) -> Option<UsageWindow> {
+    let slice: Vec<_> = events
+        .iter()
+        .filter(|e| e.ts >= start && e.ts <= end)
+        .cloned()
+        .collect();
+    if slice.is_empty() {
+        return Some(UsageWindow {
+            start,
+            end,
+            ..Default::default()
+        });
+    }
+    Some(UsageWindow {
+        start,
+        end,
+        cents: slice.iter().map(|e| e.charged_cents).sum(),
+        input_tokens: slice.iter().map(|e| e.input).sum(),
+        output_tokens: slice.iter().map(|e| e.output).sum(),
+        cache_read_tokens: slice.iter().map(|e| e.cache_read).sum(),
+        cache_write_tokens: slice.iter().map(|e| e.cache_write).sum(),
+        by_model: aggregate_models(&slice),
+    })
 }
 
 fn now_millis() -> i64 {
@@ -237,6 +462,176 @@ async fn ranged(
     call(http, AGGREGATED_URL, cookie, Some(body)).await
 }
 
+/// 改这个号的按需计费：开/关，以及每月上限（美分；`None` = 不封顶）。
+///
+/// 写 Spending 页的开关，权威接口是 DashboardService 的 `SetHardLimit`（Bearer JWT）。
+/// 网页那条 `set-hard-limit` 当退路。`hardLimit` 的单位是**美元整数**。关掉时必须带
+/// `hardLimit: 0`，只传 `noUsageBasedAllowed` 上游会当没改过。开启且不封顶时不传
+/// `hardLimit`（仪表盘「No Limit」）。写完再读一遍 `GetHardLimit`：usage-summary 的
+/// `onDemand.enabled` 跟这个开关不是同一份状态，拿它当回执会以为没生效。
+pub async fn set_on_demand(
+    http: &reqwest::Client,
+    session_token: &str,
+    enabled: bool,
+    limit_cents: Option<f64>,
+) -> Result<()> {
+    let cookie = session_cookie(session_token);
+    let body = hard_limit_body(enabled, limit_cents);
+    let access = access_from_session(session_token);
+
+    let mut wrote = false;
+    if let Some(access) = access {
+        match dashboard_call(http, access, "SetHardLimit", &body).await {
+            Ok(json) if unauthenticated(Some(&json)) => {
+                return Err(AppError::unauthorized("session token 已被上游拒绝。")
+                    .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
+            }
+            Ok(json) => {
+                if let Some(msg) = error_message(&json) {
+                    return Err(AppError::upstream(msg)
+                        .with_hint("Apple 内购的号开不了按需；团队号可能只有管理员能改。"));
+                }
+                wrote = true;
+            }
+            Err(err) if err.code == ErrorCode::Unauthorized => return Err(err),
+            Err(_) => {}
+        }
+    }
+    if !wrote {
+        let json = post_required(http, SET_HARD_LIMIT_URL, &cookie, body).await?;
+        if unauthenticated(Some(&json)) {
+            return Err(AppError::unauthorized("session token 已被上游拒绝。")
+                .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
+        }
+        if let Some(msg) = error_message(&json) {
+            return Err(AppError::upstream(msg)
+                .with_hint("Apple 内购的号开不了按需；团队号可能只有管理员能改。"));
+        }
+    }
+
+    let got = connect_or_rest(http, access, &cookie, "GetHardLimit", GET_HARD_LIMIT_URL).await;
+    if let Some(got) = got.as_ref() {
+        if unauthenticated(Some(got)) {
+            return Err(AppError::unauthorized("session token 已被上游拒绝。")
+                .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
+        }
+        if let Some(now_enabled) = as_bool(got.get("noUsageBasedAllowed")).map(|no| !no) {
+            if now_enabled != enabled {
+                return Err(AppError::upstream("Cursor 没有接受这次按需改动。").with_hint(
+                    "Apple 内购的号开不了按需；团队号可能只有管理员能改。开启时填一个月度上限（美元整数）更稳。",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `set-hard-limit` / `SetHardLimit` 的请求体。单测对着形状，不打真接口。
+pub(crate) fn hard_limit_body(enabled: bool, limit_cents: Option<f64>) -> Value {
+    if !enabled {
+        // 关掉必须带 hardLimit: 0。只传 noUsageBasedAllowed 上游会当没改过。
+        return serde_json::json!({ "hardLimit": 0, "noUsageBasedAllowed": true });
+    }
+    let mut body = serde_json::Map::new();
+    body.insert("noUsageBasedAllowed".into(), Value::Bool(false));
+    if let Some(cents) = limit_cents.filter(|c| c.is_finite() && *c > 0.0) {
+        let dollars = (cents / 100.0).round() as i64;
+        body.insert("hardLimit".into(), Value::from(dollars.max(1)));
+    }
+    Value::Object(body)
+}
+
+fn error_message(json: &Value) -> Option<String> {
+    let msg = json
+        .get("error")
+        .and_then(|e| {
+            e.as_str()
+                .map(str::to_string)
+                .or_else(|| e.get("message").and_then(Value::as_str).map(str::to_string))
+        })
+        .or_else(|| {
+            json.get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })?;
+    let trimmed = msg.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("ok") {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// 改配置的那一记：失败必须报出去，不能像刷用量那样把单项静默降级成「没有」。
+async fn post_required(
+    http: &reqwest::Client,
+    url: &str,
+    cookie: &str,
+    body: Value,
+) -> Result<Value> {
+    const ATTEMPTS: u32 = 3;
+    let mut last_err: Option<AppError> = None;
+    for attempt in 0..ATTEMPTS {
+        let last = attempt + 1 == ATTEMPTS;
+        let req = http
+            .post(url)
+            .json(&body)
+            .header("Cookie", cookie)
+            .header("User-Agent", UA)
+            .header("Accept", "application/json")
+            .header("Origin", "https://cursor.com")
+            .header("Referer", "https://cursor.com/dashboard");
+        match req.send().await {
+            Ok(res) => {
+                let status = res.status();
+                let retryable =
+                    status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+                if retryable && !last {
+                    let after = res
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_owned);
+                    tokio::time::sleep(backoff(attempt, after.as_deref())).await;
+                    continue;
+                }
+                if status == reqwest::StatusCode::UNAUTHORIZED
+                    || status == reqwest::StatusCode::FORBIDDEN
+                {
+                    return Err(AppError::unauthorized("Cursor 拒绝了这次改按需计费。")
+                        .with_hint("会话可能过期了；Apple 内购的号开不了按需。"));
+                }
+                let text = res.text().await.unwrap_or_default();
+                if text.trim().is_empty() {
+                    if status.is_success() {
+                        return Ok(Value::Object(serde_json::Map::new()));
+                    }
+                    return Err(AppError::upstream(format!(
+                        "改按需计费失败（HTTP {status}）。"
+                    )));
+                }
+                let json: Value =
+                    serde_json::from_str(&text).unwrap_or(Value::String(text.clone()));
+                if status.is_success() {
+                    return Ok(json);
+                }
+                return Err(AppError::upstream(
+                    error_message(&json)
+                        .unwrap_or_else(|| format!("改按需计费失败（HTTP {status}）。")),
+                ));
+            }
+            Err(err) if !last => {
+                last_err = Some(AppError::network(format!("改按需计费请求失败：{err}")));
+                tokio::time::sleep(backoff(attempt, None)).await;
+            }
+            Err(err) => {
+                return Err(last_err
+                    .unwrap_or_else(|| AppError::network(format!("改按需计费请求失败：{err}"))));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| AppError::upstream("改按需计费失败。")))
+}
+
 pub fn session_cookie(session_token: &str) -> String {
     // 有些来源里 `::` 是被 URL 编码过的，先还原再拼 Cookie。
     let raw = if session_token.contains("%3A%3A") {
@@ -245,6 +640,30 @@ pub fn session_cookie(session_token: &str) -> String {
         session_token.to_string()
     };
     format!("WorkosCursorSessionToken={raw}")
+}
+
+/// `user_xxx::<jwt>` 里的 JWT，给 DashboardService 当 Bearer。
+fn access_from_session(session_token: &str) -> Option<&str> {
+    session_token
+        .split_once("::")
+        .map(|(_, jwt)| jwt.trim())
+        .filter(|s| s.len() > 20)
+}
+
+/// 优先走 api2 的 Connect RPC（Bearer JWT），网页 cookie 那条当退路。
+async fn connect_or_rest(
+    http: &reqwest::Client,
+    access: Option<&str>,
+    cookie: &str,
+    method: &str,
+    rest_url: &str,
+) -> Option<Value> {
+    if let Some(access) = access {
+        if let Ok(v) = dashboard_call(http, access, method, &serde_json::json!({})).await {
+            return Some(v);
+        }
+    }
+    call(http, rest_url, cookie, Some(serde_json::json!({}))).await
 }
 
 /// 一次重试要等多久。
@@ -346,7 +765,7 @@ async fn call(
 }
 
 /// Cursor 对失效会话返回 **200 + `{"error":"not_authenticated"}`**，状态码看不出来。
-fn unauthenticated(json: Option<&Value>) -> bool {
+pub(crate) fn unauthenticated(json: Option<&Value>) -> bool {
     let Some(j) = json else { return false };
     let matches = |s: &str| {
         let s = s.to_ascii_lowercase();
@@ -389,6 +808,62 @@ fn text(v: Option<&Value>) -> Option<String> {
 
 fn flag(v: Option<&Value>) -> Option<bool> {
     (v? == &Value::Bool(true)).then_some(true)
+}
+
+/// 真假都要认。`flag` 把 `false` 收成 `None`，读 `noUsageBasedAllowed: false` 会丢。
+fn as_bool(v: Option<&Value>) -> Option<bool> {
+    match v? {
+        Value::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
+/// 赠送积分余额。空对象 = 这个号没有；`hasCreditGrants: true` 才落数字。
+fn apply_credit_grants(usage: &mut AccountUsage, json: Option<&Value>) {
+    let Some(json) = json else { return };
+    if unauthenticated(Some(json)) {
+        return;
+    }
+    if json.as_object().is_some_and(|o| o.is_empty()) {
+        return;
+    }
+    let has = as_bool(json.get("hasCreditGrants"));
+    let total = num(json.get("totalCents"));
+    let used = num(json.get("usedCents"));
+    let remaining = num(json.get("remainingCents")).or_else(|| match (total, used) {
+        (Some(t), Some(u)) => Some((t - u).max(0.0)),
+        (Some(t), None) => Some(t),
+        _ => None,
+    });
+    if has == Some(false) && total.unwrap_or(0.0) <= 0.0 {
+        return;
+    }
+    if has != Some(true) && total.is_none() && remaining.is_none() {
+        return;
+    }
+    usage.credit_grant_total_cents = total;
+    usage.credit_grant_used_cents = used;
+    usage.credit_grant_remaining_cents = remaining;
+}
+
+/// Spending 页的开关以 `GetHardLimit` 为准。usage-summary 的 `onDemand.enabled`
+/// 是「有没有按需消费过」，改开关之后经常还是旧的。
+fn apply_hard_limit(usage: &mut AccountUsage, json: Option<&Value>) {
+    let Some(json) = json else { return };
+    if unauthenticated(Some(json)) {
+        return;
+    }
+    let Some(no) = as_bool(json.get("noUsageBasedAllowed")) else {
+        return;
+    };
+    usage.on_demand_enabled = Some(!no);
+    if no {
+        return;
+    }
+    usage.on_demand_limit_cents = match num(json.get("hardLimit")) {
+        Some(dollars) if dollars > 0.0 => Some(Some(dollars * 100.0)),
+        _ => Some(None),
+    };
 }
 
 /// 账期时间戳有两种写法：ISO 串（usage-summary）和毫秒数字串（sand 那两个）。
@@ -698,6 +1173,68 @@ mod tests {
     }
 
     #[test]
+    fn hard_limit_body_enables_with_a_dollar_cap() {
+        let v = hard_limit_body(true, Some(5_000.0));
+        assert_eq!(v["noUsageBasedAllowed"], false);
+        assert_eq!(v["hardLimit"], 50);
+    }
+
+    #[test]
+    fn hard_limit_body_enables_unlimited_without_a_cap() {
+        let v = hard_limit_body(true, None);
+        assert_eq!(v["noUsageBasedAllowed"], false);
+        assert!(v.get("hardLimit").is_none());
+    }
+
+    #[test]
+    fn hard_limit_body_disables_usage_based() {
+        let v = hard_limit_body(false, Some(2_000.0));
+        assert_eq!(v["noUsageBasedAllowed"], true);
+        assert_eq!(v["hardLimit"], 0, "关掉必须带 0，不能把旧上限捎回去");
+        let bare = hard_limit_body(false, None);
+        assert_eq!(bare["hardLimit"], 0);
+        assert_eq!(bare["noUsageBasedAllowed"], true);
+    }
+
+    #[test]
+    fn credit_grants_are_the_gifted_balance_not_cycle_spend() {
+        let mut u = AccountUsage::default();
+        apply_credit_grants(
+            &mut u,
+            Some(&json!({
+                "hasCreditGrants": true,
+                "totalCents": 2500,
+                "usedCents": 400
+            })),
+        );
+        assert_eq!(u.credit_grant_total_cents, Some(2500.0));
+        assert_eq!(u.credit_grant_used_cents, Some(400.0));
+        assert_eq!(u.credit_grant_remaining_cents, Some(2100.0));
+
+        let mut empty = AccountUsage::default();
+        apply_credit_grants(&mut empty, Some(&json!({})));
+        assert!(empty.credit_grant_remaining_cents.is_none());
+    }
+
+    #[test]
+    fn hard_limit_overlay_is_the_spending_toggle() {
+        let mut u = parse(&summary(), None, None, None, None, None);
+        // usage-summary 说开着且不封顶；GetHardLimit 才是 Spending 页那一档。
+        apply_hard_limit(
+            &mut u,
+            Some(&json!({ "hardLimit": 0, "noUsageBasedAllowed": true })),
+        );
+        assert_eq!(u.on_demand_enabled, Some(false));
+
+        apply_hard_limit(
+            &mut u,
+            Some(&json!({ "hardLimit": 50, "noUsageBasedAllowed": false })),
+        );
+        assert_eq!(u.on_demand_enabled, Some(true));
+        assert_eq!(u.on_demand_limit_cents, Some(Some(5_000.0)));
+    }
+
+    #[test]
     fn individual_membership_beats_the_team_wide_one() {
         // 团队成员的总档显示 team，但派单吃的是他个人的额度。
         let s = json!({ "individualUsage": { "plan": {} } });
@@ -868,6 +1405,40 @@ mod tests {
         assert_eq!(w.input_tokens, 500);
         assert_eq!(w.by_model.len(), 2);
         assert_eq!(w.by_model[0].model, "claude-sonnet-5");
+    }
+
+    #[test]
+    fn api_key_events_become_a_partial_usage_snapshot() {
+        let events = vec![
+            UsageEvent {
+                ts: 2_000,
+                model: "cursor-grok".into(),
+                charged_cents: 80.0,
+                input: 10,
+                output: 2,
+                cache_read: 4,
+                cache_write: 0,
+                plan: Some("pro-legacy".into()),
+            },
+            UsageEvent {
+                ts: 500,
+                model: "cursor-grok".into(),
+                charged_cents: 20.0,
+                input: 5,
+                output: 1,
+                cache_read: 0,
+                cache_write: 0,
+                plan: Some("pro-legacy".into()),
+            },
+        ];
+        let u = events_to_usage(&events, 2_500, Some(1_000), Some(0));
+        assert_eq!(u.via.as_deref(), Some("apiKey"));
+        assert_eq!(u.spend_cents, Some(100.0));
+        assert_eq!(u.plan.as_deref(), Some("pro-legacy"));
+        assert_eq!(u.today.as_ref().map(|w| w.cents), Some(80.0));
+        assert_eq!(u.week.as_ref().map(|w| w.cents), Some(100.0));
+        assert!(u.total_percent_used.is_none());
+        assert!(u.bot.is_none());
     }
 
     #[test]

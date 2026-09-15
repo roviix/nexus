@@ -35,6 +35,9 @@ struct Entry {
     refresh_token: Option<String>,
     /// 按字段名收下，**不改判**。只用于解释「这个号为什么没 refresh 也收不进来」。
     access_token: Option<String>,
+    /// 桌面自己导出用 `userApiKey`；`apiKey` 是别名，免得一份手改过的 JSON 对不上。
+    #[serde(alias = "apiKey")]
+    user_api_key: Option<String>,
     note: Option<String>,
 }
 
@@ -94,7 +97,7 @@ impl Entry {
             recovery_email: clean(self.recovery_email),
             refresh_token: clean(self.refresh_token),
             access_token: clean(self.access_token),
-            api_key: None,
+            api_key: clean(self.user_api_key),
             note: clean(self.note),
         })
     }
@@ -201,6 +204,39 @@ mod tests {
         );
         let n: crate::NewAccount = accounts.into_iter().next().unwrap().into();
         assert_eq!(n.recovery_email.as_deref(), Some("backup@example.com"));
+    }
+
+    #[test]
+    fn a_user_api_key_is_accepted_under_either_field_name() {
+        for (label, text) in [
+            (
+                "userApiKey",
+                dump_of(serde_json::json!([{
+                    "email": "k@example.com",
+                    "userApiKey": "crsr_abc123DEF",
+                }])),
+            ),
+            (
+                "apiKey",
+                dump_of(serde_json::json!([{
+                    "email": "k@example.com",
+                    "apiKey": "crsr_abc123DEF",
+                }])),
+            ),
+        ] {
+            let (accounts, skipped) = parse(&text).expect("认得出是 JSON 导出");
+            assert!(skipped.is_empty(), "{label}");
+            assert_eq!(
+                accounts[0].api_key.as_deref(),
+                Some("crsr_abc123DEF"),
+                "{label}"
+            );
+            let (_, report) = preview(&text);
+            assert!(
+                report.rows[0].accepted && report.rows[0].has_api_key,
+                "{label}"
+            );
+        }
     }
 
     #[test]

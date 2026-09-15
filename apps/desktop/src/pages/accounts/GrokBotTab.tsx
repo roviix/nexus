@@ -9,10 +9,12 @@
  * 读 Grok Bot 客户端数据要解钥匙串，首次弹系统授权，所以「识别」是显式动作。
  */
 import { useCallback, useEffect, useState } from "react";
-import { accounts, app as appApi, grokbot, switcher } from "../../ipc/api";
-import type { Account, GrokBotIdentity, GrokBotStatus } from "../../ipc/types";
-import { canQueryUsage } from "../../ui/accounts";
-import { timeUntil } from "../../ui/format";
+import { grokbot, switcher } from "../../ipc/api";
+import type { Account, GrokBotCuaProbe, GrokBotIdentity, GrokBotStatus } from "../../ipc/types";
+import { switchAccountIntoCursor } from "../../accounts/switchInto";
+import { canUseDashboard } from "../../ui/accounts";
+import { canAddToSwitchPool } from "../../ui/switcher";
+import { timeAgo, timeUntil } from "../../ui/format";
 import { ErrorNote, Icon, Spinner, Tag } from "../../ui/primitives";
 
 const SWITCH_TOO_KEY = "nexus.grokbot.switchCursorToo";
@@ -25,34 +27,32 @@ function readSwitchToo(): boolean {
   }
 }
 
-type Busy = null | "use" | "identify" | "launch" | "mint" | "renew";
+type Busy = null | "use" | "identify" | "launch" | "mint" | "renew" | "probe";
 
 export function GrokBotTab({ account }: { account: Account }) {
   const [st, setSt] = useState<GrokBotStatus | null>(null);
   const [identity, setIdentity] = useState<GrokBotIdentity | null>(null);
   const [cursorEmail, setCursorEmail] = useState<string | null>(null);
-  const [cursorRunning, setCursorRunning] = useState(false);
-  const [coldSwitch, setColdSwitch] = useState(false);
   const [switchToo, setSwitchToo] = useState(readSwitchToo);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<unknown>(null);
   const [showClient, setShowClient] = useState(false);
+  const [probe, setProbe] = useState<GrokBotCuaProbe | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [status, overview, appStatus] = await Promise.all([
+      const [status, overview, cached] = await Promise.all([
         grokbot.status(),
         switcher.overview(),
-        appApi.status(),
+        grokbot.cuaProbeGet(account.id),
       ]);
       setSt(status);
       setCursorEmail(overview.current?.email?.toLowerCase() ?? null);
-      setCursorRunning(overview.cursorRunning);
-      setColdSwitch(appStatus.switchMachineIds);
+      setProbe(cached);
     } catch (e) {
       setError(e);
     }
-  }, []);
+  }, [account.id]);
 
   useEffect(() => {
     void reload();
@@ -104,10 +104,10 @@ export function GrokBotTab({ account }: { account: Account }) {
   const directOk = !!direct && (!direct.expired || direct.canRenew);
   const directOwner = direct?.accountEmail?.toLowerCase() ?? null;
   const directIsMine = directOk && directOwner === mine;
-  // 换 Grok 额度只要一把活的 access：仅会话的号有效期内也行。切 Cursor 则必须有 refresh。
-  const canUse = canQueryUsage(account) && account.status !== "dead";
+  // 换 Grok 额度只要一把活的 access：仅会话的号有效期内也行。切 Cursor 同样：有效期内的 session token 就能热切。
+  const canUse = canUseDashboard(account) && account.status !== "dead";
   const cursorIsMine = cursorEmail === mine;
-  const willSwitch = switchToo && canUse && account.hasRefresh && !cursorIsMine;
+  const willSwitch = switchToo && canUse && canAddToSwitchPool(account) && !cursorIsMine;
 
   const app = st.app;
   const activeEmail = (identity?.email ?? st.activeEmail)?.toLowerCase() ?? null;
@@ -116,16 +116,7 @@ export function GrokBotTab({ account }: { account: Account }) {
   async function use() {
     await grokbot.mintForAccount(account.id);
     if (!willSwitch) return;
-    // 冷切会退出并重启 Cursor，这一步才值得打断问一句。
-    if (
-      cursorRunning &&
-      coldSwitch &&
-      !window.confirm(`切到 ${account.email} 会退出并重启 Cursor，继续？`)
-    ) {
-      return;
-    }
-    const profile = await accounts.addToSwitchBook(account.id);
-    await switcher.switchTo(profile.id);
+    await switchAccountIntoCursor(account);
   }
 
   return (
@@ -188,8 +179,8 @@ export function GrokBotTab({ account }: { account: Account }) {
           <span className="usedin-v">{cursorEmail ?? "未登录"}</span>
           {cursorIsMine ? (
             <Tag tone="ok">当前</Tag>
-          ) : !account.hasRefresh ? (
-            <span className="faint tiny" title="切 Cursor 需要 refresh token">不可切</span>
+          ) : !canAddToSwitchPool(account) ? (
+            <span className="faint tiny" title={account.hasAccess ? "session token 已过期，更新后再切" : "切 Cursor 需要一份还活着的 session token 或 refresh token"}>不可切</span>
           ) : (
             <label className="row items-center tiny muted" style={{ gap: 6, cursor: "pointer" }}>
               <input
@@ -201,6 +192,43 @@ export function GrokBotTab({ account }: { account: Account }) {
               同时切 Cursor
             </label>
           )}
+        </div>
+        <div className={`usedin-row${probe?.hasGrok47 ? " is-in is-live" : ""}`}>
+          <span className="usedin-ico">
+            <Icon name="cpu" size={13} />
+          </span>
+          <span className="usedin-k">4.7 灰度</span>
+          <span className="usedin-v" title={probe?.error ?? undefined}>
+            {probe == null
+              ? "未检测"
+              : probe.hasGrok47
+                ? `有 · ${probe.resolvedModel ?? "grok-4.7"} · ${timeAgo(new Date(probe.probedAtMs).toISOString())}`
+                : probe.resolvedModel
+                  ? `无 · ${probe.resolvedModel} · ${timeAgo(new Date(probe.probedAtMs).toISOString())}`
+                  : `失败 · ${probe.error ?? "未测到"}`}
+          </span>
+          <span className="row" style={{ gap: 6 }}>
+            {probe?.hasGrok47 ? <Tag tone="ok">已开</Tag> : null}
+            <button
+              type="button"
+              className="btn btn-sm btn-quiet"
+              disabled={busy !== null || !canUse}
+              title={
+                canUse
+                  ? "打一发 sand-cua，等到真正的落点（4.7 / luna）再挂断。不覆盖本机正在用的凭证；会唤醒这个号的 Box。"
+                  : account.status === "dead"
+                    ? "这个号已失效"
+                    : "需要 refresh token 或未过期的 session"
+              }
+              onClick={() =>
+                void act("probe", async () => {
+                  setProbe(await grokbot.cuaProbe(account.id));
+                })
+              }
+            >
+              {busy === "probe" ? <Spinner /> : probe ? "再测" : "检测"}
+            </button>
+          </span>
         </div>
       </div>
 

@@ -124,10 +124,11 @@ pub enum RuleId {
     LocalRuntimeLoad,
     /// 推理引擎（Direct），落在 attempt 工厂（3.19.7 叫 `ve`）的锚点上：注入体劫持工厂直连
     /// `InferenceService/Stream`（Python：`DIRECT_STREAM_ANCHOR` + `_direct_stream_injection`；
-    /// 随 self_summary / context_window / 注入体形态共 12 种变体）。
+    /// 随 self_summary / context_window / 注入体形态 / premium 钉法 / resolved 日志通道 /
+    /// GlmOnly 四代钉法（只钉 GLM / 再加 4.7→CUA / 再加 4.5→CUA / 4.5 带 remap 日志）共 108 种变体）。
     ///
-    /// marker 期望 1；install 见到其余 11 种变体或已下线 Session 引擎的空 marker
-    /// （[`LEGACY_SESSION_STREAM_MARKER`]）就原地换成当前形态，uninstall 十三种都认。
+    /// marker 期望 1；install 见到其余变体或已下线 Session 引擎的空 marker
+    /// （[`LEGACY_SESSION_STREAM_MARKER`]）就原地换成当前形态，uninstall 全部都认。
     InferenceStream,
     /// `_agentHostEnabled=!0`。Python：`AGENT_HOST_ENABLEMENT_RE` / `_PATCH_RE`（每文件最多 1 处，总 2）。
     AgentHostEnablement,
@@ -1333,15 +1334,145 @@ const DIRECT_SHAPES: [DirectShape; 3] = [
     DirectShape::Flat,
 ];
 
+/// Bot 通道怎么改 `requestedModel.modelId`。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PremiumPin {
+    /// 不改，面板选什么送什么。
+    Off,
+    /// 最早一版：一律钉 `premium`。只给迁移 / 卸载认盘上已装的体。
+    Always,
+    /// 上一版：Grok / Composer / Auto 原样，其余钉 `premium`。
+    ExceptNative,
+    /// 现行：只有 GLM 5.2 钉 `premium`（面板入口）；其余原样。
+    GlmOnly,
+}
+
+const PREMIUM_PINS: [PremiumPin; 4] = [
+    PremiumPin::GlmOnly,
+    PremiumPin::ExceptNative,
+    PremiumPin::Always,
+    PremiumPin::Off,
+];
+
+/// Current + 钉 premium 时，executor 回包 `modelId` 打到哪。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ResolvedLog {
+    /// 不包 stream；`Off` / 旧形态用。
+    None,
+    /// 上一版：`console.info`。扩展宿主 DevTools 才看得到，Agent Host.log 没有。
+    Console,
+    /// 现行：跟官方同一条 `Cursor Agent Host` LogOutputChannel。
+    AgentHost,
+}
+
+/// Bot 通道请求的 routed tier。服务端再解析成实际模型（本号目前是 `gpt-5.3-codex`）。
+#[cfg_attr(not(test), allow(dead_code))]
+const GROKBOT_FORCED_MODEL_ID: &str = "premium";
+/// 给本地 prompt 装配用的 slug：`premium` 本身对不上任何 vendor 分支，按当前落点用 Codex。
+#[cfg_attr(not(test), allow(dead_code))]
+const GROKBOT_FORCED_PROMPT_SLUG: &str = "gpt-5.3-codex";
+/// grok 4.7 在 Bot 通道只能走这个 CUA 别名。
+#[cfg_attr(not(test), allow(dead_code))]
+const GROKBOT_CUA_MODEL_ID: &str = "sand-cua";
+
+/// GlmOnly 注入体的四代钉法。现行只装后两种；前两代必须留着，否则卸载认不出
+/// 2026-09-13 当天装的盘（只钉 GLM、或 4.5→CUA 但还没有 remap 日志），写后校验
+/// 会剩 1 处推理引擎 marker 并回滚。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlmOnlyGen {
+    /// 只钉 GLM 5.2 → premium。
+    Legacy,
+    /// 再加 grok 4.7 → sand-cua。
+    Grok47,
+    /// 再加 grok 4.5 → sand-cua，还没有 `[nexus-sand] remap` 日志。
+    /// 2026-09-13 下午之前装的「4.5 走 CUA」盘是这一代。
+    Grok47And45Plain,
+    /// 现行：4.5→CUA，并打 remap console.info。
+    Grok47And45,
+}
+
+fn glm_only_pin_js(gen: GlmOnlyGen) -> &'static str {
+    match gen {
+        GlmOnlyGen::Legacy => concat!(
+            r#"const k=String(n.modelId||"").toLowerCase(),"#,
+            r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2");"#,
+            r#"if(pin){n.modelId="premium";n.maxMode=!1;n.parameters=[];}"#,
+            r#"const d=String(n.modelId||""),i="premium"===d.toLowerCase()?"gpt-5.3-codex":d.toLowerCase(),"#,
+        ),
+        GlmOnlyGen::Grok47And45Plain => concat!(
+            r#"const k=String(n.modelId||"").toLowerCase(),"#,
+            r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2"),"#,
+            r#"g47=k.includes("grok-4.7")||k.includes("grok-4-7")||k.includes("4-7-0910"),"#,
+            r#"g45=k.includes("grok-4.5")||k.includes("grok-4-5");"#,
+            r#"if(pin){n.modelId="premium";n.maxMode=!1;n.parameters=[];}"#,
+            r#"if(g47||g45){n.modelId="sand-cua";n.maxMode=!1;n.parameters=[];}"#,
+            r#"const d=g47?"grok-4.7":g45?"grok-4.5":String(n.modelId||""),i="premium"===d.toLowerCase()?"gpt-5.3-codex":g47||g45?"grok-4.6":d.toLowerCase(),"#,
+        ),
+        GlmOnlyGen::Grok47And45 => concat!(
+            r#"const k=String(n.modelId||"").toLowerCase(),"#,
+            r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2"),"#,
+            r#"g47=k.includes("grok-4.7")||k.includes("grok-4-7")||k.includes("4-7-0910"),"#,
+            r#"g45=k.includes("grok-4.5")||k.includes("grok-4-5");"#,
+            r#"if(pin){n.modelId="premium";n.maxMode=!1;n.parameters=[];}"#,
+            r#"if(g47||g45){n.modelId="sand-cua";n.maxMode=!1;n.parameters=[];try{console.info("[nexus-sand] remap",k,"→ sand-cua")}catch(e){}}"#,
+            r#"const d=g47?"grok-4.7":g45?"grok-4.5":String(n.modelId||""),i="premium"===d.toLowerCase()?"gpt-5.3-codex":g47||g45?"grok-4.6":d.toLowerCase(),"#,
+        ),
+        GlmOnlyGen::Grok47 => concat!(
+            r#"const k=String(n.modelId||"").toLowerCase(),"#,
+            r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2"),"#,
+            r#"g47=k.includes("grok-4.7")||k.includes("grok-4-7")||k.includes("4-7-0910");"#,
+            r#"if(pin){n.modelId="premium";n.maxMode=!1;n.parameters=[];}"#,
+            r#"if(g47){n.modelId="sand-cua";n.maxMode=!1;n.parameters=[];}"#,
+            r#"const d=g47?"grok-4.7":String(n.modelId||""),i="premium"===d.toLowerCase()?"gpt-5.3-codex":g47?"grok-4.6":d.toLowerCase(),"#,
+        ),
+    }
+}
+
 /// 现行形态；`context_window=false` 是更早的注入（还没有 agentTokenLimit）。
+///
+/// 产线走 [`direct_stream_injection_for_gen`]（它按 gen 分派形态），这个薄包装只留给
+/// 逐字节比对 Python 参考实现的那几个测试。
+#[cfg(test)]
 fn direct_stream_injection(self_summary: bool, context_window: bool) -> String {
-    direct_stream_injection_impl(self_summary, context_window, DirectShape::Current)
+    direct_stream_injection_impl(
+        self_summary,
+        context_window,
+        DirectShape::Current,
+        PremiumPin::GlmOnly,
+    )
+}
+
+fn default_resolved_log(shape: DirectShape, pin: PremiumPin) -> ResolvedLog {
+    if pin != PremiumPin::Off && shape == DirectShape::Current {
+        ResolvedLog::AgentHost
+    } else {
+        ResolvedLog::None
+    }
 }
 
 fn direct_stream_injection_impl(
     self_summary: bool,
     context_window: bool,
     shape: DirectShape,
+    pin: PremiumPin,
+) -> String {
+    direct_stream_injection_with_log(
+        self_summary,
+        context_window,
+        shape,
+        pin,
+        default_resolved_log(shape, pin),
+        false,
+    )
+}
+
+fn direct_stream_injection_with_log(
+    self_summary: bool,
+    context_window: bool,
+    shape: DirectShape,
+    pin: PremiumPin,
+    log: ResolvedLog,
+    grok45_via_cua: bool,
 ) -> String {
     let wrap_metadata = shape != DirectShape::Flat;
     // 扁平旧版把 agentTokenLimit 写在 `a` 里；3.19.7 的 Fe() 只认外层包装上的那一份。
@@ -1369,20 +1500,55 @@ fn direct_stream_injection_impl(
     } else {
         ""
     };
+    let pin_js = match pin {
+        PremiumPin::GlmOnly => glm_only_pin_js(if grok45_via_cua {
+            GlmOnlyGen::Grok47And45
+        } else {
+            GlmOnlyGen::Grok47
+        }),
+        PremiumPin::ExceptNative => concat!(
+            r#"const k=String(n.modelId||"").toLowerCase(),"#,
+            r#"q=k.includes("grok")||k.includes("composer")||"default"===k||"sand-default"===k||"sand-cua"===k||"auto"===k||k.startsWith("auto-")||"premium"===k;"#,
+            r#"if(!q){n.modelId="premium";n.maxMode=!1;n.parameters=[];}"#,
+            r#"const d=String(n.modelId||""),i=q&&"premium"!==k?d.toLowerCase():"gpt-5.3-codex","#,
+        ),
+        PremiumPin::Always => concat!(
+            r#"n.modelId="premium";"#,
+            r#"n.maxMode=!1;n.parameters=[];"#,
+            r#"const d="premium",i="gpt-5.3-codex","#,
+        ),
+        PremiumPin::Off => r#"const d=String(n.modelId||""),i=d.toLowerCase(),"#,
+    };
     [
         "{",
         SAND_DIRECT_STREAM_MARKER,
         concat!(
             r#"const n=t.requestedModel;"#,
             r#"if(void 0===n)throw new Error("Sand direct Stream requires requestedModel");"#,
-            r#"const d=String(n.modelId||""),i=d.toLowerCase(),"#,
+        ),
+        pin_js,
+        concat!(
             r#"r=new Map(n.parameters.map(e=>[e.id,e.value])),"#,
             r#"s=new J(e,n,void 0,void 0).getSession("#,
         ),
         middleware,
+        ")",
+        match log {
+            ResolvedLog::AgentHost => concat!(
+                r#",p={getExecutor:e=>{const x=new o.Ycw(s.getExecutor(e)),f=x.stream.bind(x);"#,
+                r#"return x.stream=function(){const r=f.apply(this,arguments);"#,
+                r#"return r&&r.response&&r.response.then(v=>{const m=v&&v.modelId;"#,
+                r#"m&&function(){try{require("vscode").window.createOutputChannel("Cursor Agent Host",{log:!0}).info("[nexus-sand] resolved "+JSON.stringify({requested:d,actual:String(m)}))}catch(e){}}()}).catch(()=>{}),r},x;}},"#,
+            ),
+            ResolvedLog::Console => concat!(
+                r#",p={getExecutor:e=>{const x=new o.Ycw(s.getExecutor(e)),f=x.stream.bind(x);"#,
+                r#"return x.stream=function(){const r=f.apply(this,arguments);"#,
+                r#"return r&&r.response&&r.response.then(v=>{const m=v&&v.modelId;"#,
+                r#"m&&console.info("[nexus-sand] premium resolved",String(m))}).catch(()=>{}),r},x;}},"#,
+            ),
+            ResolvedLog::None => r#",p={getExecutor:e=>new o.Ycw(s.getExecutor(e))},"#,
+        },
         concat!(
-            r#"),"#,
-            r#"p={getExecutor:e=>new o.Ycw(s.getExecutor(e))},"#,
             r#"a={vendor:i.includes("grok")?"xai":i.includes("gemini")?"gemini":"#,
             r#"i.includes("claude")||i.includes("opus")||i.includes("sonnet")||i.includes("fable")?"#,
             r#""anthropic":i.includes("gpt")||i.includes("codex")?"openai":"unknown","#,
@@ -1519,39 +1685,172 @@ pub fn installed_inference_endpoint(content: &str) -> Option<String> {
 /// 给 status 用：「盘上是什么」和「选项要装什么」是两回事，界面两个都要说
 /// （Python：`_installed_direct_stream_self_summary`）。
 pub fn installed_self_summary(content: &str) -> Option<bool> {
-    for self_summary in [true, false] {
-        for context_window in [true, false] {
-            for shape in DIRECT_SHAPES {
-                if content.contains(
-                    direct_stream_injection_impl(self_summary, context_window, shape).as_str(),
-                ) {
-                    return Some(self_summary);
-                }
-            }
+    let mut variants = direct_stream_variants();
+    variants.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for v in variants {
+        if content.contains(v.as_str()) {
+            return Some(v.contains("supportsSelfSummary:!0,"));
         }
     }
     None
 }
 
-/// Direct 引擎全部注入体：三代形态 × 自摘要开关 × 有无 agentTokenLimit = 12 种。
+/// 盘上 Direct 注入体是否把 grok-4.5 改走 `sand-cua`。没装 Direct 时 `None`。
+///
+/// 只认这句针，不按「第一段匹配的完整注入体」猜：完整体互相是子串时会误报开/关，
+/// 安装器再按误报去 no-op，Agent 就一直跑着旧的 4884.js。
+pub fn installed_grok45_via_cua(content: &str) -> Option<bool> {
+    if !content.contains(SAND_DIRECT_STREAM_MARKER) {
+        return None;
+    }
+    Some(content.contains(r#"g45=k.includes("grok-4.5")"#))
+}
+
+fn glm_only_generations(pin: PremiumPin) -> &'static [GlmOnlyGen] {
+    match pin {
+        PremiumPin::GlmOnly => &[
+            GlmOnlyGen::Legacy,
+            GlmOnlyGen::Grok47,
+            GlmOnlyGen::Grok47And45Plain,
+            GlmOnlyGen::Grok47And45,
+        ],
+        _ => &[GlmOnlyGen::Grok47],
+    }
+}
+
+/// Direct 引擎全部注入体：三代形态 × 自摘要 × context × premium 钉法 + Current 钉 premium 的
+/// console / Agent Host 两套 wrap + GlmOnly 四代钉法 = 108 种。
 fn direct_stream_variants() -> Vec<String> {
-    [true, false]
-        .into_iter()
-        .flat_map(|self_summary| {
-            [true, false].into_iter().flat_map(move |context_window| {
-                DIRECT_SHAPES.into_iter().map(move |shape| {
-                    direct_stream_injection_impl(self_summary, context_window, shape)
-                })
-            })
-        })
-        .collect()
+    let mut out = Vec::with_capacity(108);
+    for pin in PREMIUM_PINS {
+        for &gen in glm_only_generations(pin) {
+            for self_summary in [true, false] {
+                for context_window in [true, false] {
+                    for shape in DIRECT_SHAPES {
+                        if pin != PremiumPin::Off && shape == DirectShape::Current {
+                            out.push(direct_stream_injection_for_gen(
+                                self_summary,
+                                context_window,
+                                shape,
+                                pin,
+                                ResolvedLog::Console,
+                                gen,
+                            ));
+                            out.push(direct_stream_injection_for_gen(
+                                self_summary,
+                                context_window,
+                                shape,
+                                pin,
+                                ResolvedLog::AgentHost,
+                                gen,
+                            ));
+                        } else {
+                            out.push(direct_stream_injection_for_gen(
+                                self_summary,
+                                context_window,
+                                shape,
+                                pin,
+                                ResolvedLog::None,
+                                gen,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn direct_stream_injection_for_gen(
+    self_summary: bool,
+    context_window: bool,
+    shape: DirectShape,
+    pin: PremiumPin,
+    log: ResolvedLog,
+    gen: GlmOnlyGen,
+) -> String {
+    match gen {
+        GlmOnlyGen::Legacy if pin == PremiumPin::GlmOnly => {
+            direct_stream_injection_legacy_glm_only(self_summary, context_window, shape, log)
+        }
+        GlmOnlyGen::Grok47And45Plain if pin == PremiumPin::GlmOnly => {
+            direct_stream_injection_g45_plain(self_summary, context_window, shape, log)
+        }
+        _ => direct_stream_injection_with_log(
+            self_summary,
+            context_window,
+            shape,
+            pin,
+            log,
+            matches!(gen, GlmOnlyGen::Grok47And45 | GlmOnlyGen::Grok47And45Plain),
+        ),
+    }
+}
+
+/// 2026-09-13 下午之前的「4.5 走 CUA」：钉法和现行一样，只是还没有 remap console.info。
+fn direct_stream_injection_g45_plain(
+    self_summary: bool,
+    context_window: bool,
+    shape: DirectShape,
+    log: ResolvedLog,
+) -> String {
+    let mut body = direct_stream_injection_with_log(
+        self_summary,
+        context_window,
+        shape,
+        PremiumPin::GlmOnly,
+        log,
+        true,
+    );
+    let current = glm_only_pin_js(GlmOnlyGen::Grok47And45);
+    let plain = glm_only_pin_js(GlmOnlyGen::Grok47And45Plain);
+    debug_assert!(body.contains(current));
+    body = body.replacen(current, plain, 1);
+    body
+}
+
+fn direct_stream_injection_legacy_glm_only(
+    self_summary: bool,
+    context_window: bool,
+    shape: DirectShape,
+    log: ResolvedLog,
+) -> String {
+    let mut body = direct_stream_injection_with_log(
+        self_summary,
+        context_window,
+        shape,
+        PremiumPin::GlmOnly,
+        log,
+        false,
+    );
+    let current = glm_only_pin_js(GlmOnlyGen::Grok47);
+    let legacy = glm_only_pin_js(GlmOnlyGen::Legacy);
+    debug_assert!(body.contains(current));
+    body = body.replacen(current, legacy, 1);
+    body
 }
 
 /// 推理引擎规则。`injection` 是当前选项的注入体（Python `_direct_stream_injection(self_summary)`），
-/// 其余 11 种 Direct 变体 + 已下线 Session 引擎的空 marker 全是 `legacy_injections`：
+/// 其余 Direct 变体 + 已下线 Session 引擎的空 marker 全是 `legacy_injections`：
 /// install 见到任一种就原地换成当前形态（计 migrated 不计 hits），uninstall 全部都认。
-fn inference_stream_rule(self_summary: bool) -> PatchRule {
-    let injection = direct_stream_injection(self_summary, true);
+fn inference_stream_rule(
+    self_summary: bool,
+    force_premium: bool,
+    grok45_via_cua: bool,
+) -> PatchRule {
+    let injection = if force_premium {
+        direct_stream_injection_with_log(
+            self_summary,
+            true,
+            DirectShape::Current,
+            PremiumPin::GlmOnly,
+            ResolvedLog::AgentHost,
+            grok45_via_cua,
+        )
+    } else {
+        direct_stream_injection_impl(self_summary, true, DirectShape::Current, PremiumPin::Off)
+    };
     let mut legacy_injections: Vec<String> = direct_stream_variants()
         .into_iter()
         .filter(|v| v != &injection)
@@ -1867,7 +2166,11 @@ pub fn catalog_with_installed(
         (None, None) => {}
     }
     rules.extend(grokbot_auth_rules(options.grokbot_auth));
-    rules.push(inference_stream_rule(options.self_summary));
+    rules.push(inference_stream_rule(
+        options.self_summary,
+        options.grokbot_auth.is_on(),
+        options.grok45_via_cua,
+    ));
     rules.push(agent_host_enablement_rule()?);
     Ok(rules)
 }
@@ -2504,6 +2807,27 @@ mod tests {
         assert!(
             off_ctx.starts_with("{/*SAND_DIRECT_INFERENCE_STREAM_V1*/const n=t.requestedModel;")
         );
+        assert!(off_ctx
+            .contains(r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2")"#));
+        assert!(off_ctx.contains(&format!(
+            r#"if(pin){{n.modelId="{GROKBOT_FORCED_MODEL_ID}";n.maxMode=!1;n.parameters=[];}}"#
+        )));
+        assert!(off_ctx.contains(&format!(
+            r#"if(g47){{n.modelId="{GROKBOT_CUA_MODEL_ID}";n.maxMode=!1;n.parameters=[];}}"#
+        )));
+        assert!(off_ctx.contains(
+            r#"g47=k.includes("grok-4.7")||k.includes("grok-4-7")||k.includes("4-7-0910")"#
+        ));
+        assert!(off_ctx.contains(&format!(
+            r#"i="premium"===d.toLowerCase()?"{GROKBOT_FORCED_PROMPT_SLUG}":g47?"grok-4.6":d.toLowerCase()"#
+        )));
+        assert!(off_ctx.contains(
+            r#"require("vscode").window.createOutputChannel("Cursor Agent Host",{log:!0})"#
+        ));
+        assert!(off_ctx.contains(
+            r#".info("[nexus-sand] resolved "+JSON.stringify({requested:d,actual:String(m)}))"#
+        ));
+        assert!(!off_ctx.contains(r#"console.info("[nexus-sand] premium resolved""#));
         assert!(off_ctx.contains("supportsSelfSummary:!1,routedModelDisplayName:d,"));
         assert!(on_ctx.contains("supportsSelfSummary:!0,routedModelDisplayName:d,"));
         assert!(off_ctx.contains(r#"reasoningEffort:r.get("effort"),isGrok45ProductPrompt:"#));
@@ -2513,7 +2837,7 @@ mod tests {
         assert!(off_noctx.contains(r#"resolvedModelMetadata:{promptModelInfo:oe(a,d)},"#));
         assert!(off_ctx
             .contains(r#"isGrok46ProductPrompt:i.includes("grok-4.6")||i.includes("grok46"),"#));
-        let flat = direct_stream_injection_impl(false, true, DirectShape::Flat);
+        let flat = direct_stream_injection_impl(false, true, DirectShape::Flat, PremiumPin::Off);
         assert!(flat.contains(&format!(
             r#"reasoningEffort:r.get("effort"),agentTokenLimit:{CONTEXT_TOKENS_EXPR},isGrok45ProductPrompt:"#
         )));
@@ -2525,7 +2849,7 @@ mod tests {
             &format!("s=new J(e,n,void 0,void 0).getSession({DIRECT_SESSION_MIDDLEWARE}),"),
             r#"(0,o.sXH)((0,o.got)({imageResizing:{webpWithoutCodec:"passthrough"},"#,
             "supportsAssistantMessagePrefill:!0},{}))",
-            "p={getExecutor:e=>new o.Ycw(s.getExecutor(e))},",
+            "p={getExecutor:e=>{const x=new o.Ycw(s.getExecutor(e)),f=x.stream.bind(x);",
             r#"isGpt53CodexSpark:i.includes("codex-spark"),"#,
             r#"isGpt51:i.includes("gpt-5.1")||i.includes("gpt51"),"#,
             r#"isGpt52:i.includes("gpt-5.2")||i.includes("gpt52"),"#,
@@ -2537,14 +2861,20 @@ mod tests {
             assert!(off_ctx.contains(needle), "缺 {needle}");
         }
         // 3.19.7 首版没挂中间件；扁平旧版更没有。两种都得和现行体不同，才能被识别成 legacy。
-        let bare = direct_stream_injection_impl(false, true, DirectShape::WrappedBare);
+        let bare =
+            direct_stream_injection_impl(false, true, DirectShape::WrappedBare, PremiumPin::Off);
         assert!(bare.contains("s=new J(e,n,void 0,void 0).getSession(),"));
         assert!(!bare.contains("o.sXH"));
         assert!(bare.contains(r#"resolvedModelMetadata:{promptModelInfo:oe(a,d),"#));
         assert!(flat.contains("s=new J(e,n,void 0,void 0).getSession(),"));
         assert_ne!(bare, off_ctx);
         assert_ne!(bare, flat);
-        assert_eq!(direct_stream_variants().len(), 12);
+        assert_eq!(direct_stream_variants().len(), 108);
+        assert!(!off_ctx.contains(r#"g45=k.includes("grok-4.5")"#));
+        assert!(direct_stream_variants().iter().any(|v| {
+            v.contains(r#"console.info("[nexus-sand] premium resolved""#)
+                && v.contains(r#"pin=k.includes("glm-5.2")"#)
+        }));
 
         // 选项决定装哪种：自摘要开装 !0，显式关掉装 !1；全部变体都能卸。
         let anchor_src = format!("{DIRECT_STREAM_ANCHOR}body}}");
@@ -2603,7 +2933,7 @@ mod tests {
         // 盘上是 3.19.7 之前的扁平 oe()：原地包进 promptModelInfo。
         let flat_on_disk = format!(
             "{DIRECT_STREAM_ANCHOR}{}body}}",
-            direct_stream_injection_impl(true, true, DirectShape::Flat)
+            direct_stream_injection_impl(true, true, DirectShape::Flat, PremiumPin::Off)
         );
         let (from_flat, rep) = crate::engine::apply(&flat_on_disk, &direct_rules);
         assert_eq!(from_flat, p_default);
@@ -2614,7 +2944,7 @@ mod tests {
         // 盘上是 3.19.7 首版（已包装、没中间件）：原地补上中间件链。
         let bare_on_disk = format!(
             "{DIRECT_STREAM_ANCHOR}{}body}}",
-            direct_stream_injection_impl(true, true, DirectShape::WrappedBare)
+            direct_stream_injection_impl(true, true, DirectShape::WrappedBare, PremiumPin::Off)
         );
         let (from_bare, rep) = crate::engine::apply(&bare_on_disk, &direct_rules);
         assert_eq!(from_bare, p_default);
@@ -2622,6 +2952,212 @@ mod tests {
             (rep.hits.inference_stream, rep.migrated.inference_stream),
             (0, 1)
         );
+        // 盘上是钉 premium 之前的现行体：原地改 modelId，不叠加。
+        let pre_premium = format!(
+            "{DIRECT_STREAM_ANCHOR}{}body}}",
+            direct_stream_injection_impl(true, true, DirectShape::Current, PremiumPin::Off)
+        );
+        assert!(!pre_premium.contains(r#"n.modelId="premium""#));
+        let (from_old, rep) = crate::engine::apply(&pre_premium, &direct_rules);
+        assert_eq!(from_old, p_default);
+        assert!(from_old.contains(r#"if(pin){n.modelId="premium""#));
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+
+        // Bot 关着：不钉 premium，沿用面板选的模型；再打开 Bot 会原地迁过去。
+        let cursor_rules = catalog(&InstallOptions {
+            grokbot_auth: GrokBotAuthMode::Off,
+            ..Default::default()
+        })
+        .unwrap();
+        let (p_cursor, _) = crate::engine::apply(&anchor_src, &cursor_rules);
+        assert!(p_cursor.contains(r#"const d=String(n.modelId||""),i=d.toLowerCase(),"#));
+        assert!(!p_cursor.contains(r#"n.modelId="premium""#));
+        let (to_bot, rep) = crate::engine::apply(&p_cursor, &direct_rules);
+        assert_eq!(to_bot, p_default);
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+
+        // 最早一律钉 premium：原地改成只钉 GLM 5.2。
+        let always = format!(
+            "{DIRECT_STREAM_ANCHOR}{}body}}",
+            direct_stream_injection_impl(true, true, DirectShape::Current, PremiumPin::Always)
+        );
+        assert!(always.contains(r#"n.modelId="premium";n.maxMode=!1"#));
+        assert!(!always.contains(r#"k.includes("glm-5.2")"#));
+        let (from_always, rep) = crate::engine::apply(&always, &direct_rules);
+        assert_eq!(from_always, p_default);
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+
+        // 上一版 console.info wrap：原地改走 Agent Host logger。
+        let console_glm = format!(
+            "{DIRECT_STREAM_ANCHOR}{}body}}",
+            direct_stream_injection_with_log(
+                true,
+                true,
+                DirectShape::Current,
+                PremiumPin::GlmOnly,
+                ResolvedLog::Console,
+                false,
+            )
+        );
+        assert!(console_glm.contains(r#"console.info("[nexus-sand] premium resolved""#));
+        let (from_console, rep) = crate::engine::apply(&console_glm, &direct_rules);
+        assert_eq!(from_console, p_default);
+        assert!(from_console.contains(r#"createOutputChannel("Cursor Agent Host""#));
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+
+        // 上一版「非 native → premium」：原地收成只钉 GLM 5.2。
+        let except = format!(
+            "{DIRECT_STREAM_ANCHOR}{}body}}",
+            direct_stream_injection_impl(
+                true,
+                true,
+                DirectShape::Current,
+                PremiumPin::ExceptNative
+            )
+        );
+        assert!(except.contains(r#"k.includes("grok")||k.includes("composer")"#));
+        assert!(except.contains(r#"if(!q){n.modelId="premium""#));
+        let (from_except, rep) = crate::engine::apply(&except, &direct_rules);
+        assert_eq!(from_except, p_default);
+        assert!(from_except.contains(r#"if(pin){n.modelId="premium""#));
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+    }
+
+    #[test]
+    fn grok45_via_cua_is_off_by_default_and_migrates_in_place() {
+        let off = direct_stream_injection_with_log(
+            true,
+            true,
+            DirectShape::Current,
+            PremiumPin::GlmOnly,
+            ResolvedLog::AgentHost,
+            false,
+        );
+        let on = direct_stream_injection_with_log(
+            true,
+            true,
+            DirectShape::Current,
+            PremiumPin::GlmOnly,
+            ResolvedLog::AgentHost,
+            true,
+        );
+        assert!(!off.contains(r#"g45=k.includes("grok-4.5")"#));
+        assert!(on.contains(r#"g45=k.includes("grok-4.5")||k.includes("grok-4-5")"#));
+        assert!(on.contains(r#"if(g47||g45){n.modelId="sand-cua";n.maxMode=!1;n.parameters=[];try{console.info("[nexus-sand] remap""#));
+        assert_ne!(off, on);
+
+        let anchor = format!("{DIRECT_STREAM_ANCHOR}body}}");
+        let rules_off = catalog(&InstallOptions::default()).unwrap();
+        let rules_on = catalog(&InstallOptions {
+            grok45_via_cua: true,
+            ..InstallOptions::default()
+        })
+        .unwrap();
+        let (p_off, _) = crate::engine::apply(&anchor, &rules_off);
+        assert_eq!(installed_grok45_via_cua(&p_off), Some(false));
+        let (p_on, rep) = crate::engine::apply(&p_off, &rules_on);
+        assert_eq!(installed_grok45_via_cua(&p_on), Some(true));
+        assert!(p_on.contains(r#"g45=k.includes("grok-4.5")"#));
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+        let (back, rep) = crate::engine::apply(&p_on, &rules_off);
+        assert_eq!(back, p_off);
+        assert_eq!(installed_grok45_via_cua(&back), Some(false));
+        assert_eq!(
+            (rep.hits.inference_stream, rep.migrated.inference_stream),
+            (0, 1)
+        );
+    }
+
+    /// 2026-09-13 下午之前装的「4.5 走 CUA」（有 g45、没有 remap console.info）必须仍能卸 /
+    /// 原地迁。漏掉这一代时，卸载改了 4884.js 其它补丁却剥不掉推理引擎，写后校验
+    /// 「仍有 1 处 Sand 标记（inference stream 1 处）」并回滚。
+    #[test]
+    fn pre_remap_g45_injection_is_a_legacy_variant_and_uninstalls() {
+        let old = direct_stream_injection_g45_plain(
+            true,
+            true,
+            DirectShape::Current,
+            ResolvedLog::AgentHost,
+        );
+        assert!(old.contains(r#"g45=k.includes("grok-4.5")||k.includes("grok-4-5")"#));
+        assert!(old.contains(
+            r#"if(g47||g45){n.modelId="sand-cua";n.maxMode=!1;n.parameters=[];}const d="#
+        ));
+        assert!(!old.contains(r#"console.info("[nexus-sand] remap""#));
+        assert!(
+            direct_stream_variants().iter().any(|v| v == &old),
+            "无 remap 的 4.5→CUA 必须在变体表里，uninstall 才能精确剥"
+        );
+
+        let anchor = format!("{DIRECT_STREAM_ANCHOR}body}}");
+        let installed = format!("{DIRECT_STREAM_ANCHOR}{old}body}}");
+        let rules = catalog(&InstallOptions::default()).unwrap();
+        let (back, removed) = crate::engine::remove(&installed, &rules);
+        assert_eq!(back, anchor);
+        assert_eq!(removed.inference_stream, 1);
+        assert!(!back.contains(SAND_DIRECT_STREAM_MARKER));
+
+        let rules_on = catalog(&InstallOptions {
+            grok45_via_cua: true,
+            ..InstallOptions::default()
+        })
+        .unwrap();
+        let (migrated, rep) = crate::engine::apply(&installed, &rules_on);
+        assert_eq!(rep.migrated.inference_stream, 1);
+        assert!(migrated.contains(r#"console.info("[nexus-sand] remap""#));
+        assert_eq!(installed_grok45_via_cua(&migrated), Some(true));
+    }
+
+    /// 2026-09-13 之前装的 GlmOnly（只钉 GLM，没有 4.7→CUA）必须仍能卸 / 原地迁。
+    /// 漏掉这一代的话，卸载写后校验会剩 1 处 `SAND_DIRECT_INFERENCE_STREAM_V1` 并回滚。
+    #[test]
+    fn pre_g47_glm_only_injection_is_a_legacy_variant_and_uninstalls() {
+        let old = direct_stream_injection_legacy_glm_only(
+            true,
+            true,
+            DirectShape::Current,
+            ResolvedLog::AgentHost,
+        );
+        assert!(old.contains(
+            r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2");if(pin)"#
+        ));
+        assert!(!old.contains("g47="));
+        assert!(!old.contains("sand-cua"));
+        assert!(
+            direct_stream_variants().iter().any(|v| v == &old),
+            "旧 GlmOnly 必须在变体表里，uninstall 才能剥"
+        );
+
+        let anchor = format!("{DIRECT_STREAM_ANCHOR}body}}");
+        let installed = format!("{DIRECT_STREAM_ANCHOR}{old}body}}");
+        let rules = catalog(&InstallOptions::default()).unwrap();
+        let (back, removed) = crate::engine::remove(&installed, &rules);
+        assert_eq!(back, anchor);
+        assert_eq!(removed.inference_stream, 1);
+        let (migrated, rep) = crate::engine::apply(&installed, &rules);
+        assert_eq!(rep.migrated.inference_stream, 1);
+        assert!(migrated.contains("g47="));
+        assert!(!migrated.contains(
+            r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2");if(pin)"#
+        ));
     }
 
     /// 已下线的 Session 引擎（v1.2.7 "session-stream" / v1.2.8 `SAND_STREAM_ENGINE=session`）

@@ -11,6 +11,7 @@ use nexus_sand::{
     supported_cursor_release, CursorDownloadPlatform, CursorRelease, InstallOptions, SandBackup,
     SandOutcome, SandProgress, SandStatus,
 };
+use nexus_store::activity;
 use tauri::{AppHandle, Emitter, State};
 
 /// Sand 明确适配的 Cursor 发行包。只按编译目标选平台，不依赖 WebView 的 UA；
@@ -48,6 +49,15 @@ pub async fn sand_install(
         options.unwrap_or_default(),
         std::env::var("SAND_INFERENCE_ENDPOINT").ok().as_deref(),
     )?;
+    if options.inference_endpoint.is_some() {
+        state.gateway.prepare_sand_passthrough().await?;
+        activity::info(
+            &state.db,
+            "gateway",
+            None,
+            "装「推理经本机网关」：已开网关并打开 Bot 通道",
+        );
+    }
     run_blocking(move || {
         sand.install(options, &|p: SandProgress| {
             let _ = app.emit(events::SAND_PROGRESS, p);

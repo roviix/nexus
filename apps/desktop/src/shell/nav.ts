@@ -8,8 +8,9 @@
  *   本地网关（开关、地址、口令、号的接力）。
  * - **账号**：号池本身（按平台分：Cursor 的号、ChatGPT 的号——两种都是网关背后的号源），
  *   以及把 Cursor 的号写进 IDE 的切号。
- * - **补丁**：Sand 通道。它给 IDE 打补丁走 bot 额度，跟号池、网关都没有关系，
- *   所以自己一组，不再跟切号、网关挤在一个「使用」屋顶下。
+ * - **补丁**：Sand 通道（bot 额度）和 CRSR 通道（原生 Agent 走 crsr_ API Key）。
+ *   两条都给本机 Cursor 打补丁、互斥，跟号池、网关都没有关系，所以自己一组，
+ *   不再跟切号、网关挤在一个「使用」屋顶下。
  *
  * 概览压顶，设置压尾。
  */
@@ -23,6 +24,7 @@ export type Section =
   | "accounts"
   | "switcher"
   | "sand"
+  | "crsr"
   | "settings";
 
 /**
@@ -93,6 +95,7 @@ export const SECTIONS: SectionMeta[] = [
   { id: "accounts", label: "账号", icon: "accounts" },
   { id: "switcher", label: "切号", icon: "switcher" },
   { id: "sand", label: "Sand 通道", icon: "sand" },
+  { id: "crsr", label: "CRSR 通道", icon: "crsr" },
   { id: "settings", label: "设置", icon: "settings" },
 ];
 
@@ -108,7 +111,7 @@ export const NAV_GROUPS: NavGroup[] = [
   { id: "top", label: null, items: ["overview"] },
   { id: "relay", label: "中转 API", items: ["models", "playground", "connect", "gateway"] },
   { id: "accounts", label: "账号", items: ["accounts", "switcher"] },
-  { id: "patch", label: "补丁", items: ["sand"] },
+  { id: "patch", label: "补丁", items: ["sand", "crsr"] },
 ];
 
 export interface PlaygroundViewMeta {

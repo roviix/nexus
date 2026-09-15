@@ -312,192 +312,6 @@ button {
   flex: 1;
 }
 
-/* 侧栏底部的身份区。登录是**应用级**的事，不是商城页里的一张表单。 */
-.identity {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 8px 9px;
-  border: 1px solid var(--color-line);
-  border-radius: 10px;
-  background: var(--color-raised);
-  color: var(--color-ink-2);
-  text-align: left;
-  transition:
-    border-color 0.12s ease,
-    background 0.12s ease;
-}
-
-.identity:hover {
-  border-color: var(--line-strong);
-  background: var(--btn-soft-bg-hover);
-}
-
-.identity-avatar {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 8px;
-  background: var(--accent-grad);
-  color: var(--accent-ink);
-  font-size: 12.5px;
-  font-weight: 700;
-}
-
-.identity-avatar.is-anon {
-  background: var(--chip);
-  color: var(--color-faint);
-}
-
-.identity-name {
-  font-size: 12.5px;
-  font-weight: 500;
-  line-height: 1.25;
-}
-
-.identity-sub {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-faint);
-  line-height: 1.3;
-}
-
-.identity-name,
-.identity-sub {
-  display: block;
-}
-
-.identity-wrap {
-  position: relative;
-}
-
-.identity.is-open {
-  border-color: var(--line-strong);
-  background: var(--btn-soft-bg-hover);
-}
-
-/* 点开的小层：是谁、余额、两个门。往上开，和按钮同宽。 */
-.identity-menu {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  z-index: 11;
-  display: flex;
-  flex-direction: column;
-  padding: 4px;
-  border: 1px solid var(--pop-line);
-  border-radius: 12px;
-  background: var(--color-surface);
-  box-shadow: var(--lift-2);
-  animation: rise 0.13s ease-out;
-}
-
-.identity-menu-head {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 8px 8px 9px;
-}
-
-.identity-menu-who {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.identity-menu-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--color-ink);
-}
-
-.identity-menu-mail {
-  font-size: 11px;
-  color: var(--color-faint);
-}
-
-/* 余额一行：标签 · 数 · 一个安静的「充值」。 */
-.identity-menu-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0 4px;
-  padding: 6px 4px 6px 8px;
-  border: 1px solid var(--color-line);
-  border-radius: 8px;
-  background: var(--color-canvas);
-}
-
-.identity-menu-k {
-  font-size: 11px;
-  color: var(--color-faint);
-}
-
-.identity-menu-v {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-ink);
-}
-
-.identity-menu-act {
-  padding: 1px 7px;
-  font-size: 11.5px;
-}
-
-.identity-menu-sep {
-  height: 1px;
-  margin: 6px 6px;
-  background: var(--color-line);
-}
-
-.identity-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 7px 9px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--color-ink-2);
-  font-size: 12.5px;
-  text-align: left;
-  transition:
-    background 0.1s ease,
-    color 0.1s ease;
-}
-
-.identity-menu-item > svg {
-  color: var(--color-faint);
-  transition: color 0.1s ease;
-}
-
-.identity-menu-item:hover {
-  background: var(--wash-2);
-  color: var(--color-ink);
-}
-
-.identity-menu-item:hover > svg {
-  color: var(--color-ink-2);
-}
-
-/* 服务端主机名 —— 一个地址，等宽是对的。 */
-.identity-menu-foot {
-  padding: 6px 9px 4px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--color-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .version {
   padding: 8px 10px 2px;
@@ -1583,6 +1397,10 @@ h2 {
 
 .facts dd.is-bad {
   color: var(--bad);
+}
+
+.facts dd.is-ok {
+  color: var(--accent);
 }
 
 .facts dd .u {
@@ -2893,6 +2711,207 @@ h2 {
     var(--lift-1);
 }
 
+/**
+ * 订阅实付卡。和用量花费那张英雄卡同形，底色按折扣结论换一抹颜色：
+ * $0 续费用品牌色，打折未免费用暖色，没有折扣就跟下面那张一样淡。
+ */
+.sub-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 15px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 46%),
+    var(--color-raised);
+  box-shadow:
+    inset 0 1px 0 var(--hi),
+    var(--lift-1);
+}
+
+.sub-hero.is-deal {
+  background:
+    linear-gradient(108deg, color-mix(in srgb, var(--warn) 11%, transparent), transparent 52%),
+    var(--color-raised);
+}
+
+.sub-hero.is-free {
+  background:
+    linear-gradient(108deg, color-mix(in srgb, var(--accent) 14%, transparent), transparent 50%),
+    var(--color-raised);
+}
+
+.sub-hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sub-hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.sub-price {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-top: 2px;
+}
+
+.sub-price .bill-big {
+  margin-top: 0;
+}
+
+.sub-price .bill-big.is-deal {
+  color: var(--accent);
+}
+
+.sub-strike {
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--color-faint);
+  text-decoration: line-through;
+}
+
+.sub-arrow {
+  font-size: 14px;
+  color: var(--color-faint);
+}
+
+.coupon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--color-line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--color-raised));
+}
+
+.coupon-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.coupon-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+
+.coupon-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.coupon-how {
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.coupon-off {
+  margin-left: auto;
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.inv-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.inv-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 64px 92px;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.inv-row + .inv-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.inv-when {
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+.inv-what {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+  color: var(--color-ink);
+}
+
+.inv-what small {
+  font-size: 10.5px;
+  color: var(--color-muted);
+}
+
+.inv-st {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-align: right;
+  color: var(--color-faint);
+}
+
+.inv-st.is-paid {
+  color: var(--accent);
+}
+
+.inv-st.is-open,
+.inv-st.is-uncollectible {
+  color: var(--warn);
+}
+
+.inv-st.is-void {
+  color: var(--color-faint);
+}
+
+.inv-pay {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.inv-pay s {
+  font-size: 10.5px;
+  color: var(--color-faint);
+  text-decoration: line-through;
+}
+
+.inv-pay b {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
 .bill-hero-top {
   display: flex;
   align-items: flex-start;
@@ -3248,6 +3267,16 @@ h2 {
   gap: 10px;
 }
 
+.cg-win {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cg-win + .cg-win {
+  padding-top: 6px;
+}
+
 .sect-cap {
   display: flex;
   align-items: baseline;
@@ -3277,6 +3306,28 @@ h2 {
 .sect-none {
   margin: 0;
   font-size: 11.5px;
+  color: var(--color-faint);
+}
+
+.od-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.od-used {
+  font-size: 12.5px;
+  color: var(--color-ink-2);
+}
+
+.od-limit {
+  width: 88px;
+  flex: none;
+}
+
+.od-unit {
+  font-size: 11px;
   color: var(--color-faint);
 }
 

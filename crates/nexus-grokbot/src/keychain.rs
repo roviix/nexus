@@ -5,6 +5,7 @@
 
 use nexus_core::{AppError, ErrorCode, Result};
 
+#[cfg(target_os = "macos")]
 const SAFE_STORAGE_SERVICES: &[&str] = &["Grok Bot Safe Storage", "Grok Bot"];
 const SALT: &[u8] = b"saltysalt";
 const ITERATIONS: u32 = 1003;

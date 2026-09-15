@@ -178,6 +178,27 @@ export function QuotaStrip({ usage }: { usage: AccountUsage }) {
   );
 }
 
+/** 任意平台的「标签 · 条 · 数值」行。ChatGPT 两个窗口走这里，不借用 Cursor 的桶 key。 */
+export function QuotaRows({
+  rows,
+}: {
+  rows: Array<{
+    key: string;
+    label: string;
+    hint: string;
+    percent: number | null;
+    note?: string;
+  }>;
+}) {
+  return (
+    <div className="qs">
+      {rows.map((b) => (
+        <QuotaCell key={b.key} bucket={b} />
+      ))}
+    </div>
+  );
+}
+
 /** 只有一个总百分比时的降级形态；不能伪造 Cursor 的分桶数据。 */
 export function QuotaSummary({
   label,
@@ -190,7 +211,6 @@ export function QuotaSummary({
     <div className="qs">
       <QuotaCell
         bucket={{
-          key: "total",
           label,
           percent: percentUsed,
           hint: `${label}已用 ${pctText(percentUsed)}`,
@@ -200,7 +220,11 @@ export function QuotaSummary({
   );
 }
 
-function QuotaCell({ bucket }: { bucket: BucketView }) {
+function QuotaCell({
+  bucket,
+}: {
+  bucket: Pick<BucketView, "label" | "hint" | "percent" | "note">;
+}) {
   const p = bucket.percent;
   const known = p != null && Number.isFinite(p);
   const tone = !known ? " is-idle" : p! > 90 ? " is-bad" : p! >= 70 ? " is-warn" : p! <= 0 ? " is-idle" : "";
@@ -239,14 +263,32 @@ export function AccountResets({
   /** 前面那句状态已经点过 Bot 的名了（「Bot 已耗尽」），这里就别再写一遍。 */
   weeklyLabel?: string | null;
 }) {
-  const weekly = usage.bot?.resetAt;
-  const monthly = usage.cycleEnd;
-  if (!weekly && !monthly) return null;
+  return (
+    <FootResets
+      items={[
+        { label: weeklyLabel, at: usage.bot?.resetAt },
+        { label: "月账期", at: usage.cycleEnd },
+      ]}
+    />
+  );
+}
+
+/** 末行倒计时。各平台自己点名窗口，这里只负责「标签 + 多久后重置」和中间的点。 */
+export function FootResets({
+  items,
+}: {
+  items: Array<{ label?: string | null; at?: number | null }>;
+}) {
+  const shown = items.filter((i): i is { label?: string | null; at: number } => i.at != null && Number.isFinite(i.at));
+  if (shown.length === 0) return null;
   return (
     <>
-      {weekly ? <ResetItem k={weeklyLabel} at={weekly} /> : null}
-      {weekly && monthly ? <i className="qf-sep">·</i> : null}
-      {monthly ? <ResetItem k="月账期" at={monthly} /> : null}
+      {shown.map((i, idx) => (
+        <span key={`${i.label ?? ""}-${i.at}`}>
+          {idx > 0 ? <i className="qf-sep">·</i> : null}
+          <ResetItem k={i.label} at={i.at} />
+        </span>
+      ))}
     </>
   );
 }

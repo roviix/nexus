@@ -577,6 +577,14 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M4 17h9a3 3 0 0 0 3-3v0a3 3 0 0 1 3-3h1" />
     </>
   ),
+  // 一把钥匙插进原生 Agent：只换 Bearer，不改通道。
+  crsr: (
+    <>
+      <circle cx="8.2" cy="12" r="3.2" />
+      <path d="M11.4 12h9.1" />
+      <path d="M17.4 12v3.2M20.5 12v2.2" />
+    </>
+  ),
   // 一个回环里的节点 + 两条向外的连线：本机的一个口，别的东西都从它出。
   gateway: (
     <>

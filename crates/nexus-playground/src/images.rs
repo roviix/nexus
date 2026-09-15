@@ -30,9 +30,17 @@ pub async fn generate(
     model: &str,
     req: &ImageRequest,
 ) -> Result<Vec<Fetched>, AppError> {
-    let client = reqwest::Client::builder()
+    let mut client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
-        .timeout(TOTAL_TIMEOUT)
+        .timeout(TOTAL_TIMEOUT);
+    let loopback = {
+        let u = base_url.to_ascii_lowercase();
+        u.contains("127.0.0.1") || u.contains("localhost") || u.contains("[::1]")
+    };
+    if loopback {
+        client = client.http1_only().no_proxy();
+    }
+    let client = client
         .build()
         .map_err(|e| AppError::internal(format!("http 客户端初始化失败：{e}")))?;
 

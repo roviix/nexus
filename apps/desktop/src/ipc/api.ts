@@ -9,6 +9,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { startOfLocalDay } from "../ui/usage";
 import type {
   Account,
+  AccountBilling,
   AccountUsage,
   ActiveSession,
   ActivityEntry,
@@ -16,6 +17,8 @@ import type {
   AppStatus,
   AuthBackup,
   ChatGptAccount,
+  ChatGptBilling,
+  ChatGptImportOutcome,
   ChatGptLoginHandle,
   ChatGptLoginState,
   ChatGptManifestModel,
@@ -50,6 +53,7 @@ import type {
   RewriteRule,
   SandBackup,
   SandInstallOptions,
+  GrokBotCuaProbe,
   GrokBotDirectMinted,
   GrokBotIdentity,
   GrokBotRelayInfo,
@@ -57,6 +61,11 @@ import type {
   SandOutcome,
   SandProgress,
   CursorRelease,
+  CrsrBackup,
+  CrsrCredentialInfo,
+  CrsrOutcome,
+  CrsrProgress,
+  CrsrStatus,
   SandStatus,
   SecretKind,
   SwitchOutcome,
@@ -127,6 +136,8 @@ export const accounts = {
     refreshToken?: string;
     /** session / access token：`user_xxx::<jwt>` 或裸 JWT。没 refresh 时靠它撑到过期。 */
     accessToken?: string;
+    /** 长期 `crsr_…` User API Key。 */
+    apiKey?: string;
     cursorPassword?: string;
     emailPassword?: string;
     recoveryEmail?: string;
@@ -149,6 +160,16 @@ export const accounts = {
   // 拿不到本地时区。Rust 拿它多问两次（今天 / 近 7 天）。
   refreshUsage: (id: string) =>
     call<AccountUsage>("accounts_refresh_usage", { id, dayStartMs: startOfLocalDay() }),
+  /** 读这个号的 Stripe 订阅账单（标价 / 折扣 / 发票）。门户密钥不回给前端。 */
+  refreshBilling: (id: string) => call<AccountBilling>("accounts_refresh_billing", { id }),
+  /** 改按需计费。`limitCents` 不传且开启 = 不封顶。成功后返回刚刷过的用量。 */
+  setOnDemand: (id: string, enabled: boolean, limitCents?: number | null) =>
+    call<AccountUsage>("accounts_set_on_demand", {
+      id,
+      enabled,
+      limitCents: limitCents ?? null,
+      dayStartMs: startOfLocalDay(),
+    }),
   refreshAll: (ids?: string[]) =>
     call<number>("accounts_refresh_all", { ids, dayStartMs: startOfLocalDay() }),
   startOauth: (email: string) => call<OauthStarted>("accounts_start_oauth", { email }),
@@ -200,6 +221,21 @@ export const sand = {
     call<SandOutcome>("sand_restore_backup", { id, relaunch }),
 };
 
+// ── CRSR 补丁（原生 Agent 面板走 crsr_；和 Sand 互斥）────────────────────────
+
+export const crsr = {
+  status: () => call<CrsrStatus>("crsr_status"),
+  install: (relaunch = true) => call<CrsrOutcome>("crsr_install", { relaunch }),
+  uninstall: (relaunch = true) => call<CrsrOutcome>("crsr_uninstall", { relaunch }),
+  backups: () => call<CrsrBackup[]>("crsr_backups"),
+  removeBackup: (id: string) => call<void>("crsr_remove_backup", { id }),
+  restoreBackup: (id: string, relaunch = true) =>
+    call<CrsrOutcome>("crsr_restore_backup", { id, relaunch }),
+  /** 用这个号的 crsr_ 兑票写成凭证。不必重装补丁。 */
+  mintForAccount: (id: string) => call<CrsrCredentialInfo>("crsr_mint_for_account", { id }),
+  clearCredential: () => call<void>("crsr_clear_credential"),
+};
+
 // ── Grok Bot 桥（不是账号系统；Sand / 网关按需借额度）──────────────────────────
 
 export const grokbot = {
@@ -225,6 +261,10 @@ export const grokbot = {
   clearDirect: () => call<void>("grokbot_clear_direct"),
   /** Grok Bot 换了账号 / 重装后：忘掉缓存的口令与秘密。 */
   forget: () => call<void>("grokbot_forget"),
+  /** 上次探过这个号的 sand-cua 落点（磁盘缓存）。 */
+  cuaProbeGet: (id: string) => call<GrokBotCuaProbe | null>("grokbot_cua_probe_get", { id }),
+  /** 打一发极短 sand-cua，看这个号有没有 grok 4.7 灰度。不覆盖本机正在用的凭证。 */
+  cuaProbe: (id: string) => call<GrokBotCuaProbe>("grokbot_cua_probe", { id }),
 };
 
 // ── 远程 Sand（remote SSH）─────────────────────────────────────────────────────
@@ -276,6 +316,7 @@ export const gateway = {
     clientType?: string;
     autostart?: boolean;
     forceModel?: string | null;
+    defaultChannel?: string;
   }) => call<GatewaySettings>("gateway_update_settings", { patch }),
   /** 把号放进网关的接力队。名单外的号网关一概不碰，所以只有用户点了才进来。 */
   enroll: (labels: string[]) => call<GatewayStatus>("gateway_enroll", { labels }),
@@ -312,15 +353,16 @@ export const chatgpt = {
   loginCancel: (sessionId: string) => call<void>("chatgpt_login_cancel", { sessionId }),
   /** 读本机 `~/.codex/auth.json`（`codex login` 留下的）。 */
   importCodexCli: () => call<ChatGptAccount>("chatgpt_import_codex_cli"),
-  /** `auth.json` 原文 / `access----refresh` / 单个 refresh token。明文只进 Rust。 */
+  /** `auth.json` / sub2api Codex session JSON / `access----refresh` / 单个 refresh。可一次多个。明文只进 Rust。 */
   importText: (text: string, note?: string) =>
-    call<ChatGptAccount>("chatgpt_import_text", { text, note }),
+    call<ChatGptImportOutcome>("chatgpt_import_text", { text, note }),
   remove: (id: string) => call<void>("chatgpt_remove", { id }),
   setEnabled: (id: string, enabled: boolean) =>
     call<ChatGptAccount>("chatgpt_set_enabled", { id, enabled }),
   setNote: (id: string, note: string | null) =>
     call<ChatGptAccount>("chatgpt_set_note", { id, note }),
   refreshUsage: (id: string) => call<ChatGptUsage>("chatgpt_refresh_usage", { id }),
+  refreshBilling: (id: string) => call<ChatGptBilling>("chatgpt_refresh_billing", { id }),
   /** ChatGPT 通道的接力队操作走网关的通道命令。 */
   setCurrent: (label: string) => gateway.channelSetCurrent("chatgpt", label),
   resetLane: () => gateway.channelResetLane("chatgpt"),
@@ -403,11 +445,16 @@ export const EVENTS = {
   kiroLogin: "kiro://login",
   accountRefreshed: "accounts://refreshed",
   sandProgress: "sand://progress",
+  crsrProgress: "crsr://progress",
   sandRemoteProgress: "sand://remote-progress",
 } as const;
 
 export function onSandProgress(cb: (p: SandProgress) => void): Promise<UnlistenFn> {
   return listen<SandProgress>(EVENTS.sandProgress, (e) => cb(e.payload));
+}
+
+export function onCrsrProgress(cb: (p: CrsrProgress) => void): Promise<UnlistenFn> {
+  return listen<CrsrProgress>(EVENTS.crsrProgress, (e) => cb(e.payload));
 }
 
 export function onSandRemoteProgress(cb: (p: SandProgress) => void): Promise<UnlistenFn> {

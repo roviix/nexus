@@ -6,6 +6,7 @@
 //!
 //! 结构体里**没有秘密**，只有 `has_refresh` 这类投影；凭证在 `SecretStore`。
 
+use crate::billing::ChatGptBilling;
 use crate::protocol::CodexUsage;
 use nexus_core::ChatGptAccountId;
 use serde::{Deserialize, Serialize};
@@ -48,12 +49,19 @@ pub struct ChatGptAccount {
     pub email: Option<String>,
     /// plus / pro / team / free …
     pub plan_type: Option<String>,
+    /// JWT / 额度接口里的 `chatgpt_user_id`。
+    pub user_id: Option<String>,
+    pub organization_id: Option<String>,
+    /// 工作区名。个人号常常是 `Personal`，界面收成「个人账户」。
+    pub organization_title: Option<String>,
     pub status: ChatGptStatus,
     /// 进不进网关接力队。ChatGPT 账号在这个应用里只有一个用途——给本地网关出流量——
     /// 所以加进来默认就开着；用户想临时摘掉某个号时关它，比删了重授权轻得多。
     pub enabled: bool,
     pub note: Option<String>,
     pub usage: Option<CodexUsage>,
+    /// 订阅到期 / 会不会续。没有标价和发票——Codex OAuth 打不开 ChatGPT 的 Stripe 门户。
+    pub billing: Option<ChatGptBilling>,
     pub last_checked_at: Option<String>,
     pub last_error: Option<String>,
     pub has_refresh: bool,
@@ -61,6 +69,19 @@ pub struct ChatGptAccount {
     pub access_expires_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// 本地网关账本里这个号最近一段时间的请求 / token。仓库不填，列表命令现算。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<LocalTraffic>,
+}
+
+/// 本地网关走这个号的合计。不是 ChatGPT 网页上的终身用量。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTraffic {
+    pub requests: i64,
+    pub tokens: i64,
+    pub errors: i64,
+    pub days: u32,
 }
 
 impl ChatGptAccount {
@@ -104,16 +125,21 @@ mod tests {
             account_ref: "acct_0123456789abcdef".into(),
             email: Some("alice@example.com".into()),
             plan_type: None,
+            user_id: None,
+            organization_id: None,
+            organization_title: None,
             status: ChatGptStatus::Active,
             enabled: true,
             note: None,
             usage: None,
+            billing: None,
             last_checked_at: None,
             last_error: None,
             has_refresh: true,
             access_expires_at: None,
             created_at: "t".into(),
             updated_at: "t".into(),
+            traffic: None,
         };
         assert_eq!(a.label(), "alice@example.com");
         a.email = Some("  ".into());

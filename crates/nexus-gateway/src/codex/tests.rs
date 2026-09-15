@@ -293,25 +293,31 @@ async fn spawn_with_models(ready: bool, extra_models: Vec<String>) -> Harness {
         access_token: "tok".into(),
         identity: DeviceIdentity::derived("tok"),
     }));
+    let channels =
+        ChannelRegistry::new(channel::cursor_channel(cursor_lane, cursor.clone())).with(Channel {
+            id: channel::CHATGPT,
+            label: "ChatGPT",
+            vendor: "openai",
+            prefixes: super::protocol::ROUTE_PREFIXES,
+            lane: lane.clone(),
+            upstream: Arc::new(CodexUpstream::new(cfg, None)),
+            gate: Arc::new(StaticGate {
+                ready,
+                extra_models,
+            }),
+            passthrough: true,
+        });
+    // 这些用例测的是 ChatGPT 通道本身：有号时把它设成默认，裸名继续打进来。
+    if ready {
+        channels.set_default(channel::CHATGPT).unwrap();
+    }
     let gw = Arc::new(Gateway {
-        channels: ChannelRegistry::new(channel::cursor_channel(cursor_lane, cursor.clone())).with(
-            Channel {
-                id: channel::CHATGPT,
-                label: "ChatGPT",
-                vendor: "openai",
-                prefixes: super::protocol::ROUTE_PREFIXES,
-                lane: lane.clone(),
-                upstream: Arc::new(CodexUpstream::new(cfg, None)),
-                gate: Arc::new(StaticGate {
-                    ready,
-                    extra_models,
-                }),
-                passthrough: true,
-            },
-        ),
+        channels,
         api_key: None,
         ledger: None,
         media_jobs: None,
+        grokbot: None,
+        sand_identity: false,
     });
     let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -543,11 +549,12 @@ async fn chat_and_anthropic_clients_are_bridged_onto_the_responses_shape() {
 
 #[tokio::test]
 async fn codex_models_route_to_chatgpt_only_when_the_channel_is_ready() {
-    // 有号：Codex 模型走 ChatGPT，Claude 模型走 Cursor，cursor/ 前缀强制 Cursor。
+    // 有号：默认通道是 ChatGPT，裸名走它；要 Cursor 得写 cursor/。
     let h = spawn(true).await;
     for (model, expect_cursor) in [
         ("gpt-5.4", false),
-        ("claude-sonnet-5", true),
+        ("chatgpt/gpt-5.4", false),
+        ("cursor/claude-sonnet-5", true),
         ("cursor/gpt-5.6-sol", true),
         ("gpt-5.6-sol", false),
     ] {
@@ -580,13 +587,10 @@ async fn codex_models_route_to_chatgpt_only_when_the_channel_is_ready() {
         .iter()
         .map(|m| m["id"].as_str().unwrap())
         .collect();
-    assert!(ids.contains(&"gpt-5.4"), "Codex 模型进目录");
-    assert!(ids.contains(&"claude-sonnet-5"));
-    assert_eq!(
-        ids.iter().filter(|i| **i == "gpt-5.6-sol").count(),
-        1,
-        "两边都有的只留一条"
-    );
+    assert!(ids.contains(&"chatgpt/gpt-5.4"), "Codex 模型进目录");
+    assert!(ids.contains(&"cursor/claude-sonnet-5"));
+    assert!(ids.contains(&"cursor/gpt-5.6-sol"));
+    assert!(ids.contains(&"chatgpt/gpt-5.6-sol"));
 
     // 上游目录里拉到的新模型（静态表里没有）也归 ChatGPT，且出现在 /v1/models 里。
     let h3 = spawn_with_models(true, vec!["gpt-7-new".to_string()]).await;
@@ -594,7 +598,7 @@ async fn codex_models_route_to_chatgpt_only_when_the_channel_is_ready() {
     let res = http()
         .post(format!("{}/v1/chat/completions", h3.base))
         .json(
-            &json!({ "model": "gpt-7-new-high", "messages": [{ "role": "user", "content": "x" }] }),
+            &json!({ "model": "chatgpt/gpt-7-new-high", "messages": [{ "role": "user", "content": "x" }] }),
         )
         .send()
         .await
@@ -617,7 +621,7 @@ async fn codex_models_route_to_chatgpt_only_when_the_channel_is_ready() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|m| m["id"] == "gpt-7-new"));
+        .any(|m| m["id"] == "chatgpt/gpt-7-new"));
 
     // 没号：同名 GPT 模型照旧走 Cursor；显式前缀才撞 ChatGPT 通道。
     let h2 = spawn(false).await;
@@ -642,7 +646,7 @@ async fn codex_models_route_to_chatgpt_only_when_the_channel_is_ready() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|m| m["id"] == "gpt-5.4"));
+        .any(|m| m["id"] == "chatgpt/gpt-5.4"));
 }
 
 #[tokio::test]
@@ -781,7 +785,7 @@ async fn gpt_image_requests_run_the_image_generation_tool_and_honour_the_size() 
     // Cursor 的出图模型不受影响，照旧走 Cursor 并报「size 已忽略」。
     let res = http()
         .post(format!("{}/v1/images/generations", h.base))
-        .json(&json!({ "model": "nano-banana-2", "prompt": "x", "size": "1024x1024" }))
+        .json(&json!({ "model": "cursor/nano-banana-2", "prompt": "x", "size": "1024x1024" }))
         .send()
         .await
         .unwrap();

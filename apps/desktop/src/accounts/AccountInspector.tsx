@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { accounts } from "../ipc/api";
+import { accounts, chatgpt } from "../ipc/api";
 import {
   Banner,
   CopyButton,
@@ -10,8 +10,10 @@ import {
 import { QuotaBlank, QuotaSummary } from "../ui/AccountLine";
 import { AccountDrawer } from "../pages/accounts/AccountDrawer";
 import { AuthorizeModal } from "../pages/accounts/AuthorizeModal";
+import { ChatGptDrawer } from "../pages/accounts/ChatGptDrawer";
 import type { AccountView } from "./model";
 import { ACCOUNT_PLATFORM_LABEL } from "./model";
+import { switchAccountIntoCursor } from "./switchInto";
 
 /**
  * 任意页面打开账号详情的统一控制器。
@@ -25,15 +27,19 @@ export function AccountInspector({
   onClose,
   onChanged,
   onSwitch,
+  onReauth,
   placementActions,
   onOpenLibrary,
 }: {
   view: AccountView | null;
-  inCursor: boolean;
+  /** Cursor 正在登着这个号。ChatGPT 页不传。 */
+  inCursor?: boolean;
   onClose: () => void;
   onChanged: () => void | Promise<void>;
-  /** 把这个平台账号切入 Cursor；由页面决定是直接确认还是跳转。 */
-  onSwitch: () => void;
+  /** 把这个未托管账号切入 Cursor；由页面决定是直接切还是先确认。托管账号抽屉自己热切。 */
+  onSwitch?: () => void;
+  /** ChatGPT 重新授权：页面打开自己的添加弹窗（oauth 会按 account_ref 覆盖）。 */
+  onReauth?: () => void;
   placementActions?: ReactNode;
   /** 未托管账号没有凭证可管，给它一扇去总账号库的门。 */
   onOpenLibrary?: () => void;
@@ -51,8 +57,8 @@ export function AccountInspector({
           <UnmanagedAccountDrawer
             view={view}
             error={error}
-            inCursor={inCursor}
-            onSwitch={onSwitch}
+            inCursor={inCursor ?? false}
+            onSwitch={onSwitch ?? (() => undefined)}
             placementActions={placementActions}
             onClose={onClose}
             onOpenLibrary={onOpenLibrary}
@@ -79,8 +85,8 @@ export function AccountInspector({
               });
             }}
             onAuthorize={() => setAuthorizing(true)}
-            inCursor={inCursor}
-            onSwitch={onSwitch}
+            inCursor={inCursor ?? false}
+            onSwitch={() => run(() => switchAccountIntoCursor(managed))}
             placement={view.placement}
             placementActions={placementActions}
             actionError={error}
@@ -106,6 +112,38 @@ export function AccountInspector({
           ) : null}
         </>
       );
+    case "chatgpt": {
+      const managed = view.managed;
+      return (
+        <ChatGptDrawer
+          view={view}
+          refreshing={refreshing}
+          actionError={error}
+          onClose={onClose}
+          onRefresh={() => {
+            void run(async () => {
+              setRefreshing(true);
+              try {
+                await chatgpt.refreshUsage(managed.id);
+              } finally {
+                setRefreshing(false);
+              }
+            });
+          }}
+          onAuthorize={() => onReauth?.()}
+          onSaveNote={(note) => run(() => chatgpt.setNote(managed.id, note || null))}
+          onEnable={(on) => run(() => chatgpt.setEnabled(managed.id, on))}
+          onUse={() => run(() => chatgpt.setCurrent(view.label))}
+          onReload={() => run(async () => undefined)}
+          onRemove={() =>
+            run(async () => {
+              await chatgpt.remove(managed.id);
+              onClose();
+            })
+          }
+        />
+      );
+    }
   }
 
   async function run(action: () => Promise<unknown>): Promise<void> {
@@ -128,7 +166,7 @@ function UnmanagedAccountDrawer({
   onClose,
   onOpenLibrary,
 }: {
-  view: AccountView;
+  view: Extract<AccountView, { platform: "cursor" }>;
   error: unknown;
   inCursor: boolean;
   onSwitch: () => void;

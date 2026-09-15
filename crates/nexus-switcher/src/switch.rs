@@ -1392,7 +1392,7 @@ mod tests {
         let h = Harness::new();
         let p = h
             .switcher
-            .adopt(&auth("bought@example.com"), Some("商城购买"))
+            .adopt(&auth("bought@example.com"), Some("外面买来的号"))
             .unwrap();
         assert_eq!(p.email, "bought@example.com");
         assert!(p.has_auth);

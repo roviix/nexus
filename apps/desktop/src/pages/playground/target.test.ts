@@ -45,6 +45,17 @@ describe("defaultTarget", () => {
     expect(defaultTarget("video", [], cat)).toEqual({ model: "" });
   });
 
+  it("picks cursor/auto from a qualified local catalog", () => {
+    const qualified = {
+      local: [
+        { id: "cursor/claude-sonnet-5", vendor: "anthropic", vendorLabel: "Anthropic", modality: "chat" as const, series: "cursor/claude-sonnet-5", variant: "standard", aliases: [], note: null },
+        { id: "cursor/auto", vendor: "cursor", vendorLabel: "Cursor", series: "cursor/auto", variant: "standard", aliases: [], note: null },
+      ],
+    };
+    expect(defaultTarget("chat", [], qualified)).toEqual({ model: "cursor/auto" });
+    expect(retarget({ model: "gone" }, "chat", qualified)).toEqual({ model: "cursor/auto" });
+  });
+
   it("honours a model handed over from the model plaza", () => {
     expect(defaultTarget("chat", [], cat, { model: "claude-sonnet-5" })).toEqual({ model: "claude-sonnet-5" });
   });

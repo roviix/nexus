@@ -81,6 +81,30 @@ impl Ledger {
         Self { db }
     }
 
+    /// 某条通道按账号合计，不截断。账号卡要每个号自己的数字，概览那份 `by_account` 只留前 8。
+    pub fn channel_account_totals(&self, channel: &str, days: u32) -> Result<Vec<NamedUsage>> {
+        let days = days.clamp(1, KEEP_DAYS as u32) as i64;
+        let since_ms = now_ms() - days * DAY_MS;
+        let channel = channel.trim();
+        self.db.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT account, COUNT(*), SUM(ok = 0), SUM(input_tokens + output_tokens)
+                 FROM gateway_requests
+                 WHERE at_ms >= ?1 AND channel = ?2 AND dialect != ?3
+                 GROUP BY account ORDER BY COUNT(*) DESC",
+            )?;
+            let rows = stmt.query_map(params![since_ms, channel, SOURCE_IDE_AGENT], |r| {
+                Ok(NamedUsage {
+                    name: r.get(0)?,
+                    calls: r.get(1)?,
+                    errors: r.get(2)?,
+                    tokens: r.get(3)?,
+                })
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+    }
+
     /// 记一行。失败只 warn：账本是给人看的，不该反过来影响请求。
     pub fn record(&self, r: RequestRecord<'_>) {
         self.record_at(now_ms(), r);
@@ -727,5 +751,27 @@ mod tests {
         assert_eq!(day_label(idx), "2026-09-03");
         assert_eq!(day_label(idx - 3), "2026-08-31");
         assert_eq!(day_label(0), "1970-01-01");
+    }
+
+    #[test]
+    fn channel_totals_keep_every_account_and_ignore_other_channels() {
+        let l = ledger();
+        let now = now_ms();
+        l.record_at(
+            now - 1000,
+            RequestRecord {
+                channel: "chatgpt",
+                ..ok_record("plus@example.com", "gpt-5.4", 100, 20)
+            },
+        );
+        l.record_at(
+            now - 1000,
+            ok_record("cursor@example.com", "gpt-5.6-sol", 9, 1),
+        );
+        let totals = l.channel_account_totals("chatgpt", 90).unwrap();
+        assert_eq!(totals.len(), 1);
+        assert_eq!(totals[0].name, "plus@example.com");
+        assert_eq!(totals[0].tokens, 120);
+        assert!(l.channel_account_totals("grok", 90).unwrap().is_empty());
     }
 }

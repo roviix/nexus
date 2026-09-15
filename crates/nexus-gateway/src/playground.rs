@@ -129,10 +129,7 @@ pub async fn run_messages(
     messages: &[ChatMessage],
     mut on_event: impl FnMut(TryEvent),
 ) -> Result<(), AppError> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| AppError::internal(format!("http 客户端初始化失败：{e}")))?;
+    let client = http_client(base_url)?;
     let body = serde_json::json!({
         "model": model,
         "stream": true,
@@ -208,17 +205,54 @@ fn find_frame_end(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|w| w == b"\n\n")
 }
 
+fn is_loopback(base_url: &str) -> bool {
+    let u = base_url.to_ascii_lowercase();
+    u.contains("127.0.0.1") || u.contains("localhost") || u.contains("[::1]")
+}
+
+/// 游乐场打的是本机网关时，必须绕过系统代理、且只用 HTTP/1.1。
+/// 这跟上游 api2 走 HTTP/2 无关：`127.0.0.1:8687` 是本机 axum，再被 Clash
+/// HTTP 代理拐走会回一页空/HTML 502，账本里一行都没有。
+fn http_client(base_url: &str) -> Result<reqwest::Client, AppError> {
+    let mut b = reqwest::Client::builder().connect_timeout(Duration::from_secs(5));
+    if is_loopback(base_url) {
+        b = b.http1_only().no_proxy();
+    }
+    b.build()
+        .map_err(|e| AppError::internal(format!("http 客户端初始化失败：{e}")))
+}
+
 /// 网关拒绝时的正文是 `{"error":{"message":…}}`；能解就用它的话，不能就报状态码。
 fn http_error_message(status: u16, body: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-        .map(|m| format!("网关拒绝了请求（{status}）：{m}"))
-        .unwrap_or_else(|| match status {
-            401 => "网关拒绝了口令（401）。换过口令的话，重开这一页再试。".into(),
-            404 => "网关上没有 /v1/chat/completions（404）——端口指错了？".into(),
-            _ => format!("网关返回 {status}。"),
-        })
+    let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+    let detail = parsed.as_ref().and_then(|v| {
+        v["error"]["message"]
+            .as_str()
+            .or_else(|| v["message"].as_str())
+            .or_else(|| v["error"].as_str())
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+    });
+    if let Some(m) = detail {
+        return format!("网关拒绝了请求（{status}）：{m}");
+    }
+    match status {
+        401 => "网关拒绝了口令（401）。换过口令的话，重开这一页再试。".into(),
+        404 => "网关上没有 /v1/chat/completions（404）——端口指错了？".into(),
+        _ => {
+            let snippet = body.trim();
+            if !snippet.is_empty() && snippet.len() < 240 && !snippet.starts_with('<') {
+                format!("网关返回 {status}：{snippet}")
+            } else if snippet.is_empty() {
+                format!(
+                    "网关返回 {status}，且没有正文。请求若没进账本，多半还没打到方言口（本机代理拦了 127.0.0.1，或进程内 HTTP 异常）。"
+                )
+            } else {
+                format!("网关返回 {status}。")
+            }
+        }
+    }
 }
 
 /// 一帧 OpenAI Chat 流式 JSON → 零到多个事件。纯函数，方便对着固定帧做测试。
@@ -410,6 +444,14 @@ mod tests {
         );
         assert!(http_error_message(401, "not json").contains("口令"));
         assert!(http_error_message(503, "").contains("503"));
+        assert!(http_error_message(502, "").contains("没有正文"));
+    }
+
+    #[test]
+    fn loopback_urls_are_the_ones_that_must_bypass_the_proxy() {
+        assert!(is_loopback("http://127.0.0.1:8687"));
+        assert!(is_loopback("http://localhost:8687"));
+        assert!(!is_loopback("https://api.roviix.com"));
     }
 
     #[test]

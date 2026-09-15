@@ -90,7 +90,7 @@ pub use grokbot::{GrokBotStreamAuth, GrokBotStreamSnapshot};
 pub use headers::{ai_headers, HeaderList, RequestNonce};
 pub use identity::DeviceIdentity;
 pub use images::{GeneratedImage, ImageRequest};
-pub use inference::{stream, StreamConfig};
+pub use inference::{http_client, probe_routed_model, stream, RoutedModelProbe, StreamConfig};
 pub use intercept::{
     InterceptHub, InterceptRecord, InterceptSnapshot, MarkerPosition, RewriteRule,
 };
@@ -99,7 +99,7 @@ pub use lane::{
     Credential, CursorLoginSource, Lane, LaneSnapshot, Outcome, RelayLane, Roster, StaticLane,
     StoredAccountsSource, SubscriptionAccounts, SubscriptionSource,
 };
-pub use ledger::{Ledger, RequestRecord, UsageSummary};
+pub use ledger::{Ledger, NamedUsage, RequestRecord, UsageSummary};
 pub use media::{MediaJob, MediaJobs, VideoJob, VideoRequest, VideoStatus};
 pub use normalized::{
     ChatRequest, Completion, Delta, FinishReason, ImageInput, Message, Role, Sampling, ToolCall,

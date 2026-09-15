@@ -29,6 +29,7 @@ function acct(over: Partial<Account> = {}): Account {
     hasPassword: false,
     hasEmailPassword: false,
     hasRecoveryEmail: false,
+    hasApiKey: false,
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
     ...over,

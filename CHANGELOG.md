@@ -10,10 +10,58 @@
 
 （下一版的条目写在这里。）
 
-## [0.4.0] — 2026-09-11
+## [0.5.0] — 2026-09-15
 
-**首个公开版本。** 此前的 0.1.0–0.3.0 是开源之前的内部版本，摘要列在下面，没有对应的
-公开 Release。
+**首个公开发布版本。** 0.1.0–0.4.0 都是开源之前的内部版本，摘要保留在下面，但**没有任何一个
+有对应的公开 Release**——仓库此前只推过代码骨架。本版的功能基线见 0.4.0 那一节，这里只列它之后
+的变化。
+
+### 新增
+
+- **CRSR 通道**（可选，进阶）。第二条 Cursor 补丁通道，和 Sand 并列：只把 Agent 面板请求的
+  `Authorization` 换成账号 `crsr_` User API Key 兑出来的短期票据，**不改 client-type、不改 URL、
+  不改路由**，面板走的还是原生 `agent.v1.AgentService/Run`。票据续期由注入块自己完成，关掉
+  Nexus 也不会在写代码写到一半时 401。和 Sand 占同一挂点、互相拒绝同时安装，备份目录分开。
+  决策记录见 [`docs/CRSR.md`](./docs/CRSR.md)。
+- **账号的订阅账单。** 抽屉里新增账单页：标价、券与持续方式、下次应付、历史发票。
+  它和用量是两本账、两张卡，不叠成一个数。ChatGPT 账号同样能看到订阅档位与到期日。
+- **ChatGPT 账号页对齐 Cursor**：同一副卡片扫 + 右侧抽屉看；卡上不再放开关和删除。
+- **粘贴导入认更多格式**：`crsr_` API Key、`auth.json`、Codex session JSON（数组 / 多行 /
+  `credentials` 包一层）、`access----refresh`、单个 refresh token，可以一次贴多个。
+- Grok Bot 通道在经网关安装时自动开启，并补上 Grok Bot 的 sand Stream 规则。
+
+### 变更
+
+- **模型目录的主键改成 `{通道}/{模型}`**（`cursor/claude-opus-5`），**默认通道由用户指定**，
+  不再写死 Cursor。带前缀强制走那条通道；裸名走默认通道。
+  早先「无前缀时按『声明拥有该模型且此刻有号』反推归属」那条规则去掉了——它猜错的时候没法
+  解释：同一个模型名在两条通道上都有时，请求落到哪条取决于哪条恰好还有号。
+  写进客户端配置文件的仍然是短名（Codex 等客户端会按白名单校验，带前缀直接 400）。
+- Sand 规则表跟进 Cursor 版本；ChatGPT 用量多读 `/wham/usage` 的附加桶与点数。
+
+### 修复
+
+- 非 macOS 平台上 `nexus-grokbot` 的未使用导入与常量过不了 `clippy -D warnings`。
+- 视频测试里的锁作用域过宽。
+- Sand 的 Grok 认证 marker 与 Python 参考实现对齐；中继端到端测试只在 Unix 上跑。
+
+### 迁移
+
+- v11 `accounts.billing_json`（Cursor 个人订阅的 Stripe 账单快照）
+- v12 `chatgpt_accounts.user_id` / `organization_id` / `organization_title`
+- v13 `chatgpt_accounts.billing_json`
+- v14 `accounts.has_api_key`
+
+### 安全
+
+- 补 `.gitleaks.toml`：默认规则抓不到 `crsr_` User API Key（本项目自己处理的那种凭证），
+  现在有一条专门的规则；同时逐条放行已知的合成测试夹具，让「扫描红了」重新成为一件值得看的事。
+
+---
+
+## [0.4.0] — 2026-09-11（内部）
+
+功能基线在这一版成型。它**没有公开 Release**——见 0.5.0。
 
 ### 新增
 
@@ -78,5 +126,5 @@
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/roviix/nexus/releases/tag/v0.4.0
+[未发布]: https://github.com/roviix/nexus/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/roviix/nexus/releases/tag/v0.5.0

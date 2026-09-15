@@ -9,10 +9,14 @@ import { emitMock } from "./mock-event";
 import { fakeImageSrc, handlePlayground } from "./mock-playground";
 import type {
   Account,
+  AccountBilling,
   AccountUsage,
   ActivityEntry,
   AppStatus,
   AuthBackup,
+  ChatGptAccount,
+  ChatGptBilling,
+  ChatGptUsage,
   CursorRelease,
   GatewayCandidate,
   GatewayLane,
@@ -21,6 +25,7 @@ import type {
   Overview,
   RemoteOverview,
   SandStatus,
+  CrsrStatus,
   SwitchProfile,
   SwitchProgress,
   UsageDay,
@@ -103,6 +108,37 @@ const usage = (over: Partial<AccountUsage>): AccountUsage => ({
   ...over,
 });
 
+const billing = (over: Partial<AccountBilling>): AccountBilling => ({
+  fetchedAt: iso(40 * 60_000),
+  currency: "usd",
+  collectionMethod: "charge_automatically",
+  subscriptionStatus: "active",
+  interval: "month",
+  currentPeriodStart: NOW - 12 * D,
+  currentPeriodEnd: NOW + 18 * D,
+  cancelAtPeriodEnd: false,
+  items: [{ name: "Cursor Pro", interval: "month", unitAmount: 2000, quantity: 1, currency: "usd" }],
+  listPrice: 2000,
+  currentAmount: 2000,
+  discountState: "none",
+  invoices: [
+    {
+      number: "INV-1",
+      created: NOW - 12 * D,
+      status: "paid",
+      description: "Cursor Pro",
+      subtotal: 2000,
+      total: 1000,
+      amountDue: 0,
+      amountPaid: 1000,
+      currency: "usd",
+      discounts: [{ name: "Referred by a friend", amountOff: 1000, duration: "once", currency: "usd" }],
+      lines: [{ description: "1 × Cursor Pro (at $20.00 / month)", amount: 2000, quantity: 1 }],
+    },
+  ],
+  ...over,
+});
+
 const account = (over: Partial<Account> & { email: string }): Account => ({
   id: over.email,
   source: "local",
@@ -114,6 +150,7 @@ const account = (over: Partial<Account> & { email: string }): Account => ({
   hasPassword: true,
   hasEmailPassword: false,
   hasRecoveryEmail: false,
+  hasApiKey: false,
   createdAt: iso(9 * D),
   updatedAt: iso(H),
   lastCheckedAt: iso(20 * 60_000),
@@ -124,13 +161,142 @@ export const ACCOUNTS: Account[] = EMPTY
   ? []
   : [
       // 按需计费三种形态各来一个（不封顶 / 有上限 / 没开），末行才看得出真实光景。
-      account({ email: "arvid.pfeffer@outlook.com", note: "主力", tags: ["主力"], usage: usage({ onDemandEnabled: true, onDemandUsedCents: 2115 }) }),
-      account({ email: "mara.quill@outlook.com", source: "purchased", usage: usage({ totalPercentUsed: 91, apiPercentUsed: 97, autoPercentUsed: 80, onDemandEnabled: true, onDemandUsedCents: 315, onDemandLimitCents: 5000 }) }),
-      account({ email: "tobias.rennick@outlook.com", source: "purchased", usage: usage({ plan: "ultra", totalPercentUsed: 8, apiPercentUsed: 3, autoPercentUsed: 5 }) }),
+      account({ email: "arvid.pfeffer@outlook.com", note: "主力", tags: ["主力"], hasApiKey: true, usage: usage({ onDemandEnabled: true, onDemandUsedCents: 2115, creditGrantTotalCents: 10000, creditGrantUsedCents: 0, creditGrantRemainingCents: 10000 }), billing: billing({}) }),
+      account({ email: "mara.quill@outlook.com", source: "purchased", usage: usage({ totalPercentUsed: 91, apiPercentUsed: 97, autoPercentUsed: 80, onDemandEnabled: true, onDemandUsedCents: 315, onDemandLimitCents: 5000, creditGrantTotalCents: 2500, creditGrantUsedCents: 400, creditGrantRemainingCents: 2100 }) }),
+      account({
+        email: "tobias.rennick@outlook.com",
+        source: "purchased",
+        usage: usage({ plan: "ultra", totalPercentUsed: 8, apiPercentUsed: 3, autoPercentUsed: 5 }),
+        billing: billing({
+          items: [{ name: "Cursor Ultra", interval: "month", unitAmount: 20000, quantity: 1, currency: "usd" }],
+          listPrice: 20000,
+          currentAmount: 0,
+          discountState: "active",
+          discount: {
+            state: "active",
+            name: "SuperGrok Heavy",
+            amountOff: 20000,
+            currency: "usd",
+            duration: "repeating",
+            durationInMonths: 6,
+            startsAt: NOW - 20 * D,
+            endsAt: NOW + 160 * D,
+          },
+          invoices: [
+            {
+              number: "INV-U1",
+              created: NOW - 20 * D,
+              status: "paid",
+              description: "Cursor Ultra",
+              subtotal: 20000,
+              total: 0,
+              amountDue: 0,
+              amountPaid: 0,
+              currency: "usd",
+              discounts: [{ name: "SuperGrok Heavy", amountOff: 20000, duration: "repeating", durationInMonths: 6, currency: "usd" }],
+              lines: [{ description: "1 × Cursor Ultra (at $200.00 / month)", amount: 20000, quantity: 1 }],
+            },
+          ],
+        }),
+      }),
       account({ email: "junko.hale@outlook.com", source: "local", status: "needs_login", hasRefresh: false, usage: null }),
       // 这个号当天就回血：末行的倒计时会换成钟点。
       account({ email: "pilar.osei@outlook.com", source: "local", usage: usage({ totalPercentUsed: 100, apiPercentUsed: 100, autoPercentUsed: 100, bot: { percentUsed: 100, resetAt: NOW + 5 * H, hasAvailable: false, access: "granted" } }) }),
       account({ email: "wen.abernathy@outlook.com", usage: undefined, lastCheckedAt: null }),
+    ];
+
+const chatgptUsage = (over: Partial<ChatGptUsage> = {}): ChatGptUsage => ({
+  primary: { usedPercent: 28, resetAtMs: NOW + 4 * H + 50 * 60_000, windowMinutes: 300 },
+  secondary: { usedPercent: 55, resetAtMs: NOW + 6 * D + 21 * H, windowMinutes: 10080 },
+  planType: "pro",
+  checkedAt: iso(21 * 60_000),
+  source: "wham/usage",
+  allowed: true,
+  limitReached: false,
+  userId: "user-preview",
+  additional: [
+    {
+      name: "GPT-5.3-Codex-Spark",
+      feature: "codex_bengalfox",
+      allowed: true,
+      limitReached: false,
+      primary: { usedPercent: 100, resetAtMs: NOW + 4 * H + 50 * 60_000, windowMinutes: 300 },
+      secondary: { usedPercent: 96, resetAtMs: NOW + 6 * D + 17 * H, windowMinutes: 10080 },
+    },
+  ],
+  credits: { hasCredits: false, unlimited: false, overageLimitReached: false, balance: "0", resetAvailable: 0 },
+  ...over,
+});
+
+const chatgptAccount = (over: Partial<ChatGptAccount> & { email: string }): ChatGptAccount => ({
+  id: over.email,
+  accountRef: `acct_${over.email.replace(/[^a-z0-9]/g, "").slice(0, 16)}`,
+  planType: "pro",
+  userId: "user-preview",
+  organizationId: "org-personal",
+  organizationTitle: "Personal",
+  status: "active",
+  enabled: true,
+  note: null,
+  usage: chatgptUsage(),
+  billing: {
+    planType: "pro",
+    subscriptionPlan: "chatgptproplan",
+    hasActiveSubscription: true,
+    expiresAt: new Date(NOW + 12 * D).toISOString(),
+    willRenew: true,
+    billingPeriod: "monthly",
+    checkedAt: iso(21 * 60_000),
+    source: "accounts/check",
+  } satisfies ChatGptBilling,
+  lastCheckedAt: iso(21 * 60_000),
+  lastError: null,
+  hasRefresh: true,
+  accessExpiresAt: new Date(NOW + 8 * D).toISOString(),
+  createdAt: iso(23 * D),
+  updatedAt: iso(21 * 60_000),
+  traffic: { requests: 1600, tokens: 12_000_000, errors: 4, days: 90 },
+  ...over,
+});
+
+export const CHATGPT_ACCOUNTS: ChatGptAccount[] = EMPTY
+  ? []
+  : [
+      chatgptAccount({
+        email: "arvid.pfeffer@outlook.com",
+        userId: "fb87c718-66c5-4169-a66f-06fe7c3c2471",
+        traffic: { requests: 1600, tokens: 12_000_000, errors: 2, days: 90 },
+      }),
+      chatgptAccount({
+        email: "mara.quill@outlook.com",
+        userId: "31570e240-4eedd-4e566-b8ee-e7314ffc",
+        planType: "plus",
+        billing: {
+          planType: "plus",
+          subscriptionPlan: "chatgptplusplan",
+          hasActiveSubscription: true,
+          expiresAt: new Date(NOW + 6 * D).toISOString(),
+          willRenew: null,
+          billingPeriod: "monthly",
+          checkedAt: iso(21 * 60_000),
+          source: "accounts/check",
+        },
+        usage: chatgptUsage({
+          primary: { usedPercent: 63, resetAtMs: NOW + 6 * D + 15 * H, windowMinutes: 300 },
+          secondary: { usedPercent: 96, resetAtMs: NOW + 6 * D + 17 * H, windowMinutes: 10080 },
+          additional: [
+            {
+              name: "GPT-5.3-Codex-Spark",
+              feature: "codex_bengalfox",
+              allowed: true,
+              limitReached: false,
+              primary: { usedPercent: 100, resetAtMs: NOW + 4 * H + 50 * 60_000, windowMinutes: 300 },
+              secondary: { usedPercent: 96, resetAtMs: NOW + 6 * D + 17 * H, windowMinutes: 10080 },
+            },
+          ],
+        }),
+        traffic: { requests: 1300, tokens: 11_800_000, errors: 1, days: 90 },
+      }),
     ];
 
 // ── 切号 ────────────────────────────────────────────────────────────────────
@@ -294,7 +460,7 @@ const GATEWAY: GatewayStatus = {
         passthroughBaseUrl: "http://127.0.0.1:8788",
         startedAt: iso(40 * 60_000),
       },
-  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null },
+  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null, defaultChannel: "cursor" },
   restartNeeded: false,
   apiKeySet: true,
   lane: laneSnapshot(),
@@ -303,11 +469,25 @@ const GATEWAY: GatewayStatus = {
       id: "chatgpt",
       label: "ChatGPT",
       vendor: "openai",
-      ready: false,
+      ready: !EMPTY && CHATGPT_ACCOUNTS.length > 0,
       mediaReady: false,
-      lane: { current: null, candidates: [], missing: [], available: [] },
-      chatModels: ["gpt-5.6-sol", "gpt-5.5"],
-      imageModels: ["gpt-image-2"],
+      lane: EMPTY
+        ? { current: null, candidates: [], missing: [], available: [] }
+        : {
+            current: CHATGPT_ACCOUNTS[0]?.email ?? null,
+            candidates: CHATGPT_ACCOUNTS.filter((a) => a.enabled).map((a, i) => ({
+              label: a.email ?? a.accountRef,
+              source: "chatgpt",
+              pinned: false,
+              storedId: a.id,
+              percentUsed: a.usage?.primary?.usedPercent ?? null,
+              state: i === 0 ? { kind: "current" as const } : { kind: "ready" as const },
+            })),
+            missing: [],
+            available: [],
+          },
+      chatModels: ["chatgpt/gpt-5.4", "chatgpt/gpt-5.6-sol", "chatgpt/gpt-5.5"],
+      imageModels: ["chatgpt/gpt-image-2"],
       videoModels: [],
       prefixes: ["chatgpt/", "codex/"],
     },
@@ -325,9 +505,9 @@ const GATEWAY: GatewayStatus = {
             missing: [],
             available: [],
           },
-      chatModels: ["grok-4.6", "grok-4.5"],
-      imageModels: ["grok-imagine-image", "grok-imagine-image-quality"],
-      videoModels: ["grok-imagine-video-1.5"],
+      chatModels: ["grok/grok-4.6", "grok/grok-4.5"],
+      imageModels: ["grok/grok-imagine-image", "grok/grok-imagine-image-quality"],
+      videoModels: ["grok/grok-imagine-video-1.5"],
       prefixes: ["grok/", "xai/"],
     },
     {
@@ -337,7 +517,7 @@ const GATEWAY: GatewayStatus = {
       ready: false,
       mediaReady: false,
       lane: { current: null, candidates: [], missing: [], available: [] },
-      chatModels: ["kiro-claude-sonnet-4.5"],
+      chatModels: ["kiro/kiro-claude-sonnet-4.5"],
       imageModels: [],
       videoModels: [],
       prefixes: ["kiro/"],
@@ -619,11 +799,36 @@ const SAND: SandStatus = {
   backups: 2,
   // 预览里模拟「老安装：自摘要关」——正是这一页要提示用户重新安装切到新默认的状态。
   selfSummary: EMPTY ? null : false,
+  grok45ViaCua: EMPTY ? null : false,
   inferenceEndpoint: null,
   grokbotAuth: EMPTY ? "off" : "box_relay",
   grokbotRelayConfigured: !EMPTY,
   grokbotDirectConfigured: !EMPTY,
 };
+
+const CRSR: CrsrStatus = {
+  cursorVersion: "3.19.13",
+  supportedVersion: "3.19.13",
+  versionSupported: true,
+  installed: false,
+  complete: false,
+  hits: 0,
+  expectedHits: 2,
+  anchors: 2,
+  patchedFiles: [],
+  sandConflict: null,
+  backups: 0,
+  credential: EMPTY
+    ? null
+    : {
+        accountEmail: "arvid.pfeffer@outlook.com",
+        accountId: "arvid.pfeffer@outlook.com",
+        expiresAtMs: NOW + H,
+        expired: false,
+        canRenew: true,
+      },
+};
+
 
 // ── 模型目录 ────────────────────────────────────────────────────────────────
 
@@ -638,18 +843,20 @@ const local = (id: string, series: string, variant: string, vendor: string, vend
 });
 
 const LOCAL_MODELS: LocalModel[] = [
-  local("auto", "auto", "standard", "cursor", "Cursor", ["claude-haiku-4", "haiku", "gpt-4o-mini", "gpt-4.1-mini", "gpt-3.5", "gpt-5-mini", "o1-mini"], "让 Cursor 按请求挑模型；认不出的客户端模型名也落到这里。"),
-  local("claude-sonnet-5", "claude-sonnet-5", "standard", "anthropic", "Anthropic", ["claude-3-5-haiku", "claude-3-haiku", "claude-3-5-sonnet", "claude-3-7-sonnet", "claude-4-sonnet", "claude-sonnet-4"]),
-  local("claude-opus-5", "claude-opus-5", "standard", "anthropic", "Anthropic", ["claude-3-opus", "claude-4-opus", "claude-opus-4"]),
-  local("claude-opus-5-thinking-max-fast", "claude-opus-5", "thinking-max-fast", "anthropic", "Anthropic"),
-  local("gpt-5.6-sol", "gpt-5.6-sol", "standard", "openai", "OpenAI", ["gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4", "gpt-5"]),
-  local("gpt-5.6-sol-max-fast", "gpt-5.6-sol", "max-fast", "openai", "OpenAI"),
-  local("gpt-5.6-terra", "gpt-5.6-terra", "standard", "openai", "OpenAI", ["gpt-5-codex", "o1"]),
-  local("grok-4.6", "grok-4.6", "standard", "xai", "xAI", ["grok-3", "grok-2"]),
-  local("grok-4.5", "grok-4.5", "standard", "xai", "xAI"),
-  local("gemini-3.7-flash", "gemini-3.7-flash", "standard", "google", "Google", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5", "gemini-"]),
-  // 本地网关经 Cursor 出图的那一档；modality 让游乐场把它分到图片会话。
-  { ...local("nano-banana-2", "nano-banana-2", "standard", "google", "Google", ["gemini-3.1-flash-image"], "经 Cursor 出图，固定 1536×1024；账号需要 Developer 或 Sand 计划的生图权限。"), modality: "image" },
+  local("cursor/auto", "cursor/auto", "standard", "cursor", "Cursor", ["claude-haiku-4", "haiku", "gpt-4o-mini", "gpt-4.1-mini", "gpt-3.5", "gpt-5-mini", "o1-mini"], "让 Cursor 按请求挑模型；认不出的客户端模型名也落到这里。"),
+  local("cursor/claude-sonnet-5", "cursor/claude-sonnet-5", "standard", "anthropic", "Anthropic", ["claude-3-5-haiku", "claude-3-haiku", "claude-3-5-sonnet", "claude-3-7-sonnet", "claude-4-sonnet", "claude-sonnet-4"]),
+  local("cursor/claude-opus-5", "cursor/claude-opus-5", "standard", "anthropic", "Anthropic", ["claude-3-opus", "claude-4-opus", "claude-opus-4"]),
+  local("cursor/claude-opus-5-thinking-max-fast", "cursor/claude-opus-5", "thinking-max-fast", "anthropic", "Anthropic"),
+  local("cursor/gpt-5.6-sol", "cursor/gpt-5.6-sol", "standard", "openai", "OpenAI", ["gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4", "gpt-5"]),
+  local("cursor/gpt-5.6-sol-max-fast", "cursor/gpt-5.6-sol", "max-fast", "openai", "OpenAI"),
+  local("cursor/gpt-5.6-terra", "cursor/gpt-5.6-terra", "standard", "openai", "OpenAI", ["gpt-5-codex", "o1"]),
+  local("cursor/grok-4.6", "cursor/grok-4.6", "standard", "xai", "xAI", ["grok-3", "grok-2"]),
+  local("cursor/grok-4.5", "cursor/grok-4.5", "standard", "xai", "xAI"),
+  local("cursor/gemini-3.7-flash", "cursor/gemini-3.7-flash", "standard", "google", "Google", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5", "gemini-"]),
+  { ...local("cursor/nano-banana-2", "cursor/nano-banana-2", "standard", "google", "Google", ["gemini-3.1-flash-image"], "经 Cursor 出图，固定 1536×1024；账号需要 Developer 或 Sand 计划的生图权限。"), modality: "image" },
+  local("grok/grok-4.6", "grok/grok-4.6", "standard", "xai", "xAI"),
+  local("grok/grok-4.5", "grok/grok-4.5", "standard", "xai", "xAI"),
+  { ...local("grok/grok-imagine-image", "grok/grok-imagine-image", "standard", "xai", "xAI", [], "经 Grok 订阅号出图。"), modality: "image" },
 ];
 
 // ── 活动 / 状态 ────────────────────────────────────────────────────────────
@@ -676,7 +883,7 @@ const delay = <T,>(v: T, ms = 120): Promise<T> => new Promise((r) => setTimeout(
 async function fakeTry(id: string, model: string, prompt: string): Promise<void> {
   // `Omit` 会把可辨识联合拍平，所以这里按 TryEvent 收、再拼 id。
   const emit = (f: TryEvent) => emitMock(TRY_EVENT, { id, ...f } satisfies TryFrame);
-  const routed = model === "auto" ? "composer-2.5-fast" : model;
+  const routed = model === "auto" || model.endsWith("/auto") ? "composer-2.5-fast" : model;
   await delay(null, 350);
   emit({ kind: "routed", model: routed });
   for (const t of ["用户想让我", "介绍自己，", "并说出模型名。"]) {
@@ -799,6 +1006,73 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       a.lastCheckedAt = a.usage.fetchedAt;
       return delay(a.usage as T, 700);
     }
+    case "accounts_refresh_billing": {
+      const a = ACCOUNTS.find((x) => x.id === args?.id);
+      if (!a) throw { code: "account_not_found", message: "没有这个账号。" };
+      a.billing = billing({
+        ...(a.billing ?? {}),
+        fetchedAt: new Date().toISOString(),
+      });
+      return delay(a.billing as T, 800);
+    }
+    case "accounts_set_on_demand": {
+      const a = ACCOUNTS.find((x) => x.id === args?.id);
+      if (!a?.usage) throw { code: "invalid_input", message: "这个号查不了用量，改不了按需。", hint: "先刷一次用量。" };
+      const enabled = Boolean(args?.enabled);
+      const limitCents = typeof args?.limitCents === "number" ? args.limitCents : null;
+      const fetchedAt = new Date().toISOString();
+      a.usage = {
+        ...a.usage,
+        onDemandEnabled: enabled,
+        onDemandLimitCents: enabled ? limitCents : a.usage.onDemandLimitCents,
+        fetchedAt,
+      };
+      a.lastCheckedAt = fetchedAt;
+      return delay(a.usage as T, 500);
+    }
+    case "chatgpt_list":
+      return v(CHATGPT_ACCOUNTS);
+    case "chatgpt_models":
+      return v([
+        { slug: "gpt-5.4", reasoningLevels: ["low", "high"], preferWebsockets: true },
+        { slug: "gpt-5.3-codex-spark", reasoningLevels: ["low", "medium"], preferWebsockets: true },
+      ]);
+    case "chatgpt_refresh_usage": {
+      const a = CHATGPT_ACCOUNTS.find((x) => x.id === args?.id);
+      if (!a?.usage) throw { code: "account_not_found", message: "没有这个 ChatGPT 账号。" };
+      a.usage = { ...a.usage, checkedAt: new Date().toISOString() };
+      a.lastCheckedAt = a.usage.checkedAt;
+      if (a.billing) a.billing = { ...a.billing, checkedAt: a.usage.checkedAt };
+      return delay(a.usage as T, 500);
+    }
+    case "chatgpt_refresh_billing": {
+      const a = CHATGPT_ACCOUNTS.find((x) => x.id === args?.id);
+      if (!a) throw { code: "account_not_found", message: "没有这个 ChatGPT 账号。" };
+      a.billing = {
+        planType: a.planType,
+        subscriptionPlan: a.planType === "plus" ? "chatgptplusplan" : "chatgptproplan",
+        hasActiveSubscription: true,
+        expiresAt: a.billing?.expiresAt ?? new Date(NOW + 12 * D).toISOString(),
+        willRenew: a.billing?.willRenew ?? true,
+        billingPeriod: a.billing?.billingPeriod ?? "monthly",
+        checkedAt: new Date().toISOString(),
+        source: "accounts/check",
+      };
+      return delay(a.billing as T, 700);
+    }
+    case "chatgpt_set_enabled": {
+      const a = CHATGPT_ACCOUNTS.find((x) => x.id === args?.id);
+      if (!a) throw { code: "account_not_found", message: "没有这个 ChatGPT 账号。" };
+      a.enabled = Boolean(args?.enabled);
+      return v(a);
+    }
+    case "chatgpt_set_note": {
+      const a = CHATGPT_ACCOUNTS.find((x) => x.id === args?.id);
+      if (!a) throw { code: "account_not_found", message: "没有这个 ChatGPT 账号。" };
+      a.note = typeof args?.note === "string" && args.note.trim() ? args.note : null;
+      return v(a);
+    }
+
     case "accounts_refresh_all":
       return v(ACCOUNTS.length);
     case "accounts_export_dump":
@@ -909,6 +1183,10 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     case "sand_status":
       return v(SAND);
     case "sand_backups":
+      return v([]);
+    case "crsr_status":
+      return v(CRSR);
+    case "crsr_backups":
       return v([]);
     case "sand_remote_overview":
       return delay(REMOTE_OVERVIEW as T, 500);

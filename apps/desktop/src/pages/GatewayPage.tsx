@@ -4,10 +4,10 @@
  * 这一页只有两块：
  *  1. 开没开（一个开关）。地址、端口、口令这些是接线用的字面量，默认收在「地址与口令」后面 ——
  *     客户端配置在「接入」页一键写入，用户本不该进来先看见 `127.0.0.1:8787`；
- *  2. 通道 —— 网关背后的几队号，**并列**摆：Cursor（默认通道，不带前缀的模型都落它）、
- *     ChatGPT、Grok Build、Kiro。每条一行，一句网关视角的结论（几个能接、谁在用）。
- *     Cursor 那一行点进去是它的号池（`#gateway/pool`，见下）；其余通道的号在「账号」对应页签里
- *     授权了就自动在队里，这里只指过去。
+ *  2. 通道 —— 网关背后的几队号，**并列**摆：Cursor / ChatGPT / Grok Build / Kiro。
+ *     目录主键是 `{通道}/{模型}`。出厂默认通道是 Cursor，用户可以点「设为默认」换：
+ *     之后裸名或不写模型都走那条，不再按名字猜。Cursor 那一行点进去是它的号池
+ *     （`#gateway/pool`）；其余通道的号在「账号」对应页签里，授权了就自动在队里。
  *
  * 设置不在页面上。端口、额度通道、强制模型这些是引擎室里的阀门，一年拧不到一次，摊在
  * 主页面上只会让人一进来就觉得「这么一大坨」；收进右上角一个齿轮后面的弹窗。端口更是
@@ -136,6 +136,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
     clientType?: string;
     autostart?: boolean;
     forceModel?: string | null;
+    defaultChannel?: string;
   }) {
     setError(null);
     try {
@@ -182,7 +183,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
   const starved = Boolean(status && isStarved(status));
 
   /** 设置里有没有偏离默认的东西：有就在齿轮旁点一个点，让人知道「这台引擎调过」。 */
-  const tuned = Boolean(status && (status.settings.clientType !== "cli" || status.settings.forceModel || status.settings.autostart));
+  const tuned = Boolean(status && (status.settings.clientType !== "cli" || status.settings.forceModel || status.settings.autostart || status.settings.defaultChannel !== "cursor"));
 
   const channels = useMemo(() => localChannels(status, local), [status, local]);
   const currentLabel = candidates.find((c) => c.state.kind === "current")?.label ?? null;
@@ -199,7 +200,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
           </button>
         }
       >
-        不带前缀的模型都走这里的号。加进来的号会被 Claude Code、Codex 这类客户端一直用到额度到线，再接力下一个。
+        {status?.settings.defaultChannel === "cursor" ? "不带通道前缀的请求走这里的号。" : "写成 cursor/模型 的请求走这里的号。"}加进来的号会被 Claude Code、Codex 这类客户端一直用到额度到线，再接力下一个。
       </Empty>
     ) : (
       <div className="accts">
@@ -416,42 +417,45 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
             <div className="gw-chans-head">
               <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
                 <strong>通道</strong>
-                <span className="faint tiny">网关背后的几队号 · 模型名带前缀强制走该通道；不带前缀的走 Cursor</span>
+                <span className="faint tiny">模型写成 通道/名称。不带前缀的走默认通道</span>
               </div>
             </div>
-            {channels.map((ch) =>
-              ch.isDefault ? (
+            {channels.map((ch) => {
+              const isCursor = ch.id === "cursor";
+              return (
                 <ChannelRow
                   key={ch.id}
                   ch={ch}
-                  onOpen={() => onGo(go("gateway", { sub: "pool" }))}
+                  onOpen={() => onGo(isCursor ? go("gateway", { sub: "pool" }) : go("accounts", { platform: ch.id as AccountPlatform }))}
                   actions={
                     <>
-                      <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setAdding(true)}>
-                        <Icon name="plus" size={13} />
-                        添加号
-                      </button>
-                      <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("gateway", { sub: "pool" }))}>
-                        号池
-                        <Icon name="chevron" size={12} className="gw-chan-go" />
-                      </button>
+                      {ch.isDefault ? null : (
+                        <button type="button" className="btn btn-sm btn-quiet" disabled={busy} onClick={() => void saveSettings({ defaultChannel: ch.id })}>
+                          设为默认
+                        </button>
+                      )}
+                      {isCursor ? (
+                        <>
+                          <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setAdding(true)}>
+                            <Icon name="plus" size={13} />
+                            添加号
+                          </button>
+                          <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("gateway", { sub: "pool" }))}>
+                            号池
+                            <Icon name="chevron" size={12} className="gw-chan-go" />
+                          </button>
+                        </>
+                      ) : (
+                        <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("accounts", { platform: ch.id as AccountPlatform }))}>
+                          账号
+                          <Icon name="chevron" size={12} className="gw-chan-go" />
+                        </button>
+                      )}
                     </>
                   }
                 />
-              ) : (
-                <ChannelRow
-                  key={ch.id}
-                  ch={ch}
-                  onOpen={() => onGo(go("accounts", { platform: ch.id as AccountPlatform }))}
-                  actions={
-                    <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("accounts", { platform: ch.id as AccountPlatform }))}>
-                      账号
-                      <Icon name="chevron" size={12} className="gw-chan-go" />
-                    </button>
-                  }
-                />
-              ),
-            )}
+              );
+            })}
           </div>
 
           {status.mediaJobs.length > 0 ? <MediaJobsCard jobs={status.mediaJobs} /> : null}
@@ -731,7 +735,7 @@ function SettingsModal({
   settings: GatewaySettings;
   running: boolean;
   onClose: () => void;
-  onSave: (patch: { port?: number; passthroughPort?: number; clientType?: string; autostart?: boolean; forceModel?: string | null }) => Promise<void>;
+  onSave: (patch: { port?: number; passthroughPort?: number; clientType?: string; autostart?: boolean; forceModel?: string | null; defaultChannel?: string }) => Promise<void>;
 }) {
   const [saving, setSaving] = useState(false);
   const [portError, setPortError] = useState<string | null>(null);

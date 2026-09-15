@@ -1,5 +1,5 @@
 /**
- * 模型广场的数据：来自网关的映射目录，以及「试一下」的流式事件。
+ * 模型广场的数据：来自网关的 `{通道}/{模型}` 目录，以及「试一下」的流式事件。
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -22,7 +22,7 @@ export type ModelVendor =
 
 export type Modality = "chat" | "image" | "video";
 
-/** 本地网关能替客户端映射到的一个模型。 */
+/** 本地网关目录里的一条：主键是 `{通道}/{模型}`。 */
 export interface LocalModel {
   id: string;
   vendor: ModelVendor;

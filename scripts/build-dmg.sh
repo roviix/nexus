@@ -37,10 +37,14 @@ need node
 need npm
 need cargo
 
-# 磁盘：release 增量一般要 2–3 GB 余量，低于 4 GB 先提醒。
-avail_kb=$(df -k "$desktop" | awk 'NR==2 {print $4}')
+# 磁盘：看 cargo 真正写的那卷（CARGO_TARGET_DIR 或 desktop/target，含 symlink），
+# 不是仓库所在盘。release 增量一般要 2–3 GB 余量，低于 4 GB 先提醒。
+target_dir="${CARGO_TARGET_DIR:-$desktop/target}"
+mkdir -p "$target_dir"
+target_vol=$(cd "$target_dir" && pwd -P)
+avail_kb=$(df -k "$target_vol" | awk 'NR==2 {print $4}')
 if [ "$avail_kb" -lt $((4 * 1024 * 1024)) ]; then
-  echo "磁盘只剩 $((avail_kb / 1024 / 1024)) GB，release 构建可能中途失败；先清 target/debug 或别处再来。" >&2
+  echo "构建盘（$target_vol）只剩 $((avail_kb / 1024 / 1024)) GB，release 构建可能中途失败；先清 target/debug 或把 CARGO_TARGET_DIR 指到空盘再来。" >&2
   exit 3
 fi
 

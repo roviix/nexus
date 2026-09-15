@@ -1,14 +1,14 @@
-import type { Account, AccountUsage } from "../ipc/types";
+import type { Account, AccountUsage, ChatGptAccount, ChatGptUsage, GatewayCandidate } from "../ipc/types";
 import { canQueryUsage } from "../ui/accounts";
 
 /**
  * 平台账号的 id。
  *
- * 现在只有 Cursor；以后接 ChatGPT / Claude 时在这里扩可辨识联合，而不是给 Cursor 的
- * `Account` 不断塞别的平台字段。这个 id 是 UI / adapter 边界，不替代后端将来的
+ * 这是可辨识联合，不是把 Cursor 定成所有平台的基类：接新平台在这里加一支，而不是给
+ * Cursor 的 `Account` 不断塞别的平台字段。这个 id 是 UI / adapter 边界，不替代后端的
  * `(platform, external_id)` 持久化身份。
  */
-export type AccountPlatform = "cursor";
+export type AccountPlatform = "cursor" | "chatgpt";
 
 export type AccountPlacementKind = "library" | "overview" | "switcher" | "gateway";
 
@@ -22,13 +22,15 @@ export interface AccountPlacement {
 /**
  * 卡片能展示的用量。
  *
- * `cursor` 是平台 adapter 给出的完整四桶；`summary` 是网关等运行时只知道一个百分比的
- * 降级形态；`unavailable` 必须带原因，不能把“拿不到”画成 0%。
+ * `cursor` 是平台 adapter 给出的完整四桶；`chatgpt` 是 Codex 的两个滚动窗口；
+ * `summary` 是网关等运行时只知道一个百分比的降级形态；`unavailable` 必须带原因，
+ * 不能把“拿不到”画成 0%。
  *
  * 新平台应增加自己的可辨识分支并由对应 renderer 消费，不要伪造 `AccountUsage`。
  */
 export type AccountUsageView =
   | { kind: "cursor"; value: AccountUsage; checkedAt?: string | null }
+  | { kind: "chatgpt"; value: ChatGptUsage }
   | { kind: "summary"; label: string; percentUsed: number }
   | { kind: "unavailable"; reason: string };
 
@@ -48,7 +50,22 @@ export interface CursorAccountView {
   placement: AccountPlacement;
 }
 
-export type AccountView = CursorAccountView;
+/**
+ * ChatGPT 订阅号。身份是 `chatgpt_account_id`，用量是两个滚动窗口，进不进网关看
+ * `enabled` —— 没有切号池。`lane` 是网关这一刻的接力位置，网关没开时为 null。
+ */
+export interface ChatGptAccountView {
+  platform: "chatgpt";
+  key: string;
+  label: string;
+  managed: ChatGptAccount;
+  usage: AccountUsageView;
+  membership?: string | null;
+  placement: AccountPlacement;
+  lane: GatewayCandidate | null;
+}
+
+export type AccountView = CursorAccountView | ChatGptAccountView;
 
 export interface CursorAccountViewInput {
   label: string;
@@ -103,6 +120,46 @@ export function createCursorAccountView({
   };
 }
 
+export interface ChatGptAccountViewInput {
+  account: ChatGptAccount;
+  placement?: AccountPlacement;
+  lane?: GatewayCandidate | null;
+}
+
+export function createChatGptAccountView({
+  account,
+  placement = { kind: "library", label: "账号库" },
+  lane = null,
+}: ChatGptAccountViewInput): ChatGptAccountView {
+  const usage: AccountUsageView = account.usage
+    ? { kind: "chatgpt", value: account.usage }
+    : {
+        kind: "unavailable",
+        reason:
+          account.status !== "active" || !account.hasRefresh
+            ? "授权后才能查用量"
+            : "还没查过用量",
+      };
+
+  return {
+    platform: "chatgpt",
+    key: `chatgpt:managed:${account.id}`,
+    label: chatgptLabel(account),
+    managed: account,
+    usage,
+    membership: account.planType,
+    placement,
+    lane,
+  };
+}
+
 export const ACCOUNT_PLATFORM_LABEL: Record<AccountPlatform, string> = {
   cursor: "Cursor",
+  chatgpt: "ChatGPT",
 };
+
+/** 跟人看的名字：邮箱；没有就用 chatgpt_account_id 的尾巴（纯 token 导入时读不到邮箱）。 */
+function chatgptLabel(a: Pick<ChatGptAccount, "email" | "accountRef">): string {
+  const email = a.email?.trim();
+  return email ? email : `chatgpt…${a.accountRef.slice(-6)}`;
+}

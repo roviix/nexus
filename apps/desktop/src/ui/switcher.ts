@@ -1,4 +1,5 @@
 import type { Account, SwitchProfile } from "../ipc/types";
+import { hasLiveAccess } from "./accounts";
 
 export interface SwitchPoolEntry {
   key: string;
@@ -22,8 +23,9 @@ export const SWITCH_SORT_LABEL: Record<SwitchSort, string> = {
 
 export const DEFAULT_SWITCH_SORT: SwitchSort = "switched";
 
-export function canAddToSwitchPool(account: Account): boolean {
-  return account.hasRefresh && account.status !== "dead";
+export function canAddToSwitchPool(account: Account, now = Date.now()): boolean {
+  if (account.status === "dead") return false;
+  return account.hasRefresh || hasLiveAccess(account, now);
 }
 
 export function buildSwitchPool(

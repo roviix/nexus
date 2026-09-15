@@ -156,6 +156,10 @@ pub struct InstallOptions {
     ///
     /// 旧前端传的布尔 `grokbotStreamAuth` 会被 serde 忽略（字段名不同），落到默认 `BoxRelay`。
     pub grokbot_auth: GrokBotAuthMode,
+    /// Agent 面板选 grok-4.5 时改走 `sand-cua`。默认关：4.5 是 Bot 通道上各号都能直打的
+    /// 稳模型；`sand-cua` 按账号分片，只有部分号落到 grok-4.7，其余仍是 luna。
+    /// 开了需重新安装补丁（注入体变了）。Bot 通道关着时这项写不进补丁。
+    pub grok45_via_cua: bool,
 }
 
 /// Agent 面板的 Stream 请求用 Grok Bot 额度，三种落法。三种都改同一处
@@ -196,6 +200,7 @@ impl Default for InstallOptions {
             relaunch: true,
             inference_endpoint: None,
             grokbot_auth: GrokBotAuthMode::default(),
+            grok45_via_cua: false,
         }
     }
 }
@@ -317,6 +322,8 @@ pub struct SandStatus {
     /// 盘上装着的 Grok Bot 鉴权形态；没装为 `Off`。同样是「盘上是什么」，界面选的与它不同时
     /// install 原地切换。
     pub grokbot_auth: GrokBotAuthMode,
+    /// 盘上 Direct 注入体是否把 grok-4.5 改走 `sand-cua`；没装 Direct 时为 `None`。
+    pub grok45_via_cua: Option<bool>,
     /// 本地 `grok-box-relay.json` 是否已就绪（Box Relay 模式的前提）。
     pub grokbot_relay_configured: bool,
     /// 本地 `grokbot-stream-credential.json` 是否存在且未过期 / 可续期（Direct 模式的前提）。
@@ -431,6 +438,10 @@ mod tests {
         assert_eq!(o.mode_gate, ModeGate::Agent);
         assert!(o.relaunch);
         assert_eq!(o.inference_endpoint, None);
+        assert!(
+            !o.grok45_via_cua,
+            "4.5 走 CUA 会让多数号丢掉稳的 grok-4.5，默认必须关"
+        );
     }
 
     #[test]
@@ -447,6 +458,10 @@ mod tests {
         let o: InstallOptions =
             serde_json::from_str(r#"{"streamEngine":"session","selfSummary":false}"#).unwrap();
         assert!(!o.self_summary);
+        assert!(!o.grok45_via_cua);
+        let o: InstallOptions = serde_json::from_str(r#"{"grok45ViaCua":true}"#).unwrap();
+        assert!(o.grok45_via_cua);
+        assert!(o.self_summary);
     }
 
     #[test]

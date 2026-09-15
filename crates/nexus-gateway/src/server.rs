@@ -9,6 +9,7 @@
 
 use crate::channel::{Capability, Channel, ChannelRegistry, Resolved};
 use crate::error::UpstreamError;
+use crate::grokbot::{GrokBotStreamAuth, GROKBOT_LABEL_PREFIX};
 use crate::images::{self, GeneratedImage, ImageRequest};
 use crate::inbound::{parse_request, protocol_error, Dialect, Serializer, SseFrame};
 use crate::inference::STATIC_MODELS;
@@ -18,8 +19,9 @@ use crate::media::{self, MediaJobs};
 use crate::normalized::{estimate_tokens, Completion, Delta, Usage};
 use crate::upstream::Upstream;
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -30,7 +32,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub struct Gateway {
-    /// 全部通道。第一条是默认通道（Cursor）；选路见 [`ChannelRegistry::resolve`]。
+    /// 全部通道。选路见 [`ChannelRegistry::resolve`]：前缀强制，裸名走用户默认通道。
     pub channels: ChannelRegistry,
     /// 可选的本地口令。Cursor local mode 的配置表单要求填一个 key；设了就校验
     /// （`Authorization: Bearer` 或 `x-api-key` 任一），没设就不管——只监听回环，
@@ -41,6 +43,10 @@ pub struct Gateway {
     /// 异步媒体任务（生视频）的登记簿：`request_id → 通道 / 账号`，状态轮询要回到创建它的号。
     /// `None` = 不落库（测试、examples），视频任务只活在这一次进程里也查不到。
     pub media_jobs: Option<Arc<MediaJobs>>,
+    /// 方言口 Cursor 通道也可以走 Grok Bot。`None` = 测试 / examples，照旧取接力队。
+    pub grokbot: Option<Arc<GrokBotStreamAuth>>,
+    /// 与透传口一致：`sand` 身份必须配 grokBotToken，开关关着也不能拿会话 JWT 去盖 sand 头。
+    pub sand_identity: bool,
 }
 
 impl Gateway {
@@ -51,6 +57,8 @@ impl Gateway {
             api_key: None,
             ledger: None,
             media_jobs: None,
+            grokbot: None,
+            sand_identity: false,
         }
     }
 
@@ -118,11 +126,13 @@ fn settle(
     result: &Result<Completion, UpstreamError>,
     started: std::time::Instant,
 ) {
-    match result {
-        Ok(c) => channel
-            .lane
-            .report(credential, model, Outcome::Ok(&c.usage)),
-        Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
+    if !credential.label.starts_with(GROKBOT_LABEL_PREFIX) {
+        match result {
+            Ok(c) => channel
+                .lane
+                .report(credential, model, Outcome::Ok(&c.usage)),
+            Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
+        }
     }
     let Some(ledger) = &gw.ledger else { return };
     let elapsed = started.elapsed().as_millis() as u64;
@@ -158,6 +168,12 @@ fn settle(
     }
 }
 
+/// 入站请求体上限。Axum 默认 2 MB，`Bytes` 抽取时直接 413，handler / 上游都进不去，
+/// 客户端看到的是一句英文 `Failed to buffer the request body: length limit exceeded`。
+/// 64 MB 和出图参考图、Connect 信封同一量级；云端 TS 网关是 32 MB，本机回环多给一点，
+/// 两张 20 MB 的 data URL 也过得去。
+pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 pub fn router(gw: Shared) -> Router {
     let v1 = Router::new()
         .route("/chat/completions", post(chat_completions))
@@ -191,6 +207,32 @@ pub fn router(gw: Shared) -> Router {
         .nest("/v1", v1.clone())
         .nest("/openai/v1", v1.clone())
         .nest("/anthropic/v1", v1)
+        // 后挂的 layer 在最外：先写入上限，再在回程把 Axum 那句英文 413 换成方言 JSON。
+        .layer(middleware::from_fn(rewrite_payload_too_large))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+}
+
+fn dialect_for_path(path: &str) -> Dialect {
+    if path.contains("/messages") {
+        Dialect::AnthropicMessages
+    } else if path.contains("/responses") {
+        Dialect::OpenAiResponses
+    } else {
+        Dialect::OpenAiChat
+    }
+}
+
+async fn rewrite_payload_too_large(req: Request, next: Next) -> Response {
+    let dialect = dialect_for_path(req.uri().path());
+    let res = next.run(req).await;
+    if res.status() != StatusCode::PAYLOAD_TOO_LARGE {
+        return res;
+    }
+    err_json(
+        dialect,
+        413,
+        &format!("请求体过大（上限 {} MB）", MAX_BODY_BYTES / 1024 / 1024),
+    )
 }
 
 /// 绑到地址。传 `127.0.0.1:0` 让系统挑端口，实际端口从返回值的 `local_addr()` 拿。
@@ -265,13 +307,15 @@ async fn handle(gw: Shared, dialect: Dialect, headers: HeaderMap, body: Bytes) -
         Ok(p) => p,
         Err(e) => return err_json(dialect, e.status(), &e.to_string()),
     };
-    let model_label = if parsed.request.model.is_empty() {
-        "auto".to_string()
+    let resolved = gw.route(&parsed.request.model, Capability::Chat);
+    let model_label = if parsed.request.model.trim().is_empty() {
+        crate::channel::qualify(resolved.channel.id, &resolved.base_model)
     } else {
         parsed.request.model.clone()
     };
+    parsed.request.model = resolved.base_model.clone();
     parsed.request.client_headers = pick_client_headers(&headers);
-    let passthrough_route = gw.route(&model_label, Capability::Chat).channel.passthrough;
+    let passthrough_route = resolved.channel.passthrough;
     // Responses 透传通道（ChatGPT / Grok）会用到原始体。别的通道不带：中间表示够用。
     if dialect == Dialect::OpenAiResponses && passthrough_route {
         parsed.request.raw_responses = Some(Arc::new(body));
@@ -382,6 +426,28 @@ fn attach_headers(res: &mut Response, extra: &[(String, String)]) {
 /// 几十秒：lane 会把试过的号记成耗尽 / 冷却，下一次请求自然跳过它们，收敛得很快。
 const MAX_ACCOUNT_ATTEMPTS: usize = 4;
 
+/// 方言口 Cursor 通道要不要改走 Grok Bot。规则跟透传口 `resolve_identity` 对齐：
+/// 开着开关，或 `client_type=sand`（sand 头配会话 JWT 上游一律 401）。
+fn dialect_grokbot<'a>(gw: &'a Gateway, channel: &Channel) -> Option<&'a Arc<GrokBotStreamAuth>> {
+    if channel.id != crate::channel::CURSOR {
+        return None;
+    }
+    gw.grokbot
+        .as_ref()
+        .filter(|g| g.enabled() || gw.sand_identity)
+}
+
+async fn take_chat_credential(
+    gw: &Gateway,
+    channel: &Channel,
+    model: &str,
+) -> Result<Credential, UpstreamError> {
+    if let Some(g) = dialect_grokbot(gw, channel) {
+        return g.credential().await;
+    }
+    channel.lane.acquire(model).await
+}
+
 /// 取号 → 打上游 → 收尾（回报 lane、记账），怪号的错误在**首字节之前**换号重来。
 ///
 /// 只有 `blames_account` 的错误换号：额度 / 鉴权 / 权限 / 限流 / 这个号出不了这个模型。
@@ -400,7 +466,7 @@ async fn relay(
     let mut tried: Vec<String> = Vec::new();
     let route = gw.route(model, Capability::Chat).channel;
     for attempt in 1..=MAX_ACCOUNT_ATTEMPTS {
-        let credential = match route.lane.acquire(model).await {
+        let credential = match take_chat_credential(gw, route, model).await {
             Ok(c) => c,
             Err(e) => return Err(last.unwrap_or(e)),
         };
@@ -408,6 +474,7 @@ async fn relay(
             return Err(e.clone());
         }
         tried.push(credential.label.clone());
+        let via_grokbot = credential.label.starts_with(GROKBOT_LABEL_PREFIX);
         let started = std::time::Instant::now();
         let mut emitted = false;
         let mut sink = |d: Delta| {
@@ -420,7 +487,12 @@ async fn relay(
         let result = route.upstream.stream(&credential, request, &mut sink).await;
         settle(gw, route, &credential, model, dialect, &result, started);
         match result {
-            Err(e) if e.kind.blames_account() && !emitted && attempt < MAX_ACCOUNT_ATTEMPTS => {
+            Err(e)
+                if e.kind.blames_account()
+                    && !emitted
+                    && !via_grokbot
+                    && attempt < MAX_ACCOUNT_ATTEMPTS =>
+            {
                 tracing::info!(
                     account = %credential.label, model, kind = e.kind.as_str(), status = e.status, attempt,
                     "这个号出不了，换号重来"
@@ -445,9 +517,11 @@ fn settle_media<T>(
     started: std::time::Instant,
 ) {
     let none = Usage::default();
-    match result {
-        Ok(_) => channel.lane.report(credential, model, Outcome::Ok(&none)),
-        Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
+    if !credential.label.starts_with(GROKBOT_LABEL_PREFIX) {
+        match result {
+            Ok(_) => channel.lane.report(credential, model, Outcome::Ok(&none)),
+            Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
+        }
     }
     let Some(ledger) = &gw.ledger else { return };
     let elapsed = started.elapsed().as_millis() as u64;
@@ -515,7 +589,7 @@ async fn image_edits(State(gw): State<Shared>, req: axum::extract::Request) -> R
             Err(e) => Err(format!("multipart 解析失败：{e}")),
         }
     } else {
-        match axum::body::to_bytes(req.into_body(), 64 * 1024 * 1024).await {
+        match axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES).await {
             Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
                 Ok(v) => images::parse_edit_json(&v),
                 Err(e) => Err(format!("invalid JSON body: {e}")),
@@ -542,13 +616,14 @@ async fn run_images(
     mask: Option<String>,
 ) -> Response {
     let dialect = Dialect::OpenAiChat;
-    let model_label = if req.model.is_empty() {
-        "auto".to_string()
+    let resolved = gw.route(&req.model, Capability::Image);
+    let model_label = if req.model.trim().is_empty() {
+        crate::channel::qualify(resolved.channel.id, &resolved.base_model)
     } else {
         req.model.clone()
     };
     let one = ImageRequest {
-        model: req.model.clone(),
+        model: resolved.base_model.clone(),
         prompt: req.prompt.clone(),
         size: req.size.clone(),
         quality: req.quality.clone(),
@@ -645,30 +720,38 @@ async fn models(State(gw): State<Shared>, headers: HeaderMap) -> Response {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let mut data: Vec<Value> = STATIC_MODELS
-        .iter()
-        .map(|id| {
-            json!({ "id": id, "object": "model", "type": "model", "created": created,
-                    "owned_by": gw.channels.default_channel().vendor, "display_name": id })
-        })
-        .collect();
-    // 订阅通道有号可用时把它的模型也报出去；同名的（两边都有 gpt-5.6-sol）只留一条，
-    // 归订阅通道——同名请求本来也是它接。媒体模型只在媒体门禁放行时报。
+    let mut data: Vec<Value> = Vec::new();
+    let mut push = |channel: &str, vendor: &str, id: &str| {
+        let qid = crate::channel::qualify(channel, id);
+        data.push(json!({
+            "id": qid,
+            "object": "model",
+            "type": "model",
+            "created": created,
+            "owned_by": vendor,
+            "display_name": qid,
+        }));
+    };
+    for id in STATIC_MODELS {
+        push(crate::channel::CURSOR, "cursor", id);
+    }
+    for (id, _) in crate::models::IMAGE_MODELS {
+        push(crate::channel::CURSOR, "cursor", id);
+    }
+    // 订阅通道有号才报。同名并列：`cursor/gpt-5.6-sol` 和 `chatgpt/gpt-5.6-sol` 都在。
     for ch in gw.channels.extras() {
-        let mut ids: Vec<String> = Vec::new();
         if ch.gate.ready() {
-            ids.extend(ch.gate.models(Capability::Chat));
+            for id in ch.gate.models(Capability::Chat) {
+                push(ch.id, ch.vendor, &id);
+            }
         }
         if ch.gate.media_ready() {
-            ids.extend(ch.gate.models(Capability::Image));
-            ids.extend(ch.gate.models(Capability::Video));
-        }
-        for id in ids {
-            data.retain(|m| m["id"] != id);
-            data.push(
-                json!({ "id": id, "object": "model", "type": "model", "created": created,
-                        "owned_by": ch.vendor, "display_name": id }),
-            );
+            for id in ch.gate.models(Capability::Image) {
+                push(ch.id, ch.vendor, &id);
+            }
+            for id in ch.gate.models(Capability::Video) {
+                push(ch.id, ch.vendor, &id);
+            }
         }
     }
     Json(json!({ "object": "list", "data": data })).into_response()
@@ -704,12 +787,18 @@ async fn start_video(gw: Shared, headers: HeaderMap, body: Bytes, op: media::Vid
         Ok(r) => r,
         Err(m) => return err_json(dialect, 400, &m),
     };
-    let model_label = if req.model.is_empty() {
-        media::DEFAULT_VIDEO_MODEL.to_string()
+    let resolved = gw.route(&req.model, Capability::Video);
+    let model_label = if req.model.trim().is_empty() {
+        let base = if resolved.base_model.is_empty() {
+            media::DEFAULT_VIDEO_MODEL.to_string()
+        } else {
+            resolved.base_model.clone()
+        };
+        crate::channel::qualify(resolved.channel.id, &base)
     } else {
         req.model.clone()
     };
-    let route = gw.route(&model_label, Capability::Video).channel;
+    let route = resolved.channel;
     let mut last: Option<UpstreamError> = None;
     let mut tried: Vec<String> = Vec::new();
     for _ in 0..MAX_ACCOUNT_ATTEMPTS {
@@ -847,8 +936,9 @@ async fn video_owner<'a>(gw: &'a Gateway, request_id: &str) -> Option<(&'a Chann
         return Some((ch, credential));
     }
     let ch = gw
-        .route(media::DEFAULT_VIDEO_MODEL, Capability::Video)
-        .channel;
+        .channels
+        .get(crate::channel::GROK)
+        .unwrap_or_else(|| gw.channels.default_channel());
     let credential = ch.lane.acquire(media::DEFAULT_VIDEO_MODEL).await.ok()?;
     Some((ch, credential))
 }
@@ -1080,6 +1170,8 @@ mod tests {
             api_key: None,
             ledger: None,
             media_jobs: Some(jobs.clone()),
+            grokbot: None,
+            sand_identity: false,
         });
         let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1089,7 +1181,7 @@ mod tests {
 
     #[tokio::test]
     async fn media_models_route_by_capability_and_media_gate() {
-        // 媒体门禁关着：grok 的图不接，退回 Cursor。
+        // 裸名走用户默认通道（出厂 Cursor），不按模型名猜该不该去 Grok。
         let (base, _, _) = spawn_with_media(false).await;
         let body: Value = http()
             .post(format!("{base}/v1/images/generations"))
@@ -1102,11 +1194,11 @@ mod tests {
             .unwrap();
         assert_eq!(body["data"][0]["b64_json"], "cursor-img");
 
-        // 门禁开着：归 grok。带前缀强制也归 grok。
+        // 要走 Grok 就写通道前缀。
         let (base, _, _) = spawn_with_media(true).await;
         let body: Value = http()
             .post(format!("{base}/v1/images/generations"))
-            .json(&json!({ "model": "grok-imagine-image", "prompt": "cat" }))
+            .json(&json!({ "model": "grok/grok-imagine-image", "prompt": "cat" }))
             .send()
             .await
             .unwrap()
@@ -1130,8 +1222,9 @@ mod tests {
             .iter()
             .map(|m| m["id"].as_str().unwrap())
             .collect();
-        assert!(ids.contains(&"grok-imagine-video-1.5"));
-        assert!(ids.contains(&"grok-4.5"));
+        assert!(ids.contains(&"grok/grok-imagine-video-1.5"));
+        assert!(ids.contains(&"grok/grok-4.5"));
+        assert!(ids.contains(&"cursor/claude-opus-5"));
     }
 
     #[tokio::test]
@@ -1139,7 +1232,7 @@ mod tests {
         let (base, media, jobs) = spawn_with_media(true).await;
         let res = http()
             .post(format!("{base}/v1/videos/generations"))
-            .json(&json!({ "model": "grok-imagine-video-1.5", "prompt": "waves", "seconds": 6, "size": "1792x1024" }))
+            .json(&json!({ "model": "grok/grok-imagine-video-1.5", "prompt": "waves", "seconds": 6, "size": "1792x1024" }))
             .send()
             .await
             .unwrap();
@@ -1317,6 +1410,33 @@ mod tests {
 
     fn http() -> reqwest::Client {
         reqwest::Client::new()
+    }
+
+    #[tokio::test]
+    async fn responses_accepts_a_body_larger_than_axum_default_2mb() {
+        let (base, up) = spawn(
+            FakeUpstream {
+                deltas: vec![],
+                result: Ok(completion("ok", vec![])),
+                seen: Mutex::new(vec![]),
+                images: Mutex::new(vec![]),
+                seen_images: Mutex::new(vec![]),
+            },
+            None,
+        )
+        .await;
+        // Axum 默认 2 MB；超过就会在抽取阶段 413，假后端根本收不到。
+        let pad = "x".repeat(2 * 1024 * 1024 + 8 * 1024);
+        let res = http()
+            .post(format!("{base}/v1/responses"))
+            .json(&json!({ "model": "m", "input": pad }))
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        assert_ne!(status, 413, "超过 2 MB 不该再被 DefaultBodyLimit 挡下");
+        assert_eq!(status, 200, "{}", res.text().await.unwrap_or_default());
+        assert_eq!(up.seen.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1930,7 +2050,15 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|m| m["id"] == "auto"));
+                .any(|m| m["id"] == "cursor/auto"));
+            assert!(
+                body["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|m| m["id"].as_str().is_some_and(|id| id.contains('/'))),
+                "目录只报 通道/模型，不列裸名"
+            );
         }
         let res = http()
             .post(format!("{base}/v1/messages/count_tokens"))
@@ -2267,5 +2395,50 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), 402);
         assert_eq!(*up.seen.lock().unwrap(), ["a@x"], "同一个号只试一次");
+    }
+
+    #[tokio::test]
+    async fn sand_dialect_uses_grokbot_and_does_not_touch_the_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        let grokbot = Arc::new(GrokBotStreamAuth::new(
+            Arc::new(nexus_grokbot::GrokBotService::offline(dir.path())),
+            true,
+        ));
+        let lane = Arc::new(ScriptedLane::new(&["minnie@x"]));
+        let upstream = Arc::new(FakeUpstream::chat(
+            vec![Delta::Text("should-not-run".into())],
+            Ok(completion("should-not-run", vec![])),
+        ));
+        let gw = Arc::new(Gateway {
+            grokbot: Some(grokbot),
+            sand_identity: true,
+            ..Gateway::single(lane.clone(), upstream.clone())
+        });
+        let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve(listener, router(gw), std::future::pending()));
+        let res = http()
+            .post(format!("http://{addr}/v1/chat/completions"))
+            .json(&json!({
+                "model": "cursor/grok-4.5",
+                "messages": [{ "role": "user", "content": "ping" }]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 502);
+        let body: Value = res.json().await.unwrap();
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Grok Bot 凭证不可用"),
+            "{body}"
+        );
+        assert!(
+            lane.reports.lock().unwrap().is_empty(),
+            "Bot 凭证不是接力队里的号"
+        );
+        assert!(upstream.seen.lock().unwrap().is_empty());
     }
 }

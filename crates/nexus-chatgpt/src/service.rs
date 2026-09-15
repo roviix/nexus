@@ -7,6 +7,7 @@
 //! - **致命与暂时分开**（`OauthError::fatal`）。refresh token 作废 → `NeedsLogin`，等人重新授权；
 //!   网络抖动 → 什么都不改，还没过期的旧 access token 照用。
 
+use crate::billing::ChatGptBilling;
 use crate::callback::CallbackServer;
 use crate::model::{ChatGptAccount, ChatGptStatus};
 use crate::oauth::{
@@ -80,7 +81,7 @@ pub enum LoginState {
     },
 }
 
-/// 一行导入文本解析出来的东西。三种写法（见 [`parse_import_text`]）最后都落到这里。
+/// 一行（或一个 JSON 对象）解析出来的凭证。见 [`parse_import_entries`]。
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Imported {
     pub access_token: Option<String>,
@@ -94,6 +95,22 @@ impl Imported {
     }
 }
 
+/// 粘贴导入的汇总。凭证不回传——前端只需要新建 / 更新 / 失败各几个。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOutcome {
+    pub created: u32,
+    pub updated: u32,
+    pub failed: u32,
+    pub errors: Vec<String>,
+}
+
+impl ImportOutcome {
+    pub fn accepted(&self) -> u32 {
+        self.created + self.updated
+    }
+}
+
 /// 不透明的 refresh token：URL 安全字符、够长。短串会被拒掉，那是有意的——
 /// 一段乱字符拿去刷只会换来一个语焉不详的 400。
 fn looks_like_opaque_token(s: &str) -> bool {
@@ -102,35 +119,146 @@ fn looks_like_opaque_token(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'~' | b'-'))
 }
 
-/// 认三种写法：
-/// - `~/.codex/auth.json` 原文（`{"tokens":{"id_token","access_token","refresh_token"}}`，
-///   也接受把这三个键直接放顶层的形态）；
-/// - `xxx----yyy`（`----` 分隔），JWT 形态的是 access / id token，不透明串是 refresh token，
-///   邮箱段忽略（邮箱从 token 里读）；
-/// - 单独一个 JWT 或一个不透明 refresh token。
-pub fn parse_import_text(text: &str) -> Option<Imported> {
-    let raw = text.trim();
-    if raw.is_empty() || raw.starts_with('#') {
+fn looks_like_json(s: &str) -> bool {
+    matches!(s.as_bytes().first(), Some(b'{' | b'['))
+}
+
+/// 从一段可能夹着 NDJSON / 剩余文本的输入里尽量抠 JSON 值。
+/// 抠出的偏移之后交给行模式，这样「一个 pretty-printed 对象 + 几行 `----`」也能一次贴进来。
+fn take_json_values(raw: &str) -> (Vec<serde_json::Value>, &str) {
+    let mut stream = serde_json::Deserializer::from_str(raw).into_iter::<serde_json::Value>();
+    let mut values = Vec::new();
+    loop {
+        match stream.next() {
+            Some(Ok(v)) => values.push(v),
+            Some(Err(_)) | None => {
+                let offset = stream.byte_offset().min(raw.len());
+                return (values, raw[offset..].trim());
+            }
+        }
+    }
+}
+
+/// sub2api 后台导出常常是 `{data:{items:[…]}}` / `{accounts:[…]}` / `{contents:[…]}`，
+/// 不是单个 session。摊平之后每个元素再各自解析，省得用户先手工拆。
+fn unwrap_collection(v: serde_json::Value) -> Vec<serde_json::Value> {
+    match v {
+        serde_json::Value::Array(arr) => arr.into_iter().flat_map(unwrap_collection).collect(),
+        serde_json::Value::Object(map) => {
+            for key in ["items", "accounts", "contents"] {
+                if let Some(serde_json::Value::Array(arr)) = map.get(key) {
+                    return arr.iter().cloned().flat_map(unwrap_collection).collect();
+                }
+            }
+            if let Some(data) = map.get("data") {
+                let wrapped = data.is_array()
+                    || data.as_object().is_some_and(|o| {
+                        o.contains_key("items")
+                            || o.contains_key("accounts")
+                            || o.contains_key("contents")
+                    });
+                if wrapped {
+                    return unwrap_collection(data.clone());
+                }
+            }
+            vec![serde_json::Value::Object(map)]
+        }
+        other => vec![other],
+    }
+}
+
+fn pick_str(obj: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| {
+        obj.get(*k)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn object_field(v: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
+    let field = v.get(key)?;
+    if field.is_object() {
+        return Some(field.clone());
+    }
+    // 有的导出把 credentials 序列化成字符串。
+    let raw = field.as_str()?.trim();
+    if !raw.starts_with('{') {
         return None;
     }
-    if raw.starts_with('{') {
-        let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-        let tokens = v.get("tokens").filter(|t| t.is_object()).unwrap_or(&v);
-        let pick = |k: &str| {
-            tokens
-                .get(k)
-                .and_then(|x| x.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        let out = Imported {
-            access_token: pick("access_token").filter(|t| looks_like_jwt(t)),
-            refresh_token: pick("refresh_token").filter(|t| looks_like_opaque_token(t)),
-            id_token: pick("id_token").filter(|t| looks_like_jwt(t)),
-        };
-        return (!out.is_empty()).then_some(out);
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .filter(|p| p.is_object())
+}
+
+fn is_agent_identity(v: &serde_json::Value) -> bool {
+    if v.get("agent_identity").is_some() || v.get("agentIdentity").is_some() {
+        return true;
     }
+    matches!(
+        pick_str(v, &["auth_mode", "authMode"]).as_deref(),
+        Some(m) if m.eq_ignore_ascii_case("agentidentity")
+            || m.eq_ignore_ascii_case("agent_identity")
+    )
+}
+
+fn looks_like_agent_identity_blob(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("agentidentity")
+        || lower.contains("agent_identity")
+        || lower.contains("\"agent_runtime_id\"")
+}
+
+fn tokens_from_obj(obj: &serde_json::Value) -> Imported {
+    Imported {
+        // `token` 是 sub2api 对 accessToken 的短键；sessionToken 故意不看——
+        // 那是 chatgpt.com 的 cookie，当 refresh 存进去刷一次就会把好号刷废。
+        access_token: pick_str(obj, &["access_token", "accessToken", "token"])
+            .filter(|t| looks_like_jwt(t)),
+        refresh_token: pick_str(obj, &["refresh_token", "refreshToken"])
+            .filter(|t| looks_like_opaque_token(t)),
+        id_token: pick_str(obj, &["id_token", "idToken"]).filter(|t| looks_like_jwt(t)),
+    }
+}
+
+fn merge_imported(mut into: Imported, from: Imported) -> Imported {
+    if into.access_token.is_none() {
+        into.access_token = from.access_token;
+    }
+    if into.refresh_token.is_none() {
+        into.refresh_token = from.refresh_token;
+    }
+    if into.id_token.is_none() {
+        into.id_token = from.id_token;
+    }
+    into
+}
+
+fn imported_from_value(v: &serde_json::Value) -> Option<Imported> {
+    match v {
+        serde_json::Value::String(s) => parse_parts(s),
+        serde_json::Value::Object(_) => {
+            if is_agent_identity(v) {
+                return None;
+            }
+            let mut out = Imported::default();
+            // Codex CLI 的 tokens 段最干净，先它；再 sub2api 账号的 credentials；
+            // 最后顶层（chatgpt.com session JSON 的 accessToken / camelCase）。
+            if let Some(tokens) = object_field(v, "tokens") {
+                out = merge_imported(out, tokens_from_obj(&tokens));
+            }
+            if let Some(creds) = object_field(v, "credentials") {
+                out = merge_imported(out, tokens_from_obj(&creds));
+            }
+            out = merge_imported(out, tokens_from_obj(v));
+            (!out.is_empty()).then_some(out)
+        }
+        _ => None,
+    }
+}
+
+fn parse_parts(raw: &str) -> Option<Imported> {
     let mut out = Imported::default();
     for part in raw.split("----").map(str::trim).filter(|p| !p.is_empty()) {
         if part.contains('@') || part.contains(char::is_whitespace) {
@@ -154,6 +282,78 @@ pub fn parse_import_text(text: &str) -> Option<Imported> {
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+fn parse_import_lines(text: &str) -> Vec<Imported> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if looks_like_json(line) {
+            let (values, _) = take_json_values(line);
+            for v in values {
+                for item in unwrap_collection(v) {
+                    if let Some(imported) = imported_from_value(&item) {
+                        out.push(imported);
+                    }
+                }
+            }
+        } else if let Some(imported) = parse_parts(line) {
+            out.push(imported);
+        }
+    }
+    out
+}
+
+/// 一份粘贴可能是一个号，也可能是 sub2api 那种一次一打。
+///
+/// 认这些写法（和 sub2api 后台「Codex session」对得上，没有抄它的代码）：
+/// - `~/.codex/auth.json` 原文，或把 `tokens` 三个键放顶层 / 放进 `credentials`；
+/// - camelCase（`accessToken` / `refreshToken` / `idToken` / `token`）；
+/// - JSON 数组、NDJSON、`{items|accounts|contents|data.items:[…]}` 包一层的导出；
+/// - `xxx----yyy`（`----` 分隔），JWT 是 access / id，不透明串是 refresh，邮箱段忽略；
+/// - 单独一个 JWT 或一个不透明 refresh token；
+/// - 以上混贴，一行一个，`#` 当注释。
+///
+/// `sessionToken` 故意丢掉：那是 chatgpt.com 的 cookie，不是 OAuth refresh。
+/// Agent Identity（`auth_mode=agentIdentity`）桌面端还没接，整段跳过。
+pub fn parse_import_entries(text: &str) -> Vec<Imported> {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    if looks_like_json(raw) {
+        let (values, rest) = take_json_values(raw);
+        let mut out = Vec::new();
+        for v in values {
+            for item in unwrap_collection(v) {
+                if let Some(imported) = imported_from_value(&item) {
+                    out.push(imported);
+                }
+            }
+        }
+        if !rest.is_empty() {
+            out.extend(parse_import_lines(rest));
+        }
+        return out;
+    }
+    parse_import_lines(raw)
+}
+
+/// 只取第一份。给「肯定只有一个号」的路径（本机 `auth.json`、旧测试）用。
+pub fn parse_import_text(text: &str) -> Option<Imported> {
+    parse_import_entries(text).into_iter().next()
+}
+
+fn import_unrecognized(text: &str) -> AppError {
+    let hint = if looks_like_agent_identity_blob(text) {
+        "桌面端还不支持 Codex Agent Identity。请贴 OAuth 的 auth.json，或用授权登录。"
+    } else {
+        "支持 ~/.codex/auth.json、sub2api 的 Codex session JSON（数组 / 多行）、`access----refresh`，或单独一个 refresh token。"
+    };
+    AppError::invalid("认不出这段内容。").with_hint(hint)
 }
 
 pub struct ChatGptService {
@@ -466,10 +666,46 @@ impl ChatGptService {
     /// 导入一段文本（`auth.json` 原文、`xxx----yyy`、单个 token）。只有 refresh token 的话
     /// 先刷一次拿到 access token 与身份——所以这一步可能联网。
     pub async fn import_text(&self, text: &str, note: Option<&str>) -> Result<Upserted> {
-        let imported = parse_import_text(text).ok_or_else(|| {
-            AppError::invalid("认不出这段内容。")
-                .with_hint("支持 ~/.codex/auth.json 的原文、`access_token----refresh_token`，或单独一个 refresh token。")
-        })?;
+        let imported = parse_import_text(text).ok_or_else(|| import_unrecognized(text))?;
+        self.import_parsed(imported, note).await
+    }
+
+    /// 一次贴多个号：sub2api 的 Codex session 导出、JSON 数组、多行 `----`。
+    /// 能进的先进，认不出或刷失败的记进 `errors`，不因为一条坏的把整份退掉。
+    pub async fn import_dump(&self, text: &str, note: Option<&str>) -> Result<ImportOutcome> {
+        let entries = parse_import_entries(text);
+        if entries.is_empty() {
+            return Err(import_unrecognized(text));
+        }
+        let mut out = ImportOutcome::default();
+        for imported in entries {
+            match self.import_parsed(imported, note).await {
+                Ok(up) => {
+                    if up.created {
+                        out.created += 1;
+                    } else {
+                        out.updated += 1;
+                    }
+                }
+                Err(err) => {
+                    out.failed += 1;
+                    out.errors.push(err.message);
+                }
+            }
+        }
+        if out.accepted() == 0 {
+            let detail = out
+                .errors
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "没有可用的凭证。".into());
+            return Err(AppError::invalid(format!("一个都没导进去。{detail}"))
+                .with_hint("检查是不是 OAuth 的 auth.json / refresh token；Agent Identity 和 session cookie 进不来。"));
+        }
+        Ok(out)
+    }
+
+    async fn import_parsed(&self, imported: Imported, note: Option<&str>) -> Result<Upserted> {
         let tokens = match (&imported.access_token, &imported.refresh_token) {
             (Some(access), refresh) => TokenSet {
                 expires_at: jwt_expiry(access)
@@ -598,7 +834,12 @@ impl ChatGptService {
     }
 
     fn touch_identity(&self, id: &ChatGptAccountId, identity: &Identity) -> Result<()> {
-        if identity.plan_type.is_none() && identity.email.is_none() {
+        if identity.plan_type.is_none()
+            && identity.email.is_none()
+            && identity.user_id.is_none()
+            && identity.organization_id.is_none()
+            && identity.organization_title.is_none()
+        {
             return Ok(());
         }
         let account = self.repo.get(id)?;
@@ -623,43 +864,145 @@ impl ChatGptService {
 
     /// 主动问一次 `/wham/usage`。它在 `chatgpt.com` 的 web 面上，从机房 IP 可能被 Cloudflare 挑战；
     /// 本机（家庭宽带）一般能过。拿不到就报错、保留上一次的快照。
+    ///
+    /// 用量到手之后顺带读一次订阅账单。账单失败（被挑战、字段缺）不影响额度快照，也不改账号状态。
     pub async fn refresh_usage(&self, id: &ChatGptAccountId) -> Result<CodexUsage> {
-        let access = self.access_token(id).await?;
-        let account_ref = self.account_ref(id)?;
-        let mut req = self.http.get(format!("{}/wham/usage", self.backend_url));
-        for (k, v) in protocol::identity_headers(access.expose(), Some(&account_ref)) {
-            req = req.header(k, v);
-        }
-        let res = req.send().await.map_err(|e| {
-            let _ = self
-                .repo
-                .record_failure(id, &format!("额度接口连不上：{e}"), None);
-            AppError::network(format!("连不上 chatgpt.com：{e}"))
-        })?;
-        let status = res.status().as_u16();
-        let text = res.text().await.unwrap_or_default();
+        let (status, text) = match self.backend_get(id, "/wham/usage").await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = self
+                    .repo
+                    .record_failure(id, &format!("额度接口连不上：{e}"), None);
+                return Err(e);
+            }
+        };
         if status == 401 {
             self.repo
                 .record_failure(id, "额度接口 401", Some(ChatGptStatus::NeedsLogin))?;
             return Err(AppError::unauthorized("chatgpt.com 拒绝了这个号的凭证。"));
         }
         if !(200..300).contains(&status) {
-            let head: String = text.chars().take(160).collect();
-            let looks_like_page = head.to_ascii_lowercase().contains("<html")
-                || head.to_ascii_lowercase().contains("<!doctype");
-            let msg = if looks_like_page {
-                format!("额度接口被前置网关拦下（{status}），多半是出口 IP 被挑战")
-            } else {
-                format!("额度接口 {status}：{head}")
-            };
-            self.repo.record_failure(id, &msg, None)?;
-            return Err(AppError::upstream(msg));
+            let err = backend_error("额度接口", status, &text);
+            self.repo.record_failure(id, &err.message, None)?;
+            return Err(err);
         }
         let payload: serde_json::Value = serde_json::from_str(&text)
             .map_err(|_| AppError::upstream("额度接口返回的不是 JSON"))?;
         let usage = CodexUsage::from_wham(&payload, OffsetDateTime::now_utc());
         self.repo.record_usage(id, &usage)?;
+        self.try_refresh_billing(id).await;
         Ok(usage)
+    }
+
+    /// 主动问一次订阅：`/accounts/check/v4-2023-04-27`，必要时再问 `/subscriptions`。
+    /// 被挑战时保留上一份快照；字段缺席写成 `null`，不要写成「没有订阅」。
+    pub async fn refresh_billing(&self, id: &ChatGptAccountId) -> Result<ChatGptBilling> {
+        self.refresh_billing_inner(id, true).await
+    }
+
+    async fn try_refresh_billing(&self, id: &ChatGptAccountId) {
+        if let Err(err) = self.refresh_billing_inner(id, false).await {
+            tracing::info!(%err, account = %id, "刷完用量后读订阅失败，不影响额度快照");
+        }
+    }
+
+    async fn refresh_billing_inner(
+        &self,
+        id: &ChatGptAccountId,
+        auth_is_fatal: bool,
+    ) -> Result<ChatGptBilling> {
+        let account_ref = self.account_ref(id)?;
+        let now = OffsetDateTime::now_utc();
+        let mut last_err: Option<AppError> = None;
+        let mut parsed: Option<ChatGptBilling> = None;
+
+        for (path, source) in [
+            ("/accounts/check/v4-2023-04-27", "accounts/check"),
+            ("/wham/accounts/check", "wham/accounts/check"),
+        ] {
+            match self.backend_class(id, path).await? {
+                BackendClass::Json(payload) => {
+                    parsed = Some(ChatGptBilling::from_accounts_check(
+                        &payload,
+                        &account_ref,
+                        now,
+                        source,
+                    ));
+                    break;
+                }
+                BackendClass::Auth => {
+                    if auth_is_fatal {
+                        self.repo.record_failure(
+                            id,
+                            "订阅接口 401",
+                            Some(ChatGptStatus::NeedsLogin),
+                        )?;
+                    }
+                    return Err(AppError::unauthorized("chatgpt.com 拒绝了这个号的凭证。"));
+                }
+                BackendClass::Challenge(status) => {
+                    last_err = Some(backend_error("订阅接口", status, "<html>"));
+                }
+                BackendClass::Http(status, head) => {
+                    last_err = Some(backend_error("订阅接口", status, &head));
+                }
+            }
+        }
+
+        let had_check = parsed.is_some();
+        let mut billing = parsed.unwrap_or_else(|| ChatGptBilling::empty(now, "accounts/check"));
+        if billing.expires_at.is_none() || billing.will_renew.is_none() {
+            let path = format!("/subscriptions?account_id={account_ref}");
+            match self.backend_class(id, &path).await {
+                Ok(BackendClass::Json(payload)) => billing.overlay_subscriptions(&payload, now),
+                Ok(BackendClass::Auth) if !had_check => {
+                    if auth_is_fatal {
+                        self.repo.record_failure(
+                            id,
+                            "订阅接口 401",
+                            Some(ChatGptStatus::NeedsLogin),
+                        )?;
+                    }
+                    return Err(AppError::unauthorized("chatgpt.com 拒绝了这个号的凭证。"));
+                }
+                Ok(BackendClass::Challenge(status)) if !had_check => {
+                    last_err = Some(backend_error("订阅接口", status, "<html>"));
+                }
+                Ok(_) | Err(_) => {}
+            }
+        }
+
+        let looked = billing.expires_at.is_some()
+            || billing.has_active_subscription.is_some()
+            || billing.will_renew.is_some()
+            || billing.plan_type.is_some();
+        if !had_check && !looked {
+            return Err(last_err.unwrap_or_else(|| AppError::upstream("订阅接口没有返回账单")));
+        }
+
+        self.repo.record_billing(id, &billing)?;
+        Ok(billing)
+    }
+
+    async fn backend_get(&self, id: &ChatGptAccountId, path: &str) -> Result<(u16, String)> {
+        let access = self.access_token(id).await?;
+        let account_ref = self.account_ref(id)?;
+        let mut req = self.http.get(format!("{}{path}", self.backend_url));
+        for (k, v) in protocol::identity_headers(access.expose(), Some(&account_ref)) {
+            req = req.header(k, v);
+        }
+        let res = req
+            .send()
+            .await
+            .map_err(|e| AppError::network(format!("连不上 chatgpt.com：{e}")))?;
+        let status = res.status().as_u16();
+        let text = res.text().await.unwrap_or_default();
+        Ok((status, text))
+    }
+
+    async fn backend_class(&self, id: &ChatGptAccountId, path: &str) -> Result<BackendClass> {
+        let (status, text) = self.backend_get(id, path).await?;
+        Ok(classify_backend(status, &text))
     }
 
     /// 网关从响应头里读到的额度，落成快照。
@@ -677,6 +1020,47 @@ impl ChatGptService {
     pub fn mark_dead(&self, id: &ChatGptAccountId, message: &str) -> Result<()> {
         self.repo
             .record_failure(id, message, Some(ChatGptStatus::Dead))
+    }
+}
+
+enum BackendClass {
+    Json(serde_json::Value),
+    Auth,
+    Challenge(u16),
+    Http(u16, String),
+}
+
+fn looks_like_challenge(text: &str) -> bool {
+    let head: String = text.chars().take(160).collect();
+    let low = head.to_ascii_lowercase();
+    low.contains("<html") || low.contains("<!doctype")
+}
+
+fn classify_backend(status: u16, text: &str) -> BackendClass {
+    if status == 401 {
+        return BackendClass::Auth;
+    }
+    if looks_like_challenge(text) {
+        return BackendClass::Challenge(status);
+    }
+    if (200..300).contains(&status) {
+        match serde_json::from_str(text) {
+            Ok(v) => BackendClass::Json(v),
+            Err(_) => BackendClass::Http(status, "返回的不是 JSON".into()),
+        }
+    } else {
+        BackendClass::Http(status, text.chars().take(160).collect())
+    }
+}
+
+fn backend_error(label: &str, status: u16, text: &str) -> AppError {
+    if looks_like_challenge(text) || text.contains("<html") {
+        AppError::upstream(format!(
+            "{label}被前置网关拦下（{status}），多半是出口 IP 被挑战"
+        ))
+    } else {
+        let head: String = text.chars().take(160).collect();
+        AppError::upstream(format!("{label} {status}：{head}"))
     }
 }
 
@@ -724,6 +1108,10 @@ mod tests {
         usage_calls: AtomicUsize,
         usage_status: Mutex<u16>,
         usage_headers: Mutex<Vec<HashMap<String, String>>>,
+        check_status: Mutex<u16>,
+        check_body: Mutex<Option<serde_json::Value>>,
+        sub_status: Mutex<u16>,
+        sub_body: Mutex<Option<serde_json::Value>>,
     }
 
     async fn token(
@@ -777,11 +1165,23 @@ mod tests {
         (
             axum::http::StatusCode::OK,
             serde_json::json!({
+                "user_id": "user_wham",
                 "plan_type": "pro",
                 "rate_limit": {
+                    "allowed": true,
+                    "limit_reached": false,
                     "primary_window": { "used_percent": 37.5, "reset_after_seconds": 600, "limit_window_seconds": 18000 },
                     "secondary_window": { "used_percent": 12, "reset_after_seconds": 86400, "limit_window_seconds": 604800 }
-                }
+                },
+                "additional_rate_limits": [{
+                    "limit_name": "GPT-5.3-Codex-Spark",
+                    "metered_feature": "codex_bengalfox",
+                    "rate_limit": {
+                        "primary_window": { "used_percent": 100, "reset_after_seconds": 18000, "limit_window_seconds": 18000 },
+                        "secondary_window": { "used_percent": 8, "reset_after_seconds": 86400, "limit_window_seconds": 604800 }
+                    }
+                }],
+                "credits": { "has_credits": false, "balance": "0" }
             })
             .to_string(),
         )
@@ -814,12 +1214,64 @@ mod tests {
         )
     }
 
+    async fn accounts_check(State(f): State<Arc<Fake>>) -> (axum::http::StatusCode, String) {
+        let status = *f.check_status.lock().unwrap();
+        if status != 200 {
+            return (
+                axum::http::StatusCode::from_u16(status)
+                    .unwrap_or(axum::http::StatusCode::NOT_FOUND),
+                if status == 403 {
+                    "<!DOCTYPE html><html>challenge</html>".into()
+                } else {
+                    "{}".into()
+                },
+            );
+        }
+        let body = f
+            .check_body
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({ "accounts": {} }));
+        (axum::http::StatusCode::OK, body.to_string())
+    }
+
+    async fn subscriptions(State(f): State<Arc<Fake>>) -> (axum::http::StatusCode, String) {
+        let status = *f.sub_status.lock().unwrap();
+        if status != 200 {
+            return (
+                axum::http::StatusCode::from_u16(status)
+                    .unwrap_or(axum::http::StatusCode::NOT_FOUND),
+                if status == 403 {
+                    "<!DOCTYPE html><html>challenge</html>".into()
+                } else {
+                    "{}".into()
+                },
+            );
+        }
+        let body = f
+            .sub_body
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({}));
+        (axum::http::StatusCode::OK, body.to_string())
+    }
+
     async fn spawn_fake() -> (Arc<Fake>, String) {
         let fake = Arc::new(Fake::default());
         *fake.usage_status.lock().unwrap() = 200;
+        *fake.check_status.lock().unwrap() = 404;
+        *fake.sub_status.lock().unwrap() = 404;
         let app = Router::new()
             .route("/oauth/token", post(token))
             .route("/backend-api/wham/usage", get(usage))
+            .route(
+                "/backend-api/accounts/check/v4-2023-04-27",
+                get(accounts_check),
+            )
+            .route("/backend-api/wham/accounts/check", get(accounts_check))
+            .route("/backend-api/subscriptions", get(subscriptions))
             .route("/backend-api/codex/models", get(models))
             .with_state(fake.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -884,6 +1336,89 @@ mod tests {
         );
     }
 
+    #[test]
+    fn import_text_understands_sub2api_session_shapes_and_batches() {
+        let access = access_token("acct_s", 4_000_000_000);
+        let idt = id_token("cam@x.com", "acct_s");
+
+        let camel = parse_import_text(
+            &serde_json::json!({
+                "accessToken": access,
+                "refreshToken": RT,
+                "idToken": idt,
+                "sessionToken": "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6InNlc3Npb25AZXhhbXBsZS5jb20ifQ.sig"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(camel.access_token.as_deref(), Some(access.as_str()));
+        assert_eq!(camel.refresh_token.as_deref(), Some(RT));
+        assert_eq!(camel.id_token.as_deref(), Some(idt.as_str()));
+
+        let creds = parse_import_text(
+            &serde_json::json!({
+                "name": "cam@x.com",
+                "platform": "openai",
+                "credentials": {
+                    "access_token": access,
+                    "refresh_token": RT
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(creds.refresh_token.as_deref(), Some(RT));
+
+        let stringified = parse_import_text(
+            &serde_json::json!({
+                "credentials": serde_json::json!({"refresh_token": RT, "access_token": access}).to_string()
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(stringified.refresh_token.as_deref(), Some(RT));
+
+        let wrapped = parse_import_entries(
+            &serde_json::json!({
+                "data": { "items": [
+                    { "tokens": { "access_token": access, "refresh_token": RT } },
+                    { "accessToken": access_token("acct_t", 4_000_000_000), "refreshToken": "rt-opaque-refresh-token-other-000" }
+                ] }
+            })
+            .to_string(),
+        );
+        assert_eq!(wrapped.len(), 2);
+
+        let mixed = parse_import_entries(&format!(
+            "{}\n# skip\nbob@x.com----{RT}\n",
+            serde_json::json!({ "refreshToken": "rt-opaque-refresh-token-ndjson-00" })
+        ));
+        assert_eq!(mixed.len(), 2);
+        assert_eq!(
+            mixed[0].refresh_token.as_deref(),
+            Some("rt-opaque-refresh-token-ndjson-00")
+        );
+        assert_eq!(mixed[1].refresh_token.as_deref(), Some(RT));
+
+        let pretty_then_line = format!(
+            "{{\n  \"accessToken\": \"{access}\",\n  \"refreshToken\": \"{RT}\"\n}}\nsecond@x.com----{RT}\n"
+        );
+        assert_eq!(parse_import_entries(&pretty_then_line).len(), 2);
+
+        assert!(
+            parse_import_text(
+                &serde_json::json!({
+                    "sessionToken": "cookie-only",
+                    "auth_mode": "agentIdentity",
+                    "agent_runtime_id": "rt_1"
+                })
+                .to_string()
+            )
+            .is_none(),
+            "session cookie / Agent Identity 都不能当 OAuth 凭证"
+        );
+    }
+
     #[tokio::test]
     async fn importing_only_a_refresh_token_refreshes_first_and_lands_an_active_account() {
         let (fake, base) = spawn_fake().await;
@@ -919,6 +1454,44 @@ mod tests {
             .unwrap()
             .expose()
             .contains("rotated"));
+    }
+
+    #[tokio::test]
+    async fn import_dump_takes_a_sub2api_batch_and_keeps_going_after_a_bad_row() {
+        let (_fake, base) = spawn_fake().await;
+        let svc = service(&base);
+        let a = access_token("acct_batch_1", 4_000_000_000);
+        let b = access_token("acct_batch_2", 4_000_000_000);
+        let no_sub = jwt(serde_json::json!({
+            "exp": 4_000_000_000u64,
+            "https://api.openai.com/profile": { "email": "nosub@example.com" }
+        }));
+        let dump = format!(
+            "{}\n{}\n{}",
+            serde_json::json!({ "accessToken": a, "refreshToken": RT }),
+            serde_json::json!({ "accessToken": no_sub }),
+            serde_json::json!({
+                "tokens": {
+                    "access_token": b,
+                    "refresh_token": "rt-opaque-refresh-token-batch-2"
+                }
+            })
+        );
+        let out = svc.import_dump(&dump, Some("from sub2api")).await.unwrap();
+        assert_eq!(out.created, 2);
+        assert_eq!(out.failed, 1);
+        assert!(out.errors.iter().any(|e| e.contains("chatgpt_account_id")));
+        assert_eq!(svc.list().unwrap().len(), 2);
+
+        let again = svc
+            .import_dump(
+                &serde_json::json!({ "accessToken": a, "refreshToken": RT }).to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.updated, 1);
+        assert_eq!(again.created, 0);
     }
 
     #[tokio::test]
@@ -1041,8 +1614,16 @@ mod tests {
         assert_eq!(u.plan_type.as_deref(), Some("pro"));
         assert_eq!(u.primary.unwrap().used_percent, Some(37.5));
         assert_eq!(u.source, "wham/usage");
+        assert_eq!(u.user_id.as_deref(), Some("user_wham"));
+        assert_eq!(u.additional.len(), 1);
+        assert_eq!(u.additional[0].name.as_deref(), Some("GPT-5.3-Codex-Spark"));
         let a = svc.get(&up.account.id).unwrap();
         assert_eq!(a.plan_type.as_deref(), Some("pro"), "套餐跟着快照更新");
+        assert_eq!(a.user_id.as_deref(), Some("user_wham"), "额度接口补用户 id");
+        assert!(
+            a.billing.is_none(),
+            "订阅接口 404 不该写成一份空账单，免得界面把「没问到」当成「没有到期日」"
+        );
         assert_eq!(
             a.usage.unwrap().secondary.unwrap().window_minutes,
             Some(10080)
@@ -1230,5 +1811,96 @@ mod tests {
             .unwrap_err();
         assert!(err.message.contains("chatgpt_account_id"));
         assert_eq!(svc.list().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn billing_reads_accounts_check_and_keeps_the_snapshot_when_challenged() {
+        let (fake, base) = spawn_fake().await;
+        let svc = service(&base);
+        let up = svc
+            .import_text(
+                &format!("{}----{RT}", access_token("acct_1", 4_000_000_000)),
+                None,
+            )
+            .await
+            .unwrap();
+        *fake.check_status.lock().unwrap() = 200;
+        *fake.check_body.lock().unwrap() = Some(serde_json::json!({
+            "accounts": {
+                "acct_1": {
+                    "account": { "account_id": "acct_1", "plan_type": "plus" },
+                    "entitlement": {
+                        "has_active_subscription": true,
+                        "subscription_plan": "chatgptplusplan",
+                        "expires_at": "2026-10-01T00:00:00Z"
+                    }
+                }
+            }
+        }));
+        let b = svc.refresh_billing(&up.account.id).await.unwrap();
+        assert_eq!(b.expires_at.as_deref(), Some("2026-10-01T00:00:00Z"));
+        assert_eq!(b.has_active_subscription, Some(true));
+        assert_eq!(b.will_renew, None, "没写会不会续，不是不会续");
+        assert_eq!(
+            svc.get(&up.account.id)
+                .unwrap()
+                .billing
+                .unwrap()
+                .expires_at
+                .as_deref(),
+            Some("2026-10-01T00:00:00Z")
+        );
+
+        *fake.check_status.lock().unwrap() = 403;
+        let err = svc.refresh_billing(&up.account.id).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::Upstream);
+        assert!(err.message.contains("挑战"), "{}", err.message);
+        assert_eq!(
+            svc.get(&up.account.id)
+                .unwrap()
+                .billing
+                .unwrap()
+                .expires_at
+                .as_deref(),
+            Some("2026-10-01T00:00:00Z"),
+            "被挑战不能把上一份快照冲掉"
+        );
+        assert_eq!(
+            svc.get(&up.account.id).unwrap().status,
+            ChatGptStatus::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn billing_fills_renewal_from_subscriptions_when_check_omits_it() {
+        let (fake, base) = spawn_fake().await;
+        let svc = service(&base);
+        let up = svc
+            .import_text(
+                &format!("{}----{RT}", access_token("acct_1", 4_000_000_000)),
+                None,
+            )
+            .await
+            .unwrap();
+        *fake.check_status.lock().unwrap() = 200;
+        *fake.check_body.lock().unwrap() = Some(serde_json::json!({
+            "accounts": {
+                "acct_1": {
+                    "account": { "account_id": "acct_1", "plan_type": "pro" },
+                    "entitlement": { "has_active_subscription": true }
+                }
+            }
+        }));
+        *fake.sub_status.lock().unwrap() = 200;
+        *fake.sub_body.lock().unwrap() = Some(serde_json::json!({
+            "active_until": "2026-11-01T00:00:00Z",
+            "will_renew": true,
+            "billing_period": "monthly"
+        }));
+        let b = svc.refresh_billing(&up.account.id).await.unwrap();
+        assert_eq!(b.expires_at.as_deref(), Some("2026-11-01T00:00:00Z"));
+        assert_eq!(b.will_renew, Some(true));
+        assert_eq!(b.billing_period.as_deref(), Some("monthly"));
+        assert_eq!(b.plan_type.as_deref(), Some("pro"));
     }
 }

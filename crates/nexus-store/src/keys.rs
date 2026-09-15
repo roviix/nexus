@@ -39,6 +39,8 @@ pub enum AccountSecret {
     EmailPassword,
     /// 辅助邮箱。严格说不是秘密，但它和密码一起构成找回路径，同等对待。
     RecoveryEmail,
+    /// 长期 User API Key（`crsr_…`）。不能登回 IDE，能兑短期 access 查基础用量。
+    ApiKey,
 }
 
 impl AccountSecret {
@@ -49,16 +51,18 @@ impl AccountSecret {
             AccountSecret::CursorPassword => "cursor_pw",
             AccountSecret::EmailPassword => "email_pw",
             AccountSecret::RecoveryEmail => "recovery_email",
+            AccountSecret::ApiKey => "api_key",
         }
     }
 
     /// 全部种类，删账号时逐个清。
-    pub const ALL: [AccountSecret; 5] = [
+    pub const ALL: [AccountSecret; 6] = [
         AccountSecret::Refresh,
         AccountSecret::Access,
         AccountSecret::CursorPassword,
         AccountSecret::EmailPassword,
         AccountSecret::RecoveryEmail,
+        AccountSecret::ApiKey,
     ];
 }
 
@@ -184,6 +188,10 @@ mod tests {
         assert_eq!(
             account_secret(&acct, AccountSecret::CursorPassword).as_str(),
             "acct/A1/cursor_pw"
+        );
+        assert_eq!(
+            account_secret(&acct, AccountSecret::ApiKey).as_str(),
+            "acct/A1/api_key"
         );
         assert_eq!(
             profile_auth(&ProfileId::from_raw("P1")).as_str(),

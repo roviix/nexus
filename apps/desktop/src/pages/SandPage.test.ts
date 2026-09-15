@@ -116,7 +116,7 @@ describe("STEP_LABEL", () => {
 describe("passthroughUrlOf", () => {
   const base: GatewayStatus = {
     running: null,
-    settings: { port: 8787, passthroughPort: 8788, clientType: "sand", autostart: false, forceModel: null },
+    settings: { port: 8787, passthroughPort: 8788, clientType: "sand", autostart: false, forceModel: null, defaultChannel: "cursor" },
     restartNeeded: false,
     apiKeySet: true,
     channels: [],

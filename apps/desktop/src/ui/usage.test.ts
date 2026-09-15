@@ -13,6 +13,7 @@ import {
   meterWidth,
   money,
   moneyShort,
+  creditPoints,
   onDemandParts,
   onDemandText,
   overallPercent,
@@ -248,6 +249,14 @@ describe("money and on-demand", () => {
   it("renders cents as dollars", () => {
     expect(money(2000)).toBe("$20.00");
     expect(money(undefined)).toBe("—");
+  });
+
+  it("shows gifted credit grants as whole-dollar points", () => {
+    expect(creditPoints(2500)).toBe("25");
+    expect(creditPoints(10000)).toBe("100");
+    expect(creditPoints(2100)).toBe("21");
+    expect(creditPoints(1234)).toBe("12.34");
+    expect(creditPoints(undefined)).toBe("—");
   });
 
   it("distinguishes uncapped from unknown", () => {

@@ -84,10 +84,15 @@ export function sessionOnly(a: Pick<Account, "hasRefresh" | "hasAccess">): boole
 }
 
 /**
- * 能不能拿到一把会话去干活（刷用量、进网关、换 Grok 额度）。有 refresh 永远行；
- * 没 refresh 就看 access 还活着没。与 Rust 侧 `Account::can_query_usage` 同口径。
+ * 能不能查用量。有 refresh 永远行；没 refresh 看 access 还活着没；再不行还有 crsr_，
+ * 只能拉逐条花费，没有额度百分比。
  */
 export function canQueryUsage(a: Account, now = Date.now()): boolean {
+  return a.hasRefresh || hasLiveAccess(a, now) || a.hasApiKey;
+}
+
+/** cookie dashboard 那条路：账单、踢会话、按需、会话 cookie。crsr_ 走不通。 */
+export function canUseDashboard(a: Account, now = Date.now()): boolean {
   return a.hasRefresh || hasLiveAccess(a, now);
 }
 
@@ -224,7 +229,7 @@ export interface AccountSummary {
   total: number;
   /** 各档的数量。四档相加必然等于 total —— 顶部那条分布条就是照它画的。 */
   by: Record<PoolState, number>;
-  /** 此刻能拼出会话、能刷用量的号（有 refresh，或仅会话且没过期）。 */
+  /** 此刻能刷用量的号（有 refresh、还活着的 session，或 crsr_ API Key）。 */
   refreshable: number;
 }
 

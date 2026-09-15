@@ -30,12 +30,6 @@ export function money(cents?: number | null): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-/** 人民币，用于商城。 */
-export function yuan(amount?: number | null): string {
-  if (amount == null || !Number.isFinite(amount)) return "—";
-  return `¥${amount.toFixed(2)}`;
-}
-
 /** 邮箱打码。列表默认打码，展开才看全（§8）。 */
 export function maskEmail(email: string): string {
   const [local = "", domain = ""] = email.split("@");

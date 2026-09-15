@@ -24,6 +24,7 @@ pub const CURSOR_MODELS: &[&str] = &[
     "gpt-5.6-terra",
     "grok-4.6",
     "grok-4.5",
+    "grok-4.7",
     "gemini-3.7-flash",
 ];
 
@@ -82,6 +83,8 @@ const ALIASES: &[(&str, &str)] = &[
     // ── xAI ──
     ("grok-3", "grok-4.6"),
     ("grok-2", "grok-4.6"),
+    ("grok-4-7", "grok-4.7"),
+    ("cursor-grok-4.7", "grok-4.7"),
 ];
 
 /// 一次映射的结果。`note` 有值时说明我们动了客户端要的东西，调用方要记一行日志。
@@ -121,6 +124,25 @@ fn strip_version_suffix(name: &str) -> &str {
     name
 }
 
+/// Bot 通道上 grok 4.7 没有可直打的 slug，只能发别名 `sand-cua`。
+/// 不要误伤 `grok-4.6` / `claude-opus-4-7`。
+pub fn is_grok47_request(name: &str) -> bool {
+    let k = name.trim().to_ascii_lowercase();
+    k.contains("grok-4.7") || k.contains("grok-4-7") || k.contains("4-7-0910")
+}
+
+/// `sand-cua` 没灰度时落到的 luna 底座。
+pub fn is_luna_model(name: &str) -> bool {
+    let k = name.trim().to_ascii_lowercase();
+    k.contains("gpt-5.6-luna") || k.contains("gpt-5-6-luna")
+}
+
+/// 探针能立刻当真的 `sand-cua` 落点。只有这两族是真机扫过的分片；
+/// opus / sonnet / 4.5 常出现在账号默认模型里，不能单凭第一帧就信。
+pub fn is_known_cua_shard(name: &str) -> bool {
+    is_grok47_request(name) || is_luna_model(name)
+}
+
 /// 客户端要的模型名 → 发给 Cursor 的模型名。
 pub fn resolve(requested: &str) -> Resolved {
     let raw = normalize(requested);
@@ -129,6 +151,18 @@ pub fn resolve(requested: &str) -> Resolved {
     }
     // 有些客户端会带 provider 前缀（`anthropic/claude-…`、`openai/gpt-…`）。
     let raw = raw.rsplit('/').next().unwrap_or(&raw).to_string();
+
+    if raw == "sand-cua" {
+        return Resolved::passthrough("sand-cua");
+    }
+    if is_grok47_request(&raw) {
+        return Resolved {
+            upstream: "sand-cua".to_string(),
+            note: Some(format!(
+                "{requested} → sand-cua（Bot 通道 grok 4.7 只能走这个别名）"
+            )),
+        };
+    }
 
     if CURSOR_MODELS.contains(&raw.as_str()) {
         return Resolved::passthrough(&raw);
@@ -253,6 +287,9 @@ pub fn catalog() -> Vec<CatalogEntry> {
                 .collect();
             let note = match *id {
                 "auto" => Some("让 Cursor 按请求挑模型；认不出的客户端模型名也落到这里。"),
+                "grok-4.7" => {
+                    Some("Bot 通道经 sand-cua 别名；只有部分账号会落到 grok-4.7，其余仍是 luna。")
+                }
                 _ => None,
             };
             CatalogEntry {
@@ -272,8 +309,8 @@ pub fn catalog() -> Vec<CatalogEntry> {
 }
 
 /// ChatGPT 订阅号那一侧的目录：Codex 的对话模型（`chat_models`，静态表 ∪ 上游拉到的）+
-/// `gpt-image-*`。只在有可用的 ChatGPT 号时并进模型广场（由 Tauri 命令层判断）；名字与
-/// Cursor 重复的（`gpt-5.6-sol` 两边都有）以 ChatGPT 这条为准——同名请求本来也是它接。
+/// `gpt-image-*`。只在有可用的 ChatGPT 号时并进模型广场。id 在 `merged_catalog` 里加成
+/// `chatgpt/…`，和 Cursor 同名的两条并列，不再互斥覆盖。
 pub fn chatgpt_catalog(chat_models: &[String]) -> Vec<CatalogEntry> {
     let chat = chat_models.iter().map(|id| CatalogEntry {
         id: id.clone(),
@@ -282,7 +319,7 @@ pub fn chatgpt_catalog(chat_models: &[String]) -> Vec<CatalogEntry> {
         modality: "chat",
         series: id.clone(),
         variant: "standard".to_string(),
-        aliases: Vec::new(),
+        aliases: crate::codex::protocol::catalog_aliases(id),
         note: Some("经 ChatGPT 订阅号（Codex 协议）。模型名后可加档位后缀：-low / -medium / -high / -xhigh。"),
         fixed_size: None,
     });
@@ -300,14 +337,28 @@ pub fn chatgpt_catalog(chat_models: &[String]) -> Vec<CatalogEntry> {
     chat.chain(images).collect()
 }
 
-/// Cursor 目录 + ChatGPT 目录合并，同名以 ChatGPT 为准。`chatgpt = None` 表示 ChatGPT 通道没号。
+/// 把一条目录项的 id / series 写成 `{通道}/{模型}`。已经带前缀的不叠。
+pub fn qualify_entry(channel: &str, mut entry: CatalogEntry) -> CatalogEntry {
+    let raw_id = entry.id.clone();
+    let raw_series = entry.series.clone();
+    entry.id = crate::channel::qualify(channel, &raw_id);
+    entry.series = crate::channel::qualify(channel, &raw_series);
+    entry
+}
+
+/// Cursor 目录 + ChatGPT 目录。两边都带通道前缀，同名并列，不再互斥。
+/// `chatgpt = None` 表示 ChatGPT 通道没号。
 pub fn merged_catalog(chatgpt: Option<&[String]>) -> Vec<CatalogEntry> {
-    let mut out = catalog();
+    let mut out: Vec<CatalogEntry> = catalog()
+        .into_iter()
+        .map(|e| qualify_entry(crate::channel::CURSOR, e))
+        .collect();
     if let Some(models) = chatgpt {
-        for entry in chatgpt_catalog(models) {
-            out.retain(|e| e.id != entry.id);
-            out.push(entry);
-        }
+        out.extend(
+            chatgpt_catalog(models)
+                .into_iter()
+                .map(|e| qualify_entry(crate::channel::CHATGPT, e)),
+        );
     }
     out
 }
@@ -342,6 +393,10 @@ mod tests {
     #[test]
     fn cursor_names_pass_through_untouched() {
         for m in CURSOR_MODELS {
+            if *m == "grok-4.7" {
+                assert_eq!(up(m), "sand-cua", "4.7 只能走 sand-cua 别名");
+                continue;
+            }
             let r = resolve(m);
             assert_eq!(&r.upstream, m);
             assert!(r.note.is_none(), "{m} 不该被改写");
@@ -406,6 +461,23 @@ mod tests {
         assert_eq!(up("gemini-3.7-flash"), "gemini-3.7-flash");
         assert_eq!(up("grok-3-latest"), "grok-4.6");
         assert_eq!(up("grok-4.6"), "grok-4.6");
+        assert_eq!(up("grok-4.7"), "sand-cua");
+        assert_eq!(up("grok-4-7-0910-xhigh"), "sand-cua");
+        assert_eq!(up("cursor-grok-4.7-high"), "sand-cua");
+        assert_eq!(up("sand-cua"), "sand-cua");
+        assert_ne!(up("claude-opus-4-7"), "sand-cua");
+        assert_ne!(up("grok-4.6-fast"), "sand-cua");
+    }
+
+    #[test]
+    fn cua_shard_names_are_4_7_and_luna_only() {
+        assert!(is_known_cua_shard("grok-4-7-0910-xhigh"));
+        assert!(is_known_cua_shard("gpt-5.6-luna-high"));
+        assert!(is_known_cua_shard("gpt-5.6-luna-medium"));
+        assert!(!is_known_cua_shard("claude-opus-5-thinking-xhigh"));
+        assert!(!is_known_cua_shard("grok-4.5"));
+        assert!(!is_known_cua_shard("sand-cua"));
+        assert!(!is_grok47_request("claude-opus-4-7"));
     }
 
     #[test]
@@ -474,6 +546,10 @@ mod tests {
         assert_eq!(by_id("auto").vendor, "cursor");
         assert!(by_id("auto").note.is_some());
         assert_eq!(by_id("grok-4.6").vendor, "xai");
+        assert_eq!(by_id("grok-4.7").vendor, "xai");
+        assert!(by_id("grok-4.7")
+            .note
+            .is_some_and(|n| n.contains("sand-cua")));
         assert_eq!(by_id("gemini-3.7-flash").vendor, "google");
         assert_eq!(by_id("gemini-3.7-flash").modality, "chat");
     }
@@ -516,44 +592,52 @@ mod tests {
     }
 
     #[test]
-    fn chatgpt_catalog_merges_in_only_when_asked_and_wins_name_clashes() {
+    fn chatgpt_catalog_merges_in_only_when_asked_and_keeps_both_sides() {
         let plain = merged_catalog(None);
         assert_eq!(plain.len(), catalog().len());
-        assert!(!plain.iter().any(|e| e.id == "gpt-image-2"));
+        assert!(plain.iter().any(|e| e.id == "cursor/claude-sonnet-5"));
+        assert!(!plain.iter().any(|e| e.id == "chatgpt/gpt-image-2"));
 
         let models = vec![
+            "gpt-6-astra".to_string(),
             "gpt-5.4".to_string(),
             "gpt-5.6-sol".to_string(),
             "gpt-7-new".to_string(),
         ];
         let merged = merged_catalog(Some(&models));
-        let img = merged.iter().find(|e| e.id == "gpt-image-2").unwrap();
-        assert_eq!(img.modality, "image");
-        assert_eq!(img.vendor, "openai");
-        assert_eq!(
-            merged.iter().filter(|e| e.id == "gpt-5.6-sol").count(),
-            1,
-            "两边都有的只留一条"
-        );
         assert!(merged
             .iter()
-            .find(|e| e.id == "gpt-5.6-sol")
+            .find(|e| e.id == "chatgpt/gpt-6-astra")
+            .unwrap()
+            .aliases
+            .contains(&"gpt-6"));
+        let img = merged
+            .iter()
+            .find(|e| e.id == "chatgpt/gpt-image-2")
+            .unwrap();
+        assert_eq!(img.modality, "image");
+        assert_eq!(img.vendor, "openai");
+        assert!(merged.iter().any(|e| e.id == "cursor/gpt-5.6-sol"));
+        assert!(merged.iter().any(|e| e.id == "chatgpt/gpt-5.6-sol"));
+        assert!(merged
+            .iter()
+            .find(|e| e.id == "chatgpt/gpt-5.6-sol")
             .unwrap()
             .note
             .is_some_and(|n| n.contains("ChatGPT")));
         assert!(
-            merged.iter().any(|e| e.id == "gpt-7-new"),
+            merged.iter().any(|e| e.id == "chatgpt/gpt-7-new"),
             "上游目录里的新模型不用改代码就进广场"
         );
         assert!(
-            merged.iter().any(|e| e.id == "nano-banana-2"),
+            merged.iter().any(|e| e.id == "cursor/nano-banana-2"),
             "Cursor 的出图模型还在"
         );
         assert_eq!(img.fixed_size, None, "gpt-image 认 size，界面该摆规格菜单");
         assert_eq!(
             merged
                 .iter()
-                .find(|e| e.id == "nano-banana-2")
+                .find(|e| e.id == "cursor/nano-banana-2")
                 .unwrap()
                 .fixed_size,
             Some("1536x1024"),

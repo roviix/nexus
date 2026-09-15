@@ -16,6 +16,7 @@ const SAMPLE = `支持这些写法，混在一起也行：
 a@example.com----邮箱密码----Cursor密码
 b@example.com----Cursor密码----2026-08-07 01:01
 c@example.com----eyJhbGciOi…（refresh token）
+d@example.com----crsr_…（User API Key，可查基础用量）
 
 第1个：d@example.com
 登录密码：xxx  邮箱密码：yyy
@@ -86,6 +87,7 @@ function PreviewPanel({ preview }: { preview: ImportPreview }) {
             <span className="row" style={{ gap: 4, flex: "none" }}>
               {r.hasRefresh ? <Tag tone="ok">token</Tag> : null}
               {!r.hasRefresh && r.hasAccess ? <Tag tone="warn">仅会话</Tag> : null}
+              {r.hasApiKey ? <Tag>API Key</Tag> : null}
               {r.hasPassword ? <Tag>密码</Tag> : null}
               {r.hasEmailPassword ? <Tag>邮箱密码</Tag> : null}
             </span>

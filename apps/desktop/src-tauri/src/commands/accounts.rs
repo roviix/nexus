@@ -3,8 +3,8 @@
 use crate::commands::events;
 use crate::state::AppState;
 use nexus_accounts::{
-    Account, AccountPatch, AccountUsage, ActiveSession, KickOutcome, NewAccount, OauthSession,
-    OauthState,
+    Account, AccountBilling, AccountPatch, AccountUsage, ActiveSession, KickOutcome, NewAccount,
+    OauthSession, OauthState,
 };
 use nexus_core::{AccountId, AppError, Clock, ErrorCode, Result};
 use nexus_cursor::AuthBundle;
@@ -32,6 +32,7 @@ pub fn accounts_add(
     cursor_password: Option<String>,
     email_password: Option<String>,
     recovery_email: Option<String>,
+    api_key: Option<String>,
     note: Option<String>,
 ) -> Result<Account> {
     let account = state.accounts.repo.upsert(NewAccount {
@@ -41,6 +42,7 @@ pub fn accounts_add(
         cursor_password,
         email_password,
         recovery_email,
+        api_key,
         note,
         source: None,
     })?;
@@ -164,6 +166,48 @@ pub async fn accounts_refresh_usage(
         .accounts
         .refresh_usage(&AccountId::from_raw(id), day_start_ms)
         .await
+}
+
+/// 读这个号的 Stripe 订阅账单（标价 / 折扣 / 历史发票）。
+///
+/// 走 Customer Portal，不走 dashboard。门户密钥不回给前端、不写库。
+#[tauri::command]
+pub async fn accounts_refresh_billing(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<AccountBilling> {
+    state
+        .accounts
+        .refresh_billing(&AccountId::from_raw(id))
+        .await
+}
+
+/// 改这个号的按需计费（开/关 + 每月上限），成功后立刻再刷一遍用量。
+///
+/// `limit_cents` 是美分；`None` 且开启 = 不封顶。关掉时上限会被忽略。
+#[tauri::command]
+pub async fn accounts_set_on_demand(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+    limit_cents: Option<f64>,
+    day_start_ms: Option<i64>,
+) -> Result<AccountUsage> {
+    let account_id = AccountId::from_raw(id);
+    let usage = state
+        .accounts
+        .set_on_demand(&account_id, enabled, limit_cents, day_start_ms)
+        .await?;
+    let email = state.accounts.repo.get(&account_id).ok().map(|a| a.email);
+    let summary = if !enabled {
+        "已关闭按需计费".to_string()
+    } else if let Some(cents) = limit_cents.filter(|c| *c > 0.0) {
+        format!("已开启按需计费（上限 ${:.0}）", cents / 100.0)
+    } else {
+        "已开启按需计费（不封顶）".to_string()
+    };
+    activity::info(&state.db, "accounts", email.as_deref(), summary);
+    Ok(usage)
 }
 
 /// 批量刷。逐个推事件，界面能一行一行亮起来而不是整片转圈。
@@ -364,6 +408,8 @@ pub enum SecretKind {
     CursorPassword,
     EmailPassword,
     RecoveryEmail,
+    /// 长期 `crsr_…` User API Key。
+    ApiKey,
 }
 
 impl From<SecretKind> for AccountSecret {
@@ -374,6 +420,7 @@ impl From<SecretKind> for AccountSecret {
             SecretKind::CursorPassword => AccountSecret::CursorPassword,
             SecretKind::EmailPassword => AccountSecret::EmailPassword,
             SecretKind::RecoveryEmail => AccountSecret::RecoveryEmail,
+            SecretKind::ApiKey => AccountSecret::ApiKey,
         }
     }
 }
@@ -471,7 +518,8 @@ pub fn accounts_set_secret(
 /// **这是 `nexus-accounts` 与 `nexus-switcher` 之间唯一的数据通路**（ARCHITECTURE R1）。
 /// 两个 crate 互不依赖，拷贝发生在这里、由用户点击触发、一次一个号。
 ///
-/// 切号需要 `accessToken`，而我们长期存的是 `refreshToken`，所以要先换一次 session。
+/// 切号需要 `accessToken`。有 refresh 就先换一把足寿的 session；仅会话的号用手上
+/// 那把还活着的 access（Cursor 热登录要成对 token，缺 refresh 时用 access 占位）。
 #[tauri::command]
 pub async fn accounts_add_to_switch_book(
     state: State<'_, AppState>,
@@ -485,19 +533,28 @@ pub async fn accounts_add_to_switch_book(
             format!("{} 还不能切入 Cursor。", account.email),
         )
         .with_hint(if account.session_only() {
-            "只有 session token 的号切不进 Cursor：写进去的登录态到期没法自己续。用密码授权一次拿到 refresh_token 就行。"
+            "session token 已过期。到凭证页粘一份新的，或授权一次拿到 refresh_token。"
         } else {
-            "这个号需要先完成一次授权拿到 refresh_token。"
+            "这个号需要一份还活着的 session token，或授权一次拿到 refresh_token。"
         }));
     }
 
-    // 这一把是要写进 Cursor 登录态的，所以强制换新，不用复用的那把 ——
-    // 复用的可能只剩一分钟寿命，Cursor 一启动就得先去续期。
-    let session = state.accounts.fresh_session(&id).await?;
+    // 有 refresh：强制换一把足寿的 access 再写进 Cursor。复用的可能只剩一分钟寿命，
+    // Cursor 一启动就得先去续期，而那正是用户在切号的当口。
+    // 仅会话：换不出新的，就用手上这把。Cursor 的热登录路由要成对 token，没有
+    // refresh 就把 access 再填一格——到期后续不上，Cursor 会掉登录，和这个号
+    // 本身「到期得重新粘」同义。
+    let session = if account.has_refresh {
+        state.accounts.fresh_session(&id).await?
+    } else {
+        state.accounts.session(&id).await?
+    };
     let refresh = state
         .accounts
         .repo
-        .require_secret(&id, AccountSecret::Refresh)?;
+        .secret(&id, AccountSecret::Refresh)?
+        .filter(|s| !s.expose().trim().is_empty())
+        .unwrap_or_else(|| session.access_token.clone());
 
     let mut bundle = AuthBundle::new();
     bundle.insert("cursorAuth/cachedEmail", &account.email);

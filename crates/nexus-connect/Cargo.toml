@@ -16,8 +16,8 @@ tracing.workspace = true
 # toml_edit 是为此存在的；普通的 toml 序列化会把整份文件重排一遍。
 toml_edit = "0.25"
 
-# 注意：不依赖 nexus-gateway / nexus-shop。这里只认「地址 + 钥匙 + 模型」三个字串，
-# 它们从哪个号源来是 Tauri 层的事。
+# 注意：不依赖 nexus-gateway。这里只认「地址 + 钥匙 + 模型」三个字串，
+# 它们从哪条通道来是 Tauri 层的事。
 
 [dev-dependencies]
 tempfile = "3"

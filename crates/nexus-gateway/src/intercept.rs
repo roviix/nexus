@@ -10,6 +10,8 @@
 //!   复述得出来 + 账本里那一行 `rewritten=true`，两个证据对上才算通。改写在 protobuf 线格式的
 //!   顶层逐字段做（`wire`），只重编码被改的那一条消息，其余字段字节不动——`proto.rs` 是按旧版
 //!   Cursor 生成的，整包 decode → encode 会把新版才有的字段抹掉，上游不报错、语义悄悄少一段。
+//!   Bot 通道：GLM 5.2 钉 [`GROKBOT_FORCED_MODEL_ID`]（`premium` → Codex）；
+//!   grok 4.7 钉 [`GROKBOT_CUA_MODEL_ID`]（`sand-cua`）；其余原样。
 //! - **响应侧：只读解码，记用量。** 帧原样转给 IDE，同时喂一份进解码器挑出 `extended_usage` /
 //!   `response_info.model`（实际路由到的模型）/ 流内错误 / 流尾错误。一次 RPC 一行账本，粒度和
 //!   Cursor dashboard 的「一次模型调用一行」一致。只读解码不怕 proto 旧：不认识的字段被忽略而已。
@@ -35,6 +37,38 @@ use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 pub const INFERENCE_STREAM_PATH: &str = "/aiserver.v1.InferenceService/Stream";
+
+/// GLM 5.2 在 Bot 通道会被拒；改写成这个 routed alias，本号落到 Codex。
+pub const GROKBOT_FORCED_MODEL_ID: &str = "premium";
+/// grok 4.7 没有可直打的 slug；Bot 通道只能发这个 CUA 别名。
+pub const GROKBOT_CUA_MODEL_ID: &str = "sand-cua";
+
+/// 面板选 GLM 5.2 时走 `premium` 别名（隐藏入口）。其它模型一律原样。
+pub fn grokbot_rewrites_to_premium(model_id: &str) -> bool {
+    let k = model_id.trim().to_ascii_lowercase();
+    k.contains("glm-5.2") || k.contains("glm5.2") || k.contains("glm_5.2")
+}
+
+/// 面板选 grok 4.7 时走 `sand-cua`。不要误伤 4.6 / opus-4-7。
+pub fn grokbot_rewrites_to_cua(model_id: &str) -> bool {
+    crate::models::is_grok47_request(model_id)
+}
+
+/// Bot 通道要把请求钉成哪个 routed alias。`None` = 原样转发。
+pub fn grokbot_rewrite_target(model_id: &str) -> Option<&'static str> {
+    if grokbot_rewrites_to_premium(model_id) {
+        Some(GROKBOT_FORCED_MODEL_ID)
+    } else if grokbot_rewrites_to_cua(model_id) {
+        Some(GROKBOT_CUA_MODEL_ID)
+    } else {
+        None
+    }
+}
+
+/// Bot 通道里不改写的请求。
+pub fn grokbot_keeps_requested_model(model_id: &str) -> bool {
+    grokbot_rewrite_target(model_id).is_none()
+}
 
 /// 最近记录只留这么多条给界面看；历史数字在账本里。
 const RECENT_KEEP: usize = 50;
@@ -205,6 +239,46 @@ pub fn rewrite_request(envelope: &[u8], rule: &RewriteRule) -> Result<Rewritten,
         info,
         rewritten: true,
     })
+}
+
+/// Bot 通道把顶层 `model_id` 和 `requested_model` 钉成 routed tier（默认 [`GROKBOT_FORCED_MODEL_ID`]）。
+///
+/// 只重编码这两个字段，其余字节不动。`rewritten` 仍表示哨兵注入，这里不改那个旗标——调用方
+/// 自己换 body / `info.model_id`。解不开就返回错误，让调用方退回原字节。
+pub fn force_requested_model(
+    envelope: &[u8],
+    model_id: &str,
+) -> Result<(Vec<u8>, RequestInfo), InterceptError> {
+    let (flags, payload) = split_envelope(envelope)?;
+    let fields = wire::fields(payload)?;
+    let rm = InferenceRequestedModel {
+        model_id: model_id.to_string(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+
+    let mut out = Vec::with_capacity(payload.len() + model_id.len() + rm.len() + 16);
+    let mut saw_model = false;
+    let mut saw_rm = false;
+    for f in &fields {
+        if f.tag == TAG_MODEL_ID && f.wire_type == wire::WT_LEN {
+            wire::put_len_field(TAG_MODEL_ID, model_id.as_bytes(), &mut out);
+            saw_model = true;
+        } else if f.tag == TAG_REQUESTED_MODEL && f.wire_type == wire::WT_LEN {
+            wire::put_len_field(TAG_REQUESTED_MODEL, &rm, &mut out);
+            saw_rm = true;
+        } else {
+            out.extend_from_slice(f.raw);
+        }
+    }
+    if !saw_model {
+        wire::put_len_field(TAG_MODEL_ID, model_id.as_bytes(), &mut out);
+    }
+    if !saw_rm {
+        wire::put_len_field(TAG_REQUESTED_MODEL, &rm, &mut out);
+    }
+    let info = request_info(&wire::fields(&out)?);
+    Ok((Envelope { flags, data: out }.encode(), info))
 }
 
 /// 请求体必须是**恰好一个**未压缩信封——ServerStreaming 的请求就是这样，多了少了都不对。
@@ -825,6 +899,84 @@ mod tests {
         // 顶层字段顺序不变。
         let tags: Vec<u32> = top.iter().map(|f| f.tag).collect();
         assert_eq!(tags, vec![1, 7, 8, 75, 79]);
+    }
+
+    #[test]
+    fn force_requested_model_pins_premium_and_keeps_unknown_fields() {
+        let mut req = request(vec![text_msg(1, "hi")]);
+        req.model_id = Some("claude-opus-5".into());
+        req.requested_model = Some(InferenceRequestedModel {
+            model_id: "claude-opus-5".into(),
+            max_mode: true,
+            ..Default::default()
+        });
+        let mut payload = req.encode_to_vec();
+        wire::put_varint((75 << 3) | u64::from(wire::WT_VARINT), &mut payload);
+        wire::put_varint(1, &mut payload);
+        wire::put_len_field(79, b"secret-key-bytes", &mut payload);
+        let env = Envelope::message(payload).encode();
+
+        let (out, info) = force_requested_model(&env, GROKBOT_FORCED_MODEL_ID).unwrap();
+        let decoded = decode_body(&out);
+        assert_eq!(decoded.model_id.as_deref(), Some("premium"));
+        let rm = decoded.requested_model.expect("requested_model");
+        assert_eq!(rm.model_id, "premium");
+        assert!(!rm.max_mode);
+        assert!(rm.parameters.is_empty());
+        assert_eq!(info.model_id.as_deref(), Some("premium"));
+        assert_eq!(decoded.conversation_id.as_deref(), Some("conv-42"));
+
+        let (_, after) = split_envelope(&out).unwrap();
+        let top = wire::fields(after).unwrap();
+        assert_eq!(
+            top.iter().find(|f| f.tag == 79).unwrap().value,
+            b"secret-key-bytes"
+        );
+        assert!(matches!(
+            force_requested_model(b"x", GROKBOT_FORCED_MODEL_ID),
+            Err(InterceptError::Envelope(_))
+        ));
+    }
+
+    #[test]
+    fn grokbot_only_rewrites_glm52_to_premium() {
+        for id in [
+            "glm-5.2",
+            "GLM-5.2",
+            "glm-5.2-high",
+            "cursor-glm-5.2",
+            "glm5.2",
+            "glm_5.2",
+        ] {
+            assert!(grokbot_rewrites_to_premium(id), "{id} 该钉 premium");
+            assert!(!grokbot_keeps_requested_model(id), "{id} 不该原样");
+        }
+        for id in [
+            "grok-4.6",
+            "composer-2.5",
+            "default",
+            "sand-default",
+            "auto",
+            "auto-high",
+            "premium",
+            "claude-opus-5",
+            "gpt-5.6-luna",
+            "gpt-5.3-codex",
+            "gemini-3-flash",
+            "claude-haiku-4-5",
+            "sand-cua",
+            "",
+        ] {
+            assert!(grokbot_keeps_requested_model(id), "{id} 该原样");
+        }
+        for id in ["grok-4.7", "grok-4-7-0910-xhigh", "cursor-grok-4.7-high"] {
+            assert_eq!(
+                grokbot_rewrite_target(id),
+                Some(GROKBOT_CUA_MODEL_ID),
+                "{id}"
+            );
+            assert!(!grokbot_keeps_requested_model(id), "{id} 该钉 sand-cua");
+        }
     }
 
     #[test]

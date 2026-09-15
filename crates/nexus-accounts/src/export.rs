@@ -30,6 +30,9 @@ struct Entry {
     email_password: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_email: Option<String>,
+    /// 与导入侧同一字段名，导出去的文件能原样粘回来。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
 }
@@ -64,6 +67,7 @@ impl Accounts {
                 cursor_password: secret(AccountSecret::CursorPassword)?,
                 email_password: secret(AccountSecret::EmailPassword)?,
                 recovery_email: secret(AccountSecret::RecoveryEmail)?,
+                user_api_key: secret(AccountSecret::ApiKey)?,
                 note: account.note.clone(),
             });
         }
@@ -122,12 +126,25 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
+        accounts
+            .upsert(NewAccount {
+                email: "k@example.com".into(),
+                api_key: Some("crsr_abc123DEF".into()),
+                ..Default::default()
+            })
+            .unwrap();
 
         let export = accounts.export_dump().unwrap();
-        assert_eq!(export.count, 2);
+        assert_eq!(export.count, 3);
+        let dumped: serde_json::Value = serde_json::from_str(&export.json).unwrap();
+        assert!(dumped["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["userApiKey"] == "crsr_abc123DEF"));
 
         let (accepted, report) = preview(&export.json);
-        assert_eq!(report.accepted_count, 2, "{report:?}");
+        assert_eq!(report.accepted_count, 3, "{report:?}");
         assert!(report.skipped.is_empty());
         let a = accepted
             .iter()
@@ -137,7 +154,13 @@ mod tests {
         assert_eq!(a.cursor_password.as_deref(), Some("pw-a"));
         assert_eq!(a.email_password.as_deref(), Some("epw-a"));
         assert_eq!(a.recovery_email.as_deref(), Some("r@example.com"));
+        assert!(a.api_key.is_none());
         assert_eq!(a.note.as_deref(), Some("主力"));
+        let k = accepted
+            .iter()
+            .find(|p| p.email == "k@example.com")
+            .unwrap();
+        assert_eq!(k.api_key.as_deref(), Some("crsr_abc123DEF"));
         let b = accepted
             .iter()
             .find(|p| p.email == "b@example.com")
@@ -145,12 +168,13 @@ mod tests {
         assert_eq!(b.cursor_password.as_deref(), Some("pw-b"));
         assert!(b.refresh_token.is_none());
 
-        // 导回一个空库，两个号都要能收下。
+        // 导回一个空库，三个号都要能收下。
         let fresh = library();
         for parsed in accepted {
             fresh.upsert(parsed.into()).unwrap();
         }
-        assert_eq!(fresh.list().unwrap().len(), 2);
+        assert_eq!(fresh.list().unwrap().len(), 3);
+        assert!(fresh.list().unwrap().iter().any(|x| x.has_api_key));
     }
 
     #[test]

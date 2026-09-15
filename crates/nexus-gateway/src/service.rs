@@ -39,6 +39,7 @@ pub const SETTING_PORT: &str = "gateway.port";
 pub const SETTING_CLIENT_TYPE: &str = "gateway.client_type";
 pub const SETTING_AUTOSTART: &str = "gateway.autostart";
 pub const SETTING_FORCE_MODEL: &str = "gateway.force_model";
+pub const SETTING_DEFAULT_CHANNEL: &str = "gateway.default_channel";
 pub const SETTING_PASSTHROUGH_PORT: &str = "gateway.passthrough_port";
 /// IDE Agent 面板拦截的改写规则（JSON）。不在 `GatewaySettings` 里：它热改即生效，不该触发
 /// 「重启生效」的提示。
@@ -69,6 +70,8 @@ pub struct GatewaySettings {
     /// 客户端校验模型名、不认识 `auto`。让客户端继续报它认识的名字、由网关换成账号
     /// 真能跑的那个。改写用户要的模型是件该由他自己点头的事，所以默认关。
     pub force_model: Option<String>,
+    /// 裸名 / 空模型走哪条通道。出厂 `cursor`。改了立刻生效，不用重启网关。
+    pub default_channel: String,
 }
 
 impl Default for GatewaySettings {
@@ -79,6 +82,7 @@ impl Default for GatewaySettings {
             client_type: crate::inference::DEFAULT_CLIENT_TYPE.into(),
             autostart: false,
             force_model: None,
+            default_channel: channel::CURSOR.to_string(),
         }
     }
 }
@@ -92,6 +96,7 @@ pub struct SettingsPatch {
     pub autostart: Option<bool>,
     /// `Some("")` / `Some("  ")` = 清空；`None` = 不动。
     pub force_model: Option<String>,
+    pub default_channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,7 +149,7 @@ pub struct GatewayStatus {
     /// 改了设置但还没重启网关，界面提示「重启生效」。
     pub restart_needed: bool,
     pub api_key_set: bool,
-    /// Cursor 通道（默认通道）的接力队。
+    /// Cursor 通道的接力队。
     pub lane: LaneSnapshot,
     /// 订阅通道（ChatGPT / Grok Build / Kiro …），按选路顺序。
     pub channels: Vec<ChannelSnapshot>,
@@ -195,6 +200,8 @@ pub struct GatewayService {
     intercept: Arc<InterceptHub>,
     /// 透传口的 Grok Bot 额度开关。热开关，落库；凭证由 `nexus-grokbot` 维护。
     grokbot: Arc<GrokBotStreamAuth>,
+    /// 用户指定的默认通道。跟正在听的 `ChannelRegistry` 共用这一把锁。
+    default_channel: Arc<RwLock<String>>,
 }
 
 impl GatewayService {
@@ -236,8 +243,7 @@ impl GatewayService {
             roster.clone(),
             &settings.client_type,
         );
-        // 顺序就是选路顺序（前缀之外的裸模型名按这个顺序问「归不归你」）。名字不重叠，
-        // 所以顺序此刻不影响结果；写死是为了状态快照稳定。
+        // 顺序只影响状态快照怎么排；裸名不再按「谁拥有」选路。
         let channel_lanes: Vec<(ChannelId, Arc<RelayLane>)> = vec![
             (
                 channel::CHATGPT,
@@ -265,6 +271,11 @@ impl GatewayService {
         let media_jobs = Arc::new(MediaJobs::new(db.clone()));
         media_jobs.prune();
         let rule: RewriteRule = settings::get_or(&db, SETTING_IDE_REWRITE, RewriteRule::default());
+        let default_channel = Arc::new(RwLock::new(
+            channel::parse_id(&settings.default_channel)
+                .unwrap_or(channel::CURSOR)
+                .to_string(),
+        ));
         Self {
             db,
             secrets,
@@ -282,6 +293,7 @@ impl GatewayService {
             media_jobs,
             intercept: Arc::new(InterceptHub::new(rule)),
             grokbot,
+            default_channel,
         }
     }
 
@@ -302,7 +314,7 @@ impl GatewayService {
             };
             reg = reg.with(ch);
         }
-        reg
+        reg.share_default(self.default_channel.clone())
     }
 
     fn channel_lane(&self, id: &str) -> Result<&Arc<RelayLane>> {
@@ -334,12 +346,36 @@ impl GatewayService {
                         missing: vec![],
                         available: vec![],
                     }),
-                chat_models: ch.gate.models(Capability::Chat),
-                image_models: ch.gate.models(Capability::Image),
-                video_models: ch.gate.models(Capability::Video),
+                chat_models: ch
+                    .gate
+                    .models(Capability::Chat)
+                    .into_iter()
+                    .map(|id| channel::qualify(ch.id, &id))
+                    .collect(),
+                image_models: ch
+                    .gate
+                    .models(Capability::Image)
+                    .into_iter()
+                    .map(|id| channel::qualify(ch.id, &id))
+                    .collect(),
+                video_models: ch
+                    .gate
+                    .models(Capability::Video)
+                    .into_iter()
+                    .map(|id| channel::qualify(ch.id, &id))
+                    .collect(),
                 prefixes: ch.prefixes.to_vec(),
             })
             .collect()
+    }
+
+    /// Sand「推理经本机网关」装上之后，透传口必须在听，而且 Stream 必须走 Grok Bot。
+    /// 只开改道、不开 Bot 通道，会用接力队号盖 `sand` 身份，上游 401。
+    pub async fn prepare_sand_passthrough(&self) -> Result<GatewayStatus> {
+        if !self.is_running() {
+            self.start().await?;
+        }
+        self.set_grokbot_stream(true).await
     }
 
     /// 透传口的 Grok Bot 额度开关：落库 + 立刻生效（每一发 Stream 现读，不用重启）。
@@ -364,8 +400,8 @@ impl GatewayService {
         &self.grokbot
     }
 
-    /// 模型广场用的目录：Cursor 的静态表，加上每条**有号可接**的订阅通道报的模型。条件和网关的
-    /// 选路同一条：这里列出来的名字，此刻发过去就会走那条通道。
+    /// 模型广场用的目录：每条通道各自报 `{通道}/{模型}`，同名不再互斥。
+    /// 订阅通道只在有号可接时报——没号的通道写了前缀也会打到空队上，与其列出来骗人不如不列。
     pub fn catalog(&self) -> Vec<crate::models::CatalogEntry> {
         let reg = self.registry(StreamConfig::default());
         let chatgpt = reg.get(channel::CHATGPT).filter(|ch| ch.gate.ready());
@@ -377,23 +413,23 @@ impl GatewayService {
             let (vendor_label, note): (&'static str, Option<&'static str>) = match ch.id {
                 channel::GROK => (
                     "xAI",
-                    Some("经 Grok 通道（订阅号走 cli-chat-proxy，API Key 走 api.x.ai）。加 grok/ 前缀可强制走它。"),
+                    Some("经 Grok 通道（订阅号走 cli-chat-proxy，API Key 走 api.x.ai）。"),
                 ),
                 channel::KIRO => (
                     "Amazon",
-                    Some("经 Kiro（Amazon Q / Builder ID）。对外 kiro-claude-*，不抢 Cursor 的 claude。"),
+                    Some("经 Kiro（Amazon Q / Builder ID）。对外 kiro/kiro-claude-*。"),
                 ),
                 _ => (ch.label, None),
             };
             let mut push =
                 |id: String, modality: &'static str, media_note: Option<&'static str>| {
-                    out.retain(|e| e.id != id);
+                    let qualified = channel::qualify(ch.id, &id);
                     out.push(crate::models::CatalogEntry {
-                        id: id.clone(),
+                        id: qualified.clone(),
                         vendor: ch.vendor,
                         vendor_label,
                         modality,
-                        series: id,
+                        series: qualified,
                         variant: "standard".to_string(),
                         aliases: Vec::new(),
                         note: media_note.or(note),
@@ -452,6 +488,15 @@ impl GatewayService {
     /// 最近 `days` 天的本地用量。`tz_offset_min` 见 [`Ledger::summary`]。
     pub fn usage(&self, days: u32, tz_offset_min: i32) -> Result<UsageSummary> {
         self.ledger.summary(days, tz_offset_min)
+    }
+
+    /// 某条通道按账号的合计，给账号卡用。
+    pub fn channel_account_totals(
+        &self,
+        channel: &str,
+        days: u32,
+    ) -> Result<Vec<crate::NamedUsage>> {
+        self.ledger.channel_account_totals(channel, days)
     }
 
     /// IDE Agent 面板经本机网关的用量，与方言口的账分开看（口径不同，见 `ledger` 模块文档）。
@@ -527,6 +572,20 @@ impl GatewayService {
                 Some(trimmed)
             };
         }
+        if let Some(dc) = patch.default_channel {
+            let Some(id) = channel::parse_id(&dc) else {
+                return Err(AppError::invalid(format!(
+                    "默认通道只能是 cursor / chatgpt / grok / kiro，给的是 {dc}"
+                )));
+            };
+            s.default_channel = id.to_string();
+            *self.default_channel.write().expect("default channel") = id.to_string();
+            if let Ok(mut running) = self.running.lock() {
+                if let Some(r) = running.as_mut() {
+                    r.settings.default_channel = id.to_string();
+                }
+            }
+        }
         settings::set(&self.db, SETTING_PORT, &s.port)?;
         settings::set(&self.db, SETTING_PASSTHROUGH_PORT, &s.passthrough_port)?;
         settings::set(&self.db, SETTING_CLIENT_TYPE, &s.client_type)?;
@@ -536,6 +595,7 @@ impl GatewayService {
             SETTING_FORCE_MODEL,
             &s.force_model.clone().unwrap_or_default(),
         )?;
+        settings::set(&self.db, SETTING_DEFAULT_CHANNEL, &s.default_channel)?;
         self.ensure_lane_for(&s.client_type);
         Ok(s)
     }
@@ -597,6 +657,8 @@ impl GatewayService {
             api_key: Some(api_key),
             ledger: Some(self.ledger.clone()),
             media_jobs: Some(self.media_jobs.clone()),
+            grokbot: Some(self.grokbot.clone()),
+            sand_identity: settings.client_type.eq_ignore_ascii_case("sand"),
         });
 
         // 端口被占就往后找一个空的。找到的那个写回设置：下次开还是它，客户端里抄过的地址
@@ -827,6 +889,13 @@ fn read_settings(db: &Db) -> GatewaySettings {
                 Some(t)
             }
         },
+        default_channel: channel::parse_id(&settings::get_or(
+            db,
+            SETTING_DEFAULT_CHANNEL,
+            d.default_channel,
+        ))
+        .unwrap_or(channel::CURSOR)
+        .to_string(),
     }
 }
 
@@ -961,6 +1030,26 @@ mod tests {
             })
             .unwrap();
         assert_eq!(cleared.force_model, None);
+    }
+
+    #[test]
+    fn default_channel_persists_and_rejects_unknown() {
+        let svc = service();
+        assert_eq!(svc.settings().default_channel, "cursor");
+        let s = svc
+            .update_settings(SettingsPatch {
+                default_channel: Some(" ChatGPT ".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(s.default_channel, "chatgpt");
+        assert_eq!(svc.settings().default_channel, "chatgpt");
+        assert!(svc
+            .update_settings(SettingsPatch {
+                default_channel: Some("openai".into()),
+                ..Default::default()
+            })
+            .is_err());
     }
 
     #[test]

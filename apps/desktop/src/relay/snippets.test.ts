@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   claudeSettings,
+  clientModelId,
   clineFields,
   codexToml,
   endpointOf,
@@ -55,6 +56,13 @@ describe("Codex config", () => {
     expect(toml).toContain("requires_openai_auth = false");
     expect(toml).toContain('experimental_bearer_token = "nx-local-1"');
     expect(toml).toContain('model = "gpt-5.6-sol"');
+  });
+
+  it("strips the channel prefix Codex would reject", () => {
+    expect(clientModelId("chatgpt/gpt-5.4")).toBe("gpt-5.4");
+    expect(clientModelId("chatgpt/gpt-6-astra")).toBe("gpt-6-astra");
+    expect(codexToml(LOCAL, "k", "chatgpt/gpt-5.4")).toContain('model = "gpt-5.4"');
+    expect(codexToml(LOCAL, "k", "chatgpt/gpt-5.4")).not.toContain("chatgpt/");
   });
 });
 

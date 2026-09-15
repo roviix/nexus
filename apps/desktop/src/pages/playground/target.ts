@@ -28,12 +28,14 @@ export function kindOfModel(cat: Catalogs, model: string): Kind {
   return modality === "image" ? "image" : modality === "video" ? "video" : "chat";
 }
 
-/** 本地网关的常用默认。目录里有它才用。 */
-const LOCAL_DEFAULT = "auto";
+/** 本地网关的常用默认。目录主键是 `{通道}/{模型}`，也认老目录里的裸名 `auto`。 */
+function localAutoId(ids: string[]): string | undefined {
+  return ids.find((id) => id === "auto" || id.endsWith("/auto"));
+}
 
 /**
  * 新建会话时的目标：先看这一类最近一个会话用什么（用户上次的选择最可信），
- * 再落到目录里的默认（对话是 `auto`，其它取第一个）。
+ * 再落到目录里的默认（对话是 `{通道}/auto`，其它取第一个）。
  */
 export function defaultTarget(kind: Kind, recent: ThreadSummary[], cat: Catalogs, hint?: { model?: string }): Target {
   if (hint?.model) return { model: hint.model };
@@ -42,14 +44,14 @@ export function defaultTarget(kind: Kind, recent: ThreadSummary[], cat: Catalogs
   if (last) return { model: last.model };
 
   const ids = modelIds(cat, kind);
-  return { model: ids.includes(LOCAL_DEFAULT) ? LOCAL_DEFAULT : (ids[0] ?? "") };
+  return { model: localAutoId(ids) ?? ids[0] ?? "" };
 }
 
 /** 目录刷新后把模型落回目录里：原来的模型不在就取默认。 */
 export function retarget(cur: Target, kind: Kind, cat: Catalogs): Target {
   const ids = modelIds(cat, kind);
   if (ids.length === 0 || ids.includes(cur.model)) return cur;
-  return { model: ids.includes(LOCAL_DEFAULT) ? LOCAL_DEFAULT : ids[0]! };
+  return { model: localAutoId(ids) ?? ids[0]! };
 }
 
 /** 没有别的依据时的初始规格，也是兜底那一排的第一档。 */

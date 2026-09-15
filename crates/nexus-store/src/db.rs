@@ -313,6 +313,36 @@ ALTER TABLE accounts ADD COLUMN has_access INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE accounts ADD COLUMN access_expires_at TEXT;
 "#,
         ),
+        // v11：Cursor 个人订阅的 Stripe 账单快照（标价 / 折扣 / 发票）。
+        // 门户 URL 和 ephemeral key 不进这一列——那是一次性账单钥匙，只活在当次请求的栈上。
+        M::up(
+            r#"
+ALTER TABLE accounts ADD COLUMN billing_json TEXT;
+"#,
+        ),
+        // v12：ChatGPT 账号把 JWT / `/wham/usage` 里已经有的身份留下来。
+        // 用户 id、工作区名登录时就在 token 里，以前解析完就扔了。
+        M::up(
+            r#"
+ALTER TABLE chatgpt_accounts ADD COLUMN user_id TEXT;
+ALTER TABLE chatgpt_accounts ADD COLUMN organization_id TEXT;
+ALTER TABLE chatgpt_accounts ADD COLUMN organization_title TEXT;
+"#,
+        ),
+        // v13：ChatGPT 订阅账单快照（档位 / 到期 / 会不会续）。
+        // 没有标价和发票——Codex OAuth 打不开 ChatGPT 网页的 Stripe 门户。
+        M::up(
+            r#"
+ALTER TABLE chatgpt_accounts ADD COLUMN billing_json TEXT;
+"#,
+        ),
+        // v14：Cursor 账号可以另存一把 `crsr_` User API Key。
+        // session / refresh 过期时还能兑短期 access，拉逐条用量（没有额度百分比）。
+        M::up(
+            r#"
+ALTER TABLE accounts ADD COLUMN has_api_key INTEGER NOT NULL DEFAULT 0;
+"#,
+        ),
     ])
 }
 

@@ -29,7 +29,7 @@ pub use credential::{StreamCredential, STREAM_CREDENTIAL_FILENAME};
 pub use descriptor::{BoxRelayDescriptor, BOX_RELAY_PATH};
 pub use secrets::{ActiveAccount, GrokBotSecrets};
 pub use service::{
-    relay_config_path, DirectCredentialInfo, ExportedAccount, GrokBotIdentity, GrokBotService,
-    GrokBotStatus, RelayInfo,
+    relay_config_path, CuaProbe, DirectCredentialInfo, ExportedAccount, GrokBotIdentity,
+    GrokBotService, GrokBotStatus, RelayInfo, CUA_PROBE_MODEL,
 };
 pub use sync::run_sync;

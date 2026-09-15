@@ -59,17 +59,26 @@ pub const EFFORTS: &[&str] = &[
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 
+/// 空模型的稳妥默认。`gpt-6-astra` 很多 ChatGPT 号还没开通，不能写死成第一项。
+pub const DEFAULT_CHAT_MODEL: &str = "gpt-5.4";
+
+/// 账号目录里有它才往前排：用户要 GPT-6 时用这个上游 slug。
+pub const PREFERRED_CHAT_MODEL: &str = "gpt-6-astra";
+
+/// 短名 → 上游 slug。只做显式别名，不按家族猜。
+const CODEX_ALIASES: &[(&str, &str)] = &[("gpt-6", PREFERRED_CHAT_MODEL)];
+
 /// 本地目录里的 Codex 模型（静态兜底；上游目录接口能拉到更新的清单）。和云端控制面的
-/// `CODEX_MODELS` 同一份。
+/// `CODEX_MODELS` 同一份。第一项是空模型的默认；Astra 在账号目录确认有了再往前排。
 pub const CODEX_MODELS: &[&str] = &[
-    "gpt-6-astra",
+    DEFAULT_CHAT_MODEL,
+    "gpt-5.4-mini",
     "gpt-5.6-sol",
     "gpt-5.6",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
+    PREFERRED_CHAT_MODEL,
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2",
@@ -79,11 +88,20 @@ pub const CODEX_MODELS: &[&str] = &[
 /// 显式把请求送到 ChatGPT 通道的模型名前缀。
 pub const ROUTE_PREFIXES: &[&str] = &["chatgpt/", "codex/", "openai-oauth/"];
 
-/// 这个模型名是不是 Codex 的（剥掉路由前缀与档位后缀之后在目录里）。
+/// 这个模型名是不是 Codex 的（剥掉路由前缀与档位后缀之后在目录或别名表里）。
 pub fn is_codex_model(model: &str) -> bool {
     let (name, _) = split_route_prefix(model);
     let base = split_effort_suffix(name).0.to_ascii_lowercase();
-    CODEX_MODELS.contains(&base.as_str())
+    CODEX_MODELS.contains(&base.as_str()) || CODEX_ALIASES.iter().any(|(from, _)| *from == base)
+}
+
+/// 目录项上要挂的短名（给广场搜索 / 接入提示）。
+pub fn catalog_aliases(id: &str) -> Vec<&'static str> {
+    CODEX_ALIASES
+        .iter()
+        .filter(|(_, to)| to.eq_ignore_ascii_case(id))
+        .map(|(from, _)| *from)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -810,7 +828,17 @@ pub struct Prepared {
 fn upstream_model(model: &str) -> (String, Option<&'static str>) {
     let (name, _) = split_route_prefix(model);
     let (base, effort) = split_effort_suffix(name);
-    (base.to_string(), effort)
+    let slug = canonicalize_model(base);
+    (slug, effort)
+}
+
+fn canonicalize_model(base: &str) -> String {
+    let lower = base.trim().to_ascii_lowercase();
+    CODEX_ALIASES
+        .iter()
+        .find(|(from, _)| *from == lower)
+        .map(|(_, to)| (*to).to_string())
+        .unwrap_or_else(|| base.to_string())
 }
 
 /// Responses 入站 → Codex 请求体。原样保留客户端的一切，只改上游会拒收的地方，以及把身份标识
@@ -1661,8 +1689,16 @@ mod tests {
         assert_eq!(split_route_prefix("gpt-5.4"), ("gpt-5.4", false));
         assert!(is_codex_model("gpt-5.4-high"));
         assert!(is_codex_model("chatgpt/GPT-5.6-sol"));
+        assert!(is_codex_model("gpt-6"));
+        assert!(is_codex_model("chatgpt/gpt-6-high"));
         assert!(!is_codex_model("claude-sonnet-5"));
         assert!(!is_codex_model("auto"));
+        assert_eq!(CODEX_MODELS[0], DEFAULT_CHAT_MODEL);
+        assert_eq!(DEFAULT_CHAT_MODEL, "gpt-5.4");
+        assert_eq!(PREFERRED_CHAT_MODEL, "gpt-6-astra");
+        let aliased = build_passthrough_body(&Map::new(), &opts("gpt-6", &HashMap::new()));
+        assert_eq!(aliased.model, "gpt-6-astra");
+        assert_eq!(aliased.body["model"], "gpt-6-astra");
         assert_eq!(to_effort(Some("ULTRA")), Some("ultra"));
         assert_eq!(to_effort(Some("bogus")), None);
     }

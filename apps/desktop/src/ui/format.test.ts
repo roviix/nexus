@@ -9,7 +9,6 @@ import {
   orderStatusLabel,
   timeAgo,
   timeUntil,
-  yuan,
 } from "./format";
 
 const NOW = Date.parse("2026-09-02T12:00:00Z");
@@ -66,14 +65,6 @@ describe("money", () => {
   it("distinguishes absent from zero", () => {
     expect(money(undefined)).toBe("—");
     expect(money(null)).toBe("—");
-  });
-});
-
-describe("yuan", () => {
-  it("renders shop prices", () => {
-    expect(yuan(128)).toBe("¥128.00");
-    expect(yuan(0)).toBe("¥0.00");
-    expect(yuan(undefined)).toBe("—");
   });
 });
 

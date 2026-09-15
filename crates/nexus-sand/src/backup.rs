@@ -52,15 +52,24 @@ pub struct Backups {
 
 impl Backups {
     pub fn new(data_dir: &Path, app_root: &Path) -> Self {
-        Self::with_key(data_dir, &install_key(app_root))
+        Self::for_app(data_dir, "sand", app_root)
+    }
+
+    /// 按「哪个安装器 + 哪份 Cursor」分目录。CRSR 用 `scope = "crsr"`，避免和 Sand 的备份搅在一起。
+    pub fn for_app(data_dir: &Path, scope: &str, app_root: &Path) -> Self {
+        Self::with_scope(data_dir, scope, &install_key(app_root))
     }
 
     /// 用一个自定义的键分组。remote 用它：那边的 app 根是一个**每次都不同**的本地暂存目录，
     /// 拿路径当键会让同一台远程的备份散成一堆；改用 `ssh://<host>/<commit>` 这种稳定标识。
     pub fn with_key(data_dir: &Path, key: &str) -> Self {
+        Self::with_scope(data_dir, "sand", key)
+    }
+
+    pub fn with_scope(data_dir: &Path, scope: &str, key: &str) -> Self {
         let key = &sha256_hex(key.as_bytes())[..16];
         Self {
-            root: data_dir.join("sand").join("backups").join(key),
+            root: data_dir.join(scope).join("backups").join(key),
         }
     }
 

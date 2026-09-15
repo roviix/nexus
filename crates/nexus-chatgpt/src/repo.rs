@@ -3,6 +3,7 @@
 //! 同一条不变量：**表里没有任何秘密。** `has_refresh` 是秘密存储状态的投影，写凭证和写标记
 //! 必须一起发生。持有库锁期间不碰 `SecretStore`（两者是同一个 SQLite 连接，里外嵌套就是自锁）。
 
+use crate::billing::ChatGptBilling;
 use crate::model::{ChatGptAccount, ChatGptStatus};
 use crate::oauth::{Identity, TokenSet};
 use crate::protocol::CodexUsage;
@@ -87,13 +88,16 @@ impl ChatGptAccounts {
                 let id = ChatGptAccountId::new();
                 self.db.with(|c| {
                     c.execute(
-                        "INSERT INTO chatgpt_accounts (id, account_ref, email, plan_type, status, enabled, note, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?7)",
+                        "INSERT INTO chatgpt_accounts (id, account_ref, email, plan_type, user_id, organization_id, organization_title, status, enabled, note, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?10)",
                         rusqlite::params![
                             id.as_str(),
                             account_ref,
                             email.as_deref(),
                             identity.plan_type.as_deref(),
+                            identity.user_id.as_deref(),
+                            identity.organization_id.as_deref(),
+                            identity.organization_title.as_deref(),
                             ChatGptStatus::NeedsLogin.as_str(),
                             note,
                             &now,
@@ -110,13 +114,19 @@ impl ChatGptAccounts {
                 "UPDATE chatgpt_accounts SET
                    email     = COALESCE(?2, email),
                    plan_type = COALESCE(?3, plan_type),
-                   note      = COALESCE(?4, note),
-                   updated_at = ?5
+                   user_id   = COALESCE(?4, user_id),
+                   organization_id = COALESCE(?5, organization_id),
+                   organization_title = COALESCE(?6, organization_title),
+                   note      = COALESCE(?7, note),
+                   updated_at = ?8
                  WHERE id = ?1",
                 rusqlite::params![
                     id.as_str(),
                     email.as_deref(),
                     identity.plan_type.as_deref(),
+                    identity.user_id.as_deref(),
+                    identity.organization_id.as_deref(),
+                    identity.organization_title.as_deref(),
                     note,
                     &now,
                 ],
@@ -198,12 +208,19 @@ impl ChatGptAccounts {
         self.db.with(|c| {
             c.execute(
                 "UPDATE chatgpt_accounts SET
-                   email = COALESCE(?2, email), plan_type = COALESCE(?3, plan_type), updated_at = ?4
+                   email = COALESCE(?2, email), plan_type = COALESCE(?3, plan_type),
+                   user_id = COALESCE(?4, user_id),
+                   organization_id = COALESCE(?5, organization_id),
+                   organization_title = COALESCE(?6, organization_title),
+                   updated_at = ?7
                  WHERE id = ?1",
                 rusqlite::params![
                     id.as_str(),
                     email.as_deref(),
                     identity.plan_type.as_deref(),
+                    identity.user_id.as_deref(),
+                    identity.organization_id.as_deref(),
+                    identity.organization_title.as_deref(),
                     now_iso()
                 ],
             )
@@ -221,17 +238,41 @@ impl ChatGptAccounts {
         self.get(id)
     }
 
-    /// 记一次额度快照（来自响应头或 `/wham/usage`）。快照里带套餐就一并更新。
+    /// 记一次额度快照（来自响应头或 `/wham/usage`）。快照里带套餐 / 用户 id 就一并更新。
+    /// 响应头只有主窗口：先叠到上一份快照上，避免把 Spark 桶冲掉。
     pub fn record_usage(&self, id: &ChatGptAccountId, usage: &CodexUsage) -> Result<()> {
-        let json = serde_json::to_string(usage)?;
+        let previous = self.get(id).ok().and_then(|a| a.usage);
+        let usage = usage.overlay_on(previous.as_ref());
+        let json = serde_json::to_string(&usage)?;
         let now = now_iso();
         self.db.with(|c| {
             c.execute(
                 "UPDATE chatgpt_accounts SET
                    usage_json = ?2, plan_type = COALESCE(?3, plan_type),
-                   last_checked_at = ?4, updated_at = ?4
+                   user_id = COALESCE(?4, user_id),
+                   last_checked_at = ?5, updated_at = ?5
                  WHERE id = ?1",
-                rusqlite::params![id.as_str(), json, usage.plan_type.as_deref(), now],
+                rusqlite::params![
+                    id.as_str(),
+                    json,
+                    usage.plan_type.as_deref(),
+                    usage.user_id.as_deref(),
+                    now
+                ],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// 记一次订阅快照。字段缺席保持 `null`；被挑战时不要调它，以免把「没读到」写成「没有订阅」。
+    pub fn record_billing(&self, id: &ChatGptAccountId, billing: &ChatGptBilling) -> Result<()> {
+        let json = serde_json::to_string(billing)?;
+        self.db.with(|c| {
+            c.execute(
+                "UPDATE chatgpt_accounts SET
+                   billing_json = ?2, plan_type = COALESCE(?3, plan_type), updated_at = ?4
+                 WHERE id = ?1",
+                rusqlite::params![id.as_str(), json, billing.plan_type.as_deref(), now_iso()],
             )
         })?;
         Ok(())
@@ -277,27 +318,34 @@ impl ChatGptAccounts {
 }
 
 const SELECT: &str = "SELECT id, account_ref, email, plan_type, status, enabled, note, usage_json,
-        last_checked_at, last_error, has_refresh, access_expires_at, created_at, updated_at
+        last_checked_at, last_error, has_refresh, access_expires_at, created_at, updated_at,
+        user_id, organization_id, organization_title, billing_json
  FROM chatgpt_accounts";
 
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<ChatGptAccount> {
     let usage_json: Option<String> = row.get(7)?;
+    let billing_json: Option<String> = row.get(17)?;
     let status: String = row.get(4)?;
     Ok(ChatGptAccount {
         id: ChatGptAccountId::from_raw(row.get::<_, String>(0)?),
         account_ref: row.get(1)?,
         email: row.get(2)?,
         plan_type: row.get(3)?,
+        user_id: row.get(14)?,
+        organization_id: row.get(15)?,
+        organization_title: row.get(16)?,
         status: ChatGptStatus::parse(&status),
         enabled: row.get::<_, i64>(5)? != 0,
         note: row.get(6)?,
         usage: usage_json.and_then(|j| serde_json::from_str(&j).ok()),
+        billing: billing_json.and_then(|j| serde_json::from_str(&j).ok()),
         last_checked_at: row.get(8)?,
         last_error: row.get(9)?,
         has_refresh: row.get::<_, i64>(10)? != 0,
         access_expires_at: row.get(11)?,
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
+        traffic: None,
     })
 }
 
@@ -342,6 +390,8 @@ mod tests {
             email: Some(email.into()),
             account_id: Some(account_id.into()),
             plan_type: Some("plus".into()),
+            user_id: Some("user_jwt".into()),
+            organization_title: Some("Personal".into()),
             ..Default::default()
         }
     }
@@ -365,6 +415,11 @@ mod tests {
         assert_eq!(first.account.status, ChatGptStatus::Active);
         assert!(first.account.has_refresh);
         assert!(first.account.enabled, "默认进网关");
+        assert_eq!(first.account.user_id.as_deref(), Some("user_jwt"));
+        assert_eq!(
+            first.account.organization_title.as_deref(),
+            Some("Personal")
+        );
         assert!(first
             .account
             .access_expires_at
@@ -454,6 +509,62 @@ mod tests {
         let got = r.get(&a.id).unwrap();
         assert_eq!(got.usage.unwrap().source, "wham/usage");
         assert_eq!(got.plan_type.as_deref(), Some("pro"), "快照里的套餐覆盖");
+
+        let spark = CodexUsage {
+            plan_type: Some("pro".into()),
+            checked_at: "t".into(),
+            source: "wham/usage".into(),
+            user_id: Some("user_1".into()),
+            additional: vec![crate::protocol::RateLimitBucket {
+                name: Some("GPT-5.3-Codex-Spark".into()),
+                feature: Some("codex_bengalfox".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        r.record_usage(&a.id, &spark).unwrap();
+        let headers = CodexUsage {
+            primary: Some(crate::protocol::UsageWindow {
+                used_percent: Some(9.0),
+                reset_at_ms: Some(1),
+                window_minutes: Some(300),
+            }),
+            checked_at: "t2".into(),
+            source: "response-headers".into(),
+            ..Default::default()
+        };
+        r.record_usage(&a.id, &headers).unwrap();
+        r.record_billing(
+            &a.id,
+            &crate::billing::ChatGptBilling {
+                plan_type: Some("pro".into()),
+                expires_at: Some("2026-10-01T00:00:00Z".into()),
+                will_renew: None,
+                checked_at: "t".into(),
+                source: "accounts/check".into(),
+                ..crate::billing::ChatGptBilling::empty(
+                    OffsetDateTime::from_unix_timestamp(1_778_371_200).unwrap(),
+                    "accounts/check",
+                )
+            },
+        )
+        .unwrap();
+        let after = r.get(&a.id).unwrap();
+        assert_eq!(
+            after.billing.as_ref().and_then(|b| b.expires_at.as_deref()),
+            Some("2026-10-01T00:00:00Z")
+        );
+        assert_eq!(after.billing.as_ref().unwrap().will_renew, None);
+        assert_eq!(after.user_id.as_deref(), Some("user_1"));
+        assert_eq!(
+            after.usage.as_ref().unwrap().additional[0].name.as_deref(),
+            Some("GPT-5.3-Codex-Spark"),
+            "响应头覆盖不能冲掉 Spark"
+        );
+        assert_eq!(
+            after.usage.as_ref().unwrap().primary.unwrap().used_percent,
+            Some(9.0)
+        );
 
         r.record_failure(&a.id, "网络抖动", None).unwrap();
         assert_eq!(

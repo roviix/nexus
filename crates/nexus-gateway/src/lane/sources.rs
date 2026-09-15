@@ -268,9 +268,10 @@ impl Source for StoredAccountsSource {
             }
         };
         list.into_iter()
-            // 有 refresh 的永远算；只有 session token 的号在有效期内也算——过期后 `session()` 会
-            // 把它退回待登录，下一轮就不在候选里了。
-            .filter(|a| a.status == Status::Active && a.can_query_usage())
+            // 能切号的才进网关：有 refresh，或手上那把 session 还活着。
+            // `can_query_usage` 还包含仅有 `crsr_` 的号——那把 key 查基础用量可以，
+            // 兑出来的 JWT 登不回 Cursor，不能拿去接力。
+            .filter(|a| a.status == Status::Active && a.can_switch())
             .map(|a| Candidate {
                 label: a.email,
                 kind: CandidateKind::Stored(a.id),
@@ -590,6 +591,13 @@ mod tests {
             .upsert(NewAccount {
                 email: "needslogin@x.com".into(),
                 cursor_password: Some("pw".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        svc.repo
+            .upsert(NewAccount {
+                email: "apikey@x.com".into(),
+                api_key: Some("crsr_abc123DEF".into()),
                 ..Default::default()
             })
             .unwrap();
