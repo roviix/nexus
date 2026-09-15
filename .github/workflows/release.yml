@@ -180,6 +180,20 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      # 验证之前先上传：上一轮 dmg 已经打出来了，卡在 lipo 找二进制，结果产物跟着 job 没了。
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: release-${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            target/**/release/bundle/dmg/*.dmg
+            target/**/release/bundle/macos/*.app.tar.gz
+            target/**/release/bundle/macos/*.app.tar.gz.sig
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe.sig
+
       - name: 验证 macOS 产物（签名、公证、双架构）
         if: matrix.platform == 'macos'
         shell: bash
@@ -193,11 +207,28 @@ jobs:
           updater_bundles=("$bundle_root"/macos/*.app.tar.gz)
           updater_signatures=("$bundle_root"/macos/*.app.tar.gz.sig)
           ls -la "$bundle_root/macos" "$bundle_root/dmg"
+          ls -la "$app/Contents/MacOS" || true
           test -d "$app"
           test ${#dmgs[@]} -eq 1
           test ${#updater_bundles[@]} -eq 1
           test ${#updater_signatures[@]} -eq 1
-          architectures="$(lipo -archs "$app/Contents/MacOS/Nexus")"
+          # 可执行文件不一定叫 Nexus（Cargo 包名是 nexus-desktop）；打完 dmg 后
+          # .app 里有时会被掏空，那时从 updater 包里找。
+          bin=""
+          for f in "$app/Contents/MacOS"/*; do
+            if [ -f "$f" ] && [ -x "$f" ]; then
+              bin="$f"
+              break
+            fi
+          done
+          if [ -z "$bin" ]; then
+            tmp="$(mktemp -d)"
+            tar -xzf "${updater_bundles[0]}" -C "$tmp"
+            bin="$(find "$tmp" -type f -path '*/Contents/MacOS/*' | head -1)"
+          fi
+          test -n "$bin"
+          architectures="$(lipo -archs "$bin")"
+          echo "binary: $bin"
           echo "architectures: $architectures"
           [[ "$architectures" == *arm64* && "$architectures" == *x86_64* ]]
           if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
@@ -229,18 +260,6 @@ jobs:
           } else {
             Write-Warning "没有配置 Windows 证书，这一版安装包未签名。"
           }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.platform }}
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            target/**/release/bundle/dmg/*.dmg
-            target/**/release/bundle/macos/*.app.tar.gz
-            target/**/release/bundle/macos/*.app.tar.gz.sig
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/nsis/*.exe.sig
 
   publish:
     name: 发布 GitHub Release
