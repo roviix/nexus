@@ -17,83 +17,74 @@
   color-scheme: dark;
 
   /* ── 底 ─────────────────────────────────────────────────────────────── */
-  /* 层级只有三种底，都是实色。别往上叠半透明玻璃——玻璃拟态正是上一版暗色
-     被判「廉价」的地方。 */
-  --color-paper: #0a0c0d;   /* 页面底 */
-  --color-surface: #111517; /* 卡片、浮层 */
-  --color-canvas: #171b1e;  /* 内嵌槽位：输入框、代码块 */
-  --color-sidebar: #111517; /* 应用侧栏 */
-  --color-sunken: #0d1114;  /* 比页面底还低半档：游乐场的会话列表 */
-  /* 直接摊在页面上、又要比卡片再「浮」一档的面板（密钥表）。深底靠更亮，白底就是白。 */
-  --color-raised: #171b1e;
-  --surface-hover: #131819; /* 整卡可点时 hover 的底 */
+  /* 层级语言：精致的曜石深空灰阶（Obsidian Slate），告别死黑与发绿的发丝杂色。
+     三层实色配合 1px 内高光，构筑出如 Raycast / Linear 般温润扎实的机械重金属与精密数码质感。 */
+  --color-paper: #090a0c;   /* 页面主底色：深邃但不死黑 */
+  --color-surface: #111316; /* 卡片、面板、浮层表面 */
+  --color-canvas: #16181d;  /* 内嵌槽位：输入框、代码块、内嵌条 */
+  --color-sidebar: #0d0e11; /* 应用侧边栏，微深半阶锚定视窗 */
+  --color-sunken: #0b0c0f;  /* 次级凹陷槽位：会话树列表 */
+  --color-raised: #181b20;  /* 悬浮抬升表面 */
+  --surface-hover: #15181c; /* 整卡可点时 hover 的受光提亮底 */
 
   /* ── 字 ─────────────────────────────────────────────────────────────── */
-  --color-ink: #e9eef0;     /* 主文本 */
-  --color-ink-2: #b9c2c5;
-  --color-muted: #8a9499;   /* 说明文字（对卡片底 5.1:1） */
-  --color-faint: #626d72;
-  --color-dim: #4c585e;     /* 最弱的一档：日志 scope、禁用的文字链 */
+  --color-ink: #f0f3f5;     /* 主文本：高对比度但温和的冷纯白 */
+  --color-ink-2: #c4cdd2;   /* 次级主字：指标次标、表格副列 */
+  --color-muted: #8c979e;   /* 说明文字、字段标签（对比度 > 5:1） */
+  --color-faint: #636f77;   /* 弱提示、占位符、次要时间戳 */
+  --color-dim: #454f55;     /* 最弱一档：分割点、禁用文字链 */
 
   /* ── 线 ─────────────────────────────────────────────────────────────── */
-  --color-line: #232a2e;    /* 发丝描边 */
-  --line-soft: rgba(35, 42, 46, 0.6); /* 行与行之间：比描边再退半档 */
-  --line-strong: #313a3f;   /* hover 时提亮的描边、句中的「·」 */
-  --pop-line: #2b3338;      /* 浮层（弹窗 / 抽屉 / 下拉）的描边，要比卡片实一点 */
+  --color-line: rgba(255, 255, 255, 0.07);    /* 极其精细的结构发丝线 */
+  --line-soft: rgba(255, 255, 255, 0.04);     /* 行与行之间的微弱呼吸分割 */
+  --line-strong: rgba(255, 255, 255, 0.13);   /* hover 与聚焦时的提亮边界 */
+  --pop-line: rgba(255, 255, 255, 0.11);      /* 浮层（弹窗 / 抽屉 / 下拉）的实边 */
 
   /* ── 品牌色 ─────────────────────────────────────────────────────────── */
   --accent: #2dd4a0;
   --accent-dim: #16b489;
   --accent-soft: rgba(45, 212, 160, 0.1);
   --accent-line: rgba(45, 212, 160, 0.32);
-  /* 当前导航项的描边。深底上淡底不够显，要一圈线；白底上淡底本身就够了，再画线就成了按钮。 */
   --nav-ring: rgba(45, 212, 160, 0.32);
-  /* 主渐变：薄荷 → 翠 → 青。跨度别拉太大，从绿一路冲到蓝就成了「彩虹按钮」。 */
-  --accent-grad: linear-gradient(135deg, #5ce8b8 0%, #2dd4a0 45%, #12b3a6 100%);
-  /* 填充按钮上的字色：亮薄荷底上白字只有 1.9:1，近黑字有 9:1。 */
+  --accent-grad: linear-gradient(135deg, #4ade80 0%, #2dd4a0 50%, #0d9488 100%);
   --accent-ink: #04241c;
 
   --ok: #2dd4a0;
-  --warn: #e0a44a;
-  --bad: #f2716b;
+  --warn: #f59e0b;
+  --bad: #ef4444;
   --bad-ink: #2b0c09;
-  --bad-soft: rgba(242, 113, 107, 0.12);
-  --warn-soft: rgba(224, 164, 74, 0.12);
-  /* Auto 档的紫、Team 档的青：实心用 --info / --team，压在深底上的字用 *-text。 */
-  --info: #7b7ef0;
-  --info-text: #a3a5f5;
-  --team: #22a8c8;
-  --team-text: #7fd1e8;
+  --bad-soft: rgba(239, 68, 68, 0.12);
+  --warn-soft: rgba(245, 158, 11, 0.12);
+  --info: #6366f1;
+  --info-text: #a5b4fc;
+  --team: #0ea5e9;
+  --team-text: #7dd3fc;
 
-  /* ── 材质 ───────────────────────────────────────────────────────────── */
-  /* 深底上阴影几乎不可见，层级主要靠描边和底色深浅给；
-     投影只负责让浮层脱离背景。 */
-  --lift-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --lift-2: 0 2px 6px rgba(0, 0, 0, 0.45), 0 16px 32px -12px rgba(0, 0, 0, 0.6);
-  --lift-3: 0 4px 12px rgba(0, 0, 0, 0.5), 0 32px 64px -16px rgba(0, 0, 0, 0.7);
-  --glow: 0 0 0 1px rgba(45, 212, 160, 0.14), 0 24px 64px -28px rgba(45, 212, 160, 0.55);
-  /* 卡片顶边那道 1px 内高光 —— 深色界面里唯一值得保留的「材质」。亮色里它是透明的：
-     白底上再压一道白没有意义，厚度改由投影给。 */
-  --hi: rgba(255, 255, 255, 0.045);
-  /* hover 洗一层：三档，列表行 / 导航与菜单 / 按住。 */
+  /* ── 材质与光影 ───────────────────────────────────────────────────────── */
+  --lift-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 2px 6px -1px rgba(0, 0, 0, 0.2);
+  --lift-2: 0 4px 12px rgba(0, 0, 0, 0.4), 0 16px 36px -6px rgba(0, 0, 0, 0.55);
+  --lift-3: 0 8px 24px rgba(0, 0, 0, 0.5), 0 36px 72px -12px rgba(0, 0, 0, 0.7);
+  --glow: 0 0 0 1px rgba(45, 212, 160, 0.18), 0 16px 48px -16px rgba(45, 212, 160, 0.4);
+  /* 卡片顶边 1px 微发光受光面 —— 顶级深色工业设计的灵魂，产生真实倒角厚度感 */
+  --hi: rgba(255, 255, 255, 0.055);
+  --card-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+
   --wash-1: rgba(255, 255, 255, 0.025);
   --wash-2: rgba(255, 255, 255, 0.045);
-  --wash-3: rgba(255, 255, 255, 0.06);
-  /* 页面顶部那团环境光。只此一处。 */
+  --wash-3: rgba(255, 255, 255, 0.07);
   --ambient:
-    radial-gradient(900px 380px at 42% -12%, rgba(45, 212, 160, 0.1), transparent 64%),
-    radial-gradient(620px 300px at 92% -6%, rgba(123, 126, 240, 0.07), transparent 62%);
-  --ambient-small: radial-gradient(620px 200px at 50% -55%, rgba(45, 212, 160, 0.075), transparent 70%);
-  /* 主区纸面顶部那一点提亮，往下 300px 化进页面底。深色里很轻——环境光已经在那儿了。 */
-  --main-top: rgba(255, 255, 255, 0.018);
+    radial-gradient(900px 380px at 42% -12%, rgba(45, 212, 160, 0.08), transparent 64%),
+    radial-gradient(620px 300px at 92% -6%, rgba(99, 102, 241, 0.06), transparent 62%);
+  --ambient-small: radial-gradient(620px 200px at 50% -55%, rgba(45, 212, 160, 0.06), transparent 70%);
+  --main-top: rgba(255, 255, 255, 0.015);
 
   /* ── 控件 ───────────────────────────────────────────────────────────── */
-  --field-bg: #1a2024;
-  --field-bg-focus: #1c2429;
-  --field-line: #2f393f;
-  --field-line-hover: #3a454c;
-  --field-inset: inset 0 1px 2px rgba(0, 0, 0, 0.18);
-  --placeholder: #5b666c;
+  --field-bg: #15181c;
+  --field-bg-focus: #181c22;
+  --field-line: rgba(255, 255, 255, 0.09);
+  --field-line-hover: rgba(255, 255, 255, 0.15);
+  --field-inset: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  --placeholder: #576269;
 
   --btn-bg: linear-gradient(#232b30, #1b2226);
   --btn-bg-hover: linear-gradient(#2a3338, #212a2e);

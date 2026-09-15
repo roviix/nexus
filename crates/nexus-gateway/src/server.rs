@@ -126,13 +126,11 @@ fn settle(
     result: &Result<Completion, UpstreamError>,
     started: std::time::Instant,
 ) {
-    if !credential.label.starts_with(GROKBOT_LABEL_PREFIX) {
-        match result {
-            Ok(c) => channel
-                .lane
-                .report(credential, model, Outcome::Ok(&c.usage)),
-            Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
-        }
+    match result {
+        Ok(c) => channel
+            .lane
+            .report(credential, model, Outcome::Ok(&c.usage)),
+        Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
     }
     let Some(ledger) = &gw.ledger else { return };
     let elapsed = started.elapsed().as_millis() as u64;
@@ -517,11 +515,9 @@ fn settle_media<T>(
     started: std::time::Instant,
 ) {
     let none = Usage::default();
-    if !credential.label.starts_with(GROKBOT_LABEL_PREFIX) {
-        match result {
-            Ok(_) => channel.lane.report(credential, model, Outcome::Ok(&none)),
-            Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
-        }
+    match result {
+        Ok(_) => channel.lane.report(credential, model, Outcome::Ok(&none)),
+        Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
     }
     let Some(ledger) = &gw.ledger else { return };
     let elapsed = started.elapsed().as_millis() as u64;

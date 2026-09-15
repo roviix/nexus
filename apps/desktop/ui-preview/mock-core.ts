@@ -163,10 +163,11 @@ export const ACCOUNTS: Account[] = EMPTY
   ? []
   : [
       // 按需计费三种形态各来一个（不封顶 / 有上限 / 没开），末行才看得出真实光景。
-      account({ email: "arvid.pfeffer@outlook.com", note: "主力", tags: ["主力"], hasApiKey: true, usage: usage({ onDemandEnabled: true, onDemandUsedCents: 2115, creditGrantTotalCents: 10000, creditGrantUsedCents: 0, creditGrantRemainingCents: 10000 }), billing: billing({}) }),
-      account({ email: "mara.quill@outlook.com", source: "purchased", usage: usage({ totalPercentUsed: 91, apiPercentUsed: 97, autoPercentUsed: 80, onDemandEnabled: true, onDemandUsedCents: 315, onDemandLimitCents: 5000, creditGrantTotalCents: 2500, creditGrantUsedCents: 400, creditGrantRemainingCents: 2100 }) }),
+      account({ email: "arvid.pfeffer@outlook.com", createdAt: iso(15 * 60_000), note: "主力", tags: ["主力"], hasApiKey: true, usage: usage({ onDemandEnabled: true, onDemandUsedCents: 2115, creditGrantTotalCents: 10000, creditGrantUsedCents: 0, creditGrantRemainingCents: 10000 }), billing: billing({}) }),
+      account({ email: "mara.quill@outlook.com", createdAt: iso(3 * H), source: "purchased", usage: usage({ totalPercentUsed: 91, apiPercentUsed: 97, autoPercentUsed: 80, onDemandEnabled: true, onDemandUsedCents: 315, onDemandLimitCents: 5000, creditGrantTotalCents: 2500, creditGrantUsedCents: 400, creditGrantRemainingCents: 2100 }) }),
       account({
         email: "tobias.rennick@outlook.com",
+        createdAt: iso(1 * D),
         source: "purchased",
         usage: usage({ plan: "ultra", totalPercentUsed: 8, apiPercentUsed: 3, autoPercentUsed: 5 }),
         billing: billing({
@@ -201,15 +202,15 @@ export const ACCOUNTS: Account[] = EMPTY
           ],
         }),
       }),
-      account({ email: "junko.hale@outlook.com", source: "local", status: "needs_login", hasRefresh: false, availability: "logged_out", usage: null }),
+      account({ email: "junko.hale@outlook.com", createdAt: iso(2 * D), source: "local", status: "needs_login", hasRefresh: false, availability: "logged_out", usage: null }),
       // 仅会话的号：此刻能用，到期就掉；卡上不算问题，分布条里单独一段。
-      account({ email: "sunniva.brekke@outlook.com", hasRefresh: false, hasAccess: true, accessExpiresAt: iso(-2 * D), availability: "session", usage: usage({ totalPercentUsed: 34, apiPercentUsed: 40, autoPercentUsed: 30 }) }),
+      account({ email: "sunniva.brekke@outlook.com", createdAt: iso(4 * D), hasRefresh: false, hasAccess: true, accessExpiresAt: iso(-2 * D), availability: "session", usage: usage({ totalPercentUsed: 34, apiPercentUsed: 40, autoPercentUsed: 30 }) }),
       // 归档的号：默认不出现，「已归档」视图里能取回。
-      account({ email: "old.batch.01@outlook.com", source: "purchased", status: "dead", availability: "dead", archivedAt: iso(3 * D), usage: usage({ totalPercentUsed: 100, apiPercentUsed: 100, autoPercentUsed: 100 }) }),
-      account({ email: "old.batch.02@outlook.com", source: "purchased", archivedAt: iso(3 * D), usage: usage({ totalPercentUsed: 12 }) }),
+      account({ email: "old.batch.01@outlook.com", createdAt: iso(15 * D), source: "purchased", status: "dead", availability: "dead", archivedAt: iso(3 * D), usage: usage({ totalPercentUsed: 100, apiPercentUsed: 100, autoPercentUsed: 100 }) }),
+      account({ email: "old.batch.02@outlook.com", createdAt: iso(18 * D), source: "purchased", archivedAt: iso(3 * D), usage: usage({ totalPercentUsed: 12 }) }),
       // 这个号当天就回血：末行的倒计时会换成钟点。
-      account({ email: "pilar.osei@outlook.com", source: "local", usage: usage({ totalPercentUsed: 100, apiPercentUsed: 100, autoPercentUsed: 100, bot: { percentUsed: 100, resetAt: NOW + 5 * H, hasAvailable: false, access: "granted" } }) }),
-      account({ email: "wen.abernathy@outlook.com", usage: undefined, lastCheckedAt: null }),
+      account({ email: "pilar.osei@outlook.com", createdAt: iso(7 * D), source: "local", usage: usage({ totalPercentUsed: 100, apiPercentUsed: 100, autoPercentUsed: 100, bot: { percentUsed: 100, resetAt: NOW + 5 * H, hasAvailable: false, access: "granted" } }) }),
+      account({ email: "wen.abernathy@outlook.com", createdAt: iso(10 * D), usage: undefined, lastCheckedAt: null }),
     ];
 
 const chatgptUsage = (over: Partial<ChatGptUsage> = {}): ChatGptUsage => ({

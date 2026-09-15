@@ -24,7 +24,7 @@ import type { AccountPlacement } from "../../accounts/model";
 import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster, usePools } from "../../accounts/pools";
 import type { Account, CrsrStatus, KickOutcome, MintedApiKey, SecretKind } from "../../ipc/types";
 import { accounts, crsr, gateway as gatewayApi, switcher as switcherApi } from "../../ipc/api";
-import { Banner, CopyButton, Drawer, ErrorNote, Gauge, Health, Icon, Reset, Spinner, Switch, Tag } from "../../ui/primitives";
+import { Banner, CopyButton, Drawer, ErrorNote, Health, Icon, Spinner, Switch, Tag } from "../../ui/primitives";
 import { accountSourceLabel, timeAgo, timeUntil } from "../../ui/format";
 import { canQueryUsage, canUseDashboard, hasLiveAccess, sessionOnly } from "../../ui/accounts";
 import { canAddToSwitchPool, canMintApiKey } from "../../ui/switcher";
@@ -34,15 +34,15 @@ import {
   accountProblem,
   blockReasonText,
   bonusSpend,
-  cycleProgress,
-  isFresh,
   money,
   creditPoints,
   onDemandText,
+  pctText,
   planBudget,
   planLabel,
   planSpend,
   planTone,
+  resetInShort,
   shortDate,
 } from "../../ui/usage";
 
@@ -585,7 +585,6 @@ function UsageTab({
 
   const now = Date.now();
   const bot = u.bot;
-  const cycle = cycleProgress(u, now);
   const budget = planBudget(u);
   // 三本账分开说：订阅额度（included 对 limit）、免费加量（bonus）、按需（另一节）。
   // 以前把 included + bonus 的总数对着 limit 摆「已用 / 剩余」，18/70 个号被显示成
@@ -598,171 +597,280 @@ function UsageTab({
   const hasGrant = grantRemaining != null || grantTotal != null;
   const grants = u.creditGrants ?? [];
 
+  const pctTone =
+    u.totalPercentUsed == null
+      ? "idle"
+      : u.totalPercentUsed > 90
+        ? "bad"
+        : u.totalPercentUsed >= 70
+          ? "warn"
+          : "ok";
+  const remainingCents =
+    budget != null && spend != null ? Math.max(0, budget - spend) : null;
+  const cycleCountdown = u.cycleEnd ? resetInShort(u.cycleEnd, now) : null;
+  const earliestGrantExpiry = grants.length
+    ? Math.min(
+        ...grants.map((g) => g.expiresAt ?? Number.POSITIVE_INFINITY),
+      )
+    : null;
+  const grantExpiryText =
+    earliestGrantExpiry != null && Number.isFinite(earliestGrantExpiry)
+      ? `${shortDate(earliestGrantExpiry)} 到期`
+      : "永久有效";
+
   if (u.via === "apiKey") {
     const models = [...(u.byModel ?? [])].sort((a, b) => b.cents - a.cents);
     return (
-      <div className="stack" style={{ gap: 20 }}>
+      <div className="stack" style={{ gap: 14 }}>
         <Banner tone="warn" title="基础用量" hint="session 不可用，这次是 crsr_ API Key 兑出来的逐条花费。没有额度百分比、账期和 Grok 周额。完整账单在「账单」页。" />
-        <section className="sect">
-          <div className="sect-cap">
-            <span>花费</span>
-            {u.plan ? <span className="sect-aside">{u.plan}</span> : null}
+        <div className="drawer-card">
+          <div className="dc-head">
+            <span className="dc-title">扣费明细</span>
+            {u.plan ? <span className="dc-sub">{u.plan}</span> : null}
           </div>
-          <dl className="facts">
-            <div>
-              <dt>合计</dt>
-              <dd>{money(u.spendCents)}</dd>
-              <small>这段时间的扣费合计</small>
+          <div className="grant-summary-row">
+            <div className="gs-item">
+              <span className="gs-k">合计扣费</span>
+              <span className="gs-v num">{money(u.spendCents)}</span>
             </div>
-            <div>
-              <dt>今天</dt>
-              <dd>{u.today ? money(u.today.cents) : "—"}</dd>
-              <small>本地零点起</small>
+            <div className="gs-item">
+              <span className="gs-k">今天消费</span>
+              <span className="gs-v num">{u.today ? money(u.today.cents) : "—"}</span>
             </div>
-            <div>
-              <dt>近 7 天</dt>
-              <dd>{u.week ? money(u.week.cents) : "—"}</dd>
-              <small>含今天</small>
+            <div className="gs-item">
+              <span className="gs-k">近 7 天</span>
+              <span className="gs-v num">{u.week ? money(u.week.cents) : "—"}</span>
             </div>
-          </dl>
-        </section>
-        <section className="sect">
-          <div className="sect-cap">
-            <span>按模型</span>
-            <span className="sect-aside">{models.length ? `${models.length} 个` : null}</span>
           </div>
-          {models.length === 0 ? (
-            <p className="sect-none">这段时间没有按模型的消费明细。</p>
-          ) : (
-            <div className="kv">
+        </div>
+        {models.length > 0 ? (
+          <div className="drawer-card">
+            <div className="dc-head">
+              <span className="dc-title">按模型消费</span>
+              <span className="dc-sub">{models.length} 个模型</span>
+            </div>
+            <div className="grant-items-list">
               {models.map((m) => (
-                <div key={m.model} className="kv-row">
-                  <span className="kv-k">{m.model}</span>
-                  <span className="kv-v num">{money(m.cents)}</span>
+                <div key={m.model} className="grant-item-row">
+                  <span className="grant-name truncate mono">{m.model}</span>
+                  <span className="grant-amt num font-mono">{money(m.cents)}</span>
                 </div>
               ))}
             </div>
-          )}
-        </section>
+          </div>
+        ) : null}
       </div>
     );
   }
 
   return (
-    <div className="stack" style={{ gap: 20 }}>
-      {/* 订阅额度是这一页要回答的第一个问题：这个月还能用多少。所以它在最上面。 */}
-      <section className="sect">
-        <div className="sect-cap">
-          <span>订阅额度</span>
-          <span className="sect-aside mono">
+    <div className="stack" style={{ gap: 14 }}>
+      {/* 1. Hero 订阅配额主卡片：核心指标大字突出，单条流线进度条 */}
+      <div className="drawer-quota-hero">
+        <div className="dqh-head">
+          <div className="dqh-title-row">
+            <span className="dqh-title">月度订阅配额</span>
+            {u.plan ? (
+              <span className={`plan ${planTone(u.plan)}`}>
+                {planLabel(u.plan)}
+              </span>
+            ) : null}
+          </div>
+          <span className="dqh-cycle mono">
             {shortDate(u.cycleStart)} → {shortDate(u.cycleEnd)}
           </span>
         </div>
-        <Reset
-          label="月额重置"
-          at={u.cycleEnd}
-          now={now}
-          tag={isFresh(u.cycleStart, now) ? <Tag tone="ok">刚重置</Tag> : null}
-          progress={cycle}
-        />
-        <dl className="facts">
-          <div>
-            <dt>已用</dt>
-            <dd>{money(spend)}</dd>
-            <small>从订阅额度里扣的</small>
+
+        <div className="dqh-metric-block">
+          <div className="dqh-metric-primary">
+            <span className="dqh-num num">
+              {remainingCents != null ? money(remainingCents) : money(spend)}
+            </span>
+            <span className="dqh-lbl">
+              {remainingCents != null ? "剩余可用额度" : "已用额度"}
+            </span>
           </div>
-          <div>
-            <dt>额度</dt>
-            <dd>{money(budget)}</dd>
-            <small>{u.plan ? `${u.plan} 每期包含` : "每期包含"}</small>
+
+          <div className="dqh-metric-meta">
+            <span>
+              已用 <b className="num">{money(spend)}</b>
+            </span>
+            {budget != null ? (
+              <>
+                <span className="dqh-sep">/</span>
+                <span>
+                  总配额 <b className="num">{money(budget)}</b>
+                </span>
+                <span className="dqh-sep">·</span>
+                <span>
+                  <b className="num">{Math.round(u.totalPercentUsed ?? 0)}%</b> 已用
+                </span>
+              </>
+            ) : null}
+            {cycleCountdown ? (
+              <span className="dqh-reset-tag">
+                <Icon name="clock" size={11} />
+                <span>{cycleCountdown}</span>
+              </span>
+            ) : null}
           </div>
-          <div>
-            <dt>剩余</dt>
-            <dd>{budget != null && spend != null ? money(Math.max(0, budget - spend)) : "—"}</dd>
-            <small>{budget != null && spend != null && spend >= budget ? "用完了；再用走按需" : "到重置前还能花"}</small>
-          </div>
-        </dl>
-        <Gauge
-          label="总额度"
-          percent={u.totalPercentUsed}
-          note={budget != null || spend != null ? `${money(spend)} / ${money(budget)}` : undefined}
-          title="月账期包含额度的整体已用比例"
-        />
-        <Gauge label="Auto" percent={u.autoPercentUsed} title="composer / grok 等由 Cursor 调度的模型" />
-        <Gauge label="API" percent={u.apiPercentUsed} title="点名调用的 claude / gpt 等；打满后这类模型调不动" />
+        </div>
+
+        {/* 6px 微进度条 */}
+        <div className="dqh-bar-track" role="progressbar" aria-valuenow={u.totalPercentUsed ?? 0}>
+          <div
+            className={`dqh-bar-fill is-${pctTone}`}
+            style={{ width: `${Math.min(100, Math.max(0, u.totalPercentUsed ?? 0))}%` }}
+          />
+        </div>
+
+        {/* 免费加量条（仅当上游有补贴时优雅呈现） */}
         {bonus != null ? (
-          // 这一行只在真有加量时出现：它不占额度、不扣钱，摆进上面的「已用」会把剩余算成负数。
-          <p className="sect-foot">
-            另有免费加量 <b className="num">{money(bonus)}</b>
-            <span className="faint"> · Cursor 与模型厂商补贴的额外用量，不计入订阅额度，也不是按需</span>
-          </p>
-        ) : null}
-      </section>
-
-      <OnDemandEditor account={account} onReload={onReload} />
-
-      {hasGrant ? (
-        // 积分 = Cursor 赠送的 credit grant（仪表盘上 25 / 100 那种），有名字、有到期日。
-        // 70 个号里只有 1 个有，所以没有就整节不出现，不留一句「这个号没有」占位。
-        <section className="sect">
-          <div className="sect-cap">
-            <span>积分</span>
-            {grantTotal != null ? <span className="sect-aside">共 {creditPoints(grantTotal)} 积分 · 1 积分 = $1</span> : null}
+          <div className="dqh-bonus-strip">
+            <span style={{ fontSize: 13 }}>🎁</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              <span>
+                厂商免费加量已享用 <b className="num">{money(bonus)}</b>
+              </span>
+              <span className="faint tiny">
+                Cursor 与模型厂商补贴的额外用量，不占订阅配额，亦非按需扣费
+              </span>
+            </div>
           </div>
-          <dl className="facts">
-            <div>
-              <dt>剩余</dt>
-              <dd>{creditPoints(grantRemaining)}</dd>
-              <small>还能花的</small>
+        ) : null}
+      </div>
+
+      {/* 2. 模型调度分布（Auto 与点名 API 双色比例条） */}
+      <div className="drawer-card">
+        <div className="dc-head">
+          <span className="dc-title">模型调度分布</span>
+          <span className="dc-sub faint">按调度类别分别计量</span>
+        </div>
+
+        <div className="model-ratio-track">
+          <div
+            className="mrt-seg is-auto"
+            style={{ width: `${Math.min(100, Math.max(0, u.autoPercentUsed ?? 0))}%` }}
+            title={`Auto 调度: ${pctText(u.autoPercentUsed)}`}
+          />
+          <div
+            className="mrt-seg is-api"
+            style={{ width: `${Math.min(100, Math.max(0, u.apiPercentUsed ?? 0))}%` }}
+            title={`点名 API: ${pctText(u.apiPercentUsed)}`}
+          />
+        </div>
+
+        <div className="model-ratio-legend">
+          <div className="mrl-item">
+            <i className="mrl-dot is-auto" />
+            <span className="mrl-k">Auto 调度 (Composer / Grok)</span>
+            <span className="mrl-v num">{pctText(u.autoPercentUsed)}</span>
+          </div>
+          <div className={`mrl-item${(u.apiPercentUsed ?? 0) >= 90 ? " is-warn" : ""}`}>
+            <i className="mrl-dot is-api" />
+            <span className="mrl-k">点名 API (Claude / GPT)</span>
+            <span className="mrl-v num">{pctText(u.apiPercentUsed)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. 赠送积分 (Credit Grants) - 仅在真有积分时展示，绝不留空卡占位 */}
+      {hasGrant ? (
+        <div className="drawer-card is-grant">
+          <div className="dc-head">
+            <div className="row" style={{ gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 13 }}>🎟</span>
+              <span className="dc-title">赠送积分 (Credit Grant)</span>
             </div>
-            <div>
-              <dt>已用</dt>
-              <dd>{creditPoints(grantUsed)}</dd>
-              <small>从积分里扣掉的</small>
+            {grantTotal != null ? (
+              <span className="dc-sub num mono">
+                共 {creditPoints(grantTotal)} 积分 · 1 积分 = $1
+              </span>
+            ) : null}
+          </div>
+
+          <div className="grant-summary-row">
+            <div className="gs-item">
+              <span className="gs-k">剩余可用</span>
+              <span className="gs-v num">{creditPoints(grantRemaining)}</span>
             </div>
-            <div>
-              <dt>到期</dt>
-              <dd>{grants.length && grants[0]?.expiresAt ? shortDate(Math.min(...grants.map((g) => g.expiresAt ?? Number.POSITIVE_INFINITY))) : "—"}</dd>
-              <small>{grants.length > 1 ? "最早到期的那笔" : "过期作废"}</small>
+            <div className="gs-item">
+              <span className="gs-k">已用积分</span>
+              <span className="gs-v num">{creditPoints(grantUsed)}</span>
             </div>
-          </dl>
+            <div className="gs-item">
+              <span className="gs-k">有效期</span>
+              <span className="gs-v num" style={{ fontSize: 12 }}>{grantExpiryText}</span>
+            </div>
+          </div>
+
           {grants.length ? (
-            <div className="kv">
-              {grants.map((g, i) => (
-                <div key={`${g.displayName ?? "grant"}-${i}`} className="kv-row">
-                  <span className="kv-k">{g.displayName ?? "Credit grant"}</span>
-                  <span className="kv-v num">
+            <div className="grant-items-list">
+              {grants.map((g, idx) => (
+                <div key={idx} className="grant-item-row">
+                  <span className="grant-name truncate">
+                    {g.displayName || "Power user grant"}
+                  </span>
+                  <span className="grant-amt num font-mono">
                     {creditPoints(g.remainingCents)} / {creditPoints(g.totalCents)}
-                    {g.expiresAt ? <span className="faint"> · {timeUntil(g.expiresAt)}到期</span> : null}
+                    {g.expiresAt ? (
+                      <span className="faint tiny"> · {timeUntil(g.expiresAt)}到期</span>
+                    ) : null}
                   </span>
                 </div>
               ))}
             </div>
           ) : null}
-        </section>
+        </div>
       ) : null}
 
-      <section className="sect">
-        <div className="sect-cap">
-          <span>Grok Bot</span>
-          {bot?.planLabel ? <span className="sect-aside">{bot.planLabel}</span> : null}
+      {/* 4. 按需计费设置 */}
+      <OnDemandEditor account={account} onReload={onReload} />
+
+      {/* 5. Grok Bot 周额 */}
+      <div className="drawer-card">
+        <div className="dc-head">
+          <span className="dc-title">Grok Bot 通道</span>
+          {bot?.resetAt ? (
+            <span className="dc-sub faint mono">
+              周额 {resetInShort(bot.resetAt, now)}
+            </span>
+          ) : bot?.planLabel ? (
+            <span className="dc-sub">{bot.planLabel}</span>
+          ) : null}
         </div>
-        {bot?.resetAt ? (
-          <Reset
-            label="周额重置"
-            at={bot.resetAt}
-            now={now}
-            tag={bot.hasAvailable === false ? <Tag tone="bad">已耗尽</Tag> : isFresh(bot.periodStart, now) ? <Tag tone="ok">刚重置</Tag> : null}
-          />
-        ) : null}
+
         {!bot ? (
-          <p className="sect-none">这个号没有 Grok Bot 周额（老档 pro-legacy 没有这套，属正常）。</p>
+          <p className="sect-none">此账号未开通 Grok Bot 周额度。</p>
         ) : bot.access === "blocked" ? (
-          <Banner tone="bad" title="无权限" hint={bot.blockReason ? blockReasonText(bot.blockReason) : undefined} />
+          <Banner
+            tone="bad"
+            title="无权限"
+            hint={bot.blockReason ? blockReasonText(bot.blockReason) : undefined}
+          />
         ) : (
-          <Gauge label="周用量" percent={bot.percentUsed} title="Grok Bot 通道的周额度；和上面的月账期是两套计量" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <span className="faint" style={{ fontSize: 12 }}>
+                本周使用比例
+              </span>
+              <span className="num font-semibold" style={{ fontSize: 13 }}>
+                {bot.hasAvailable === false ? (
+                  <Tag tone="bad">已耗尽</Tag>
+                ) : (
+                  pctText(bot.percentUsed)
+                )}
+              </span>
+            </div>
+            <div className="dqh-bar-track">
+              <div
+                className={`dqh-bar-fill${bot.hasAvailable === false ? " is-bad" : ""}`}
+                style={{ width: `${Math.min(100, Math.max(0, bot.percentUsed ?? 0))}%` }}
+              />
+            </div>
+          </div>
         )}
-      </section>
+      </div>
     </div>
   );
 }
@@ -834,25 +942,23 @@ function OnDemandEditor({ account, onReload }: { account: Account; onReload: () 
   }
 
   return (
-    <section className="sect">
-      <div className="sect-cap">
-        <span>按需</span>
-        <span className="sect-aside">{enabled ? od.sub : "额度用完即停"}</span>
+    <div className="drawer-card">
+      <div className="dc-head">
+        <span className="dc-title">按需超额扣费</span>
+        <span className="dc-sub">{enabled ? `已用 ${money(used)} · ${od.sub}` : "未开启 · 配额用完即停"}</span>
       </div>
+
       <div className="od-bar">
         <Switch
           checked={on}
           disabled={!can || busy}
-          label="按需计费"
+          label="开启按需扣费"
           onChange={setOn}
         />
-        <span className="od-used">
-          已用 <b className="num">{money(used)}</b>
-        </span>
         <input
           className="input od-limit"
           inputMode="decimal"
-          placeholder="不封顶"
+          placeholder="不设上限"
           disabled={!can || busy || !on}
           value={limitText}
           onChange={(e) => setLimitText(e.target.value)}
@@ -861,7 +967,7 @@ function OnDemandEditor({ account, onReload }: { account: Account; onReload: () 
               void save(on, parsed);
             }
           }}
-          aria-label="按需上限（美元）"
+          aria-label="按需月度预算上限（美元）"
         />
         <span className="od-unit">美元 / 月</span>
         <button
@@ -873,13 +979,10 @@ function OnDemandEditor({ account, onReload }: { account: Account; onReload: () 
           {busy ? <Spinner /> : "保存"}
         </button>
       </div>
-      {parsed === "invalid" ? <p className="sect-none">上限要是一个不小于 0 的数字；留空表示不封顶。</p> : null}
-      {!can ? <p className="sect-none">需要一份还活着的 session token 才能改。</p> : null}
-      {can && on && !limitText.trim() ? (
-        <p className="sect-none">不填上限也能开；Cursor 对「不封顶」有时不认，填一个美元整数更稳。</p>
-      ) : null}
+      {parsed === "invalid" ? <p className="sect-none" style={{ color: "var(--bad)" }}>上限需为有效金额数字；留空表示不设上限。</p> : null}
+      {!can ? <p className="sect-none">需要有效会话凭证才能修改按需设置。</p> : null}
       <ErrorNote error={error} />
-    </section>
+    </div>
   );
 }
 

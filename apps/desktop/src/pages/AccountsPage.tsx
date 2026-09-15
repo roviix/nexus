@@ -26,7 +26,7 @@ import {
   type PoolFilter,
 } from "../accounts/pools";
 import { accounts, backup, grokbot, onAccountRefreshed, onOauthState, switcher } from "../ipc/api";
-import type { Account, Availability, ExportOutcome, GrokBotStatus } from "../ipc/types";
+import type { Account, ExportOutcome, GrokBotStatus } from "../ipc/types";
 import { ACCOUNT_PLATFORMS, go, type AccountPlatform, type Route } from "../shell/nav";
 import {
   BUILTIN_VIEWS,
@@ -45,8 +45,6 @@ import {
   applyAvailFilter,
   applyPlanFilter,
   applyQuotaFilter,
-  AVAIL_LABEL,
-  AVAIL_ORDER,
   canQueryUsage,
   isPaidPlan,
   matchesQuery,
@@ -58,8 +56,6 @@ import {
   sortAccounts,
   summarize,
   type AccountSort,
-  type AccountSummary,
-  type AvailFilter,
   type PlanFilter,
   type QuotaFilter,
 } from "../ui/accounts";
@@ -537,25 +533,83 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
         />
       ) : (
         <>
-          <AvailBar stats={stats} filter={avail} onFilter={(f) => setSpec({ avail: f })} archived={archived} />
+          {/* 统一高级控制台：左边是状态胶囊（一键下钻到特定状态），右边是搜索与属性筛选 */}
+          <div className="unified-toolbar">
+            <div className="status-pills" role="tablist" aria-label="账号状态视图">
+              <button
+                type="button"
+                className={`status-pill${avail === "all" && !archived ? " is-active" : ""}`}
+                onClick={() => setSpec({ avail: "all", archived: false })}
+              >
+                <span>全部</span>
+                <span className="pill-n">{stats.total}</span>
+              </button>
 
-          {/* 左边是「常问的问题」（视图），右边是「这次怎么问」（搜索、筛子、排序）。
-              控件靠右和页头的动作对齐，左边留白给芯片；窄窗口下右边那组整体折到下一行。 */}
-          <div className="toolbar acct-toolbar">
-            <ViewChips
-              views={[...BUILTIN_VIEWS, ...savedViews]}
-              active={activeView}
-              onPick={(v) => setSpec(v.spec)}
-              onSave={saveCurrentView}
-              onRemove={removeView}
-            />
+              <button
+                type="button"
+                className={`status-pill is-avail${avail === "long_lived" && !archived ? " is-active" : ""}`}
+                onClick={() => setSpec({ avail: "long_lived", archived: false })}
+              >
+                <i className="status-dot is-long_lived" />
+                <span>可用</span>
+                <span className="pill-n">{stats.by.long_lived}</span>
+              </button>
+
+              {stats.by.session > 0 ? (
+                <button
+                  type="button"
+                  className={`status-pill is-session${avail === "session" && !archived ? " is-active" : ""}`}
+                  onClick={() => setSpec({ avail: "session", archived: false })}
+                >
+                  <i className="status-dot is-session" />
+                  <span>仅会话</span>
+                  <span className="pill-n">{stats.by.session}</span>
+                </button>
+              ) : null}
+
+              {stats.by.logged_out > 0 ? (
+                <button
+                  type="button"
+                  className={`status-pill is-logged_out${avail === "logged_out" && !archived ? " is-active" : ""}`}
+                  onClick={() => setSpec({ avail: "logged_out", archived: false })}
+                >
+                  <i className="status-dot is-logged_out" />
+                  <span>掉登录</span>
+                  <span className="pill-n">{stats.by.logged_out}</span>
+                </button>
+              ) : null}
+
+              {stats.by.dead > 0 ? (
+                <button
+                  type="button"
+                  className={`status-pill is-dead${avail === "dead" && !archived ? " is-active" : ""}`}
+                  onClick={() => setSpec({ avail: "dead", archived: false })}
+                >
+                  <i className="status-dot is-dead" />
+                  <span>已失效</span>
+                  <span className="pill-n">{stats.by.dead}</span>
+                </button>
+              ) : null}
+
+              <div className="status-pill-sep" aria-hidden />
+
+              <button
+                type="button"
+                className={`status-pill${archived ? " is-active is-archived" : ""}`}
+                onClick={() => setSpec({ archived: !archived, avail: "all" })}
+              >
+                <Icon name="archive" size={12} />
+                <span>已归档</span>
+              </button>
+            </div>
+
             <div className="acct-controls">
               <label className="search">
                 <Icon name="search" size={14} />
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="搜邮箱、备注、标签"
+                  placeholder="搜索邮箱、备注、标签"
                   spellCheck={false}
                 />
                 {query ? (
@@ -565,9 +619,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                 ) : null}
               </label>
 
-              {/* 四个筛子各管一件事：上面那条分布条按「此刻能不能用」筛，这三个按「还剩多少额度」、
-                  「被谁用着」、「是什么档」筛。合成一个下拉的话，「切号池里那些 Ultra 还剩多少额度」
-                  就问不出来了。 */}
               <Picker<QuotaFilter>
                 icon="gauge"
                 label="额度"
@@ -575,19 +626,19 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                 options={quotaOptions}
                 onChange={(q) => setSpec({ quota: q })}
               />
-              <Picker<PoolFilter>
-                icon="layers"
-                label="所在池"
-                value={pool}
-                options={POOL_FILTERS.map((p) => ({ id: p, label: POOL_FILTER_LABEL[p] }))}
-                onChange={(p) => setSpec({ pool: p })}
-              />
               <Picker<PlanFilter>
                 icon="crown"
                 label="档位"
                 value={plan}
                 options={planOptions}
                 onChange={(p) => setSpec({ plan: p })}
+              />
+              <Picker<PoolFilter>
+                icon="layers"
+                label="所在池"
+                value={pool}
+                options={POOL_FILTERS.map((p) => ({ id: p, label: POOL_FILTER_LABEL[p] }))}
+                onChange={(p) => setSpec({ pool: p })}
               />
               <i className="acct-controls-sep" aria-hidden />
               <Picker<AccountSort>
@@ -597,6 +648,43 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                 options={SORTS.map((s) => ({ id: s, label: SORT_LABEL[s] }))}
                 onChange={(s) => setSpec({ sort: s })}
               />
+              {savedViews.length > 0 ? (
+                <Picker<string>
+                  icon="bookmark"
+                  label="视图"
+                  value={activeView?.id ?? ""}
+                  options={[
+                    { id: "", label: activeView ? activeView.label : "常用视图" },
+                    ...savedViews.map((v) => ({ id: v.id, label: v.label })),
+                  ]}
+                  onChange={(id) => {
+                    const v = savedViews.find((x) => x.id === id);
+                    if (v) setSpec(v.spec);
+                  }}
+                />
+              ) : null}
+              {activeView && !activeView.builtin ? (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-quiet"
+                  onClick={() => removeView(activeView.id)}
+                  title={`删除视图「${activeView.label}」`}
+                  aria-label={`删除视图 ${activeView.label}`}
+                >
+                  <Icon name="trash" size={12} />
+                </button>
+              ) : null}
+              {narrowed && !activeView ? (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-quiet"
+                  onClick={saveCurrentView}
+                  title="把当前的筛选和排序存成自定义视图"
+                >
+                  <Icon name="plus" size={11} />
+                  存为视图
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -729,53 +817,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   );
 }
 
-/* ── 视图 ─────────────────────────────────────────────────────────────────── */
-
-/**
- * 一排视图芯片：内建三个 + 用户存的。当前筛子组合命中哪个，哪个就亮；一个都不命中时
- * 尾部多出一枚「存为视图」——这是保存的唯一入口，也只在有东西可存的时候出现。
- * 自定义视图亮着时能删，内建的不能。
- */
-function ViewChips({
-  views,
-  active,
-  onPick,
-  onSave,
-  onRemove,
-}: {
-  views: SavedView[];
-  active: SavedView | null;
-  onPick: (v: SavedView) => void;
-  onSave: () => void;
-  onRemove: (id: string) => void;
-}) {
-  return (
-    <div className="views" role="group" aria-label="视图">
-      {views.map((v) => {
-        const on = active?.id === v.id;
-        return (
-          <span key={v.id} className="view-chip-wrap">
-            <button type="button" className="pool-chip" aria-pressed={on} onClick={() => onPick(v)}>
-              {v.label}
-            </button>
-            {on && !v.builtin ? (
-              <button type="button" className="view-chip-x" aria-label={`删除视图 ${v.label}`} onClick={() => onRemove(v.id)}>
-                <Icon name="close" size={10} />
-              </button>
-            ) : null}
-          </span>
-        );
-      })}
-      {active ? null : (
-        <button type="button" className="pool-chip view-chip-save" onClick={onSave} title="把当前的筛选和排序存成一个视图">
-          <Icon name="plus" size={11} />
-          存为视图
-        </button>
-      )}
-    </div>
-  );
-}
-
 /* ── 多选操作条 ───────────────────────────────────────────────────────────── */
 
 /**
@@ -826,81 +867,5 @@ function SelectBar({
         <Icon name="close" size={12} />
       </button>
     </div>
-  );
-}
-
-/* ── 可用性概览 ───────────────────────────────────────────────────────────── */
-
-/**
- * 一条按比例分段的横条 + 一行图例，按**此刻能不能用**分段。
- *
- * 手里几十个号时，「现在整体什么光景」比任何单个号都先被问到，而一条按数量分段的横条
- * 一眼就答了 —— 能用的占多大、掉登录的占多大。额度（还剩多少）是另一维，归工具栏里的筛子。
- *
- * **图例本身就是筛选器**：档次、数量、筛选是同一件事的三种说法，摆成两套控件只会让人
- * 先在标签页里点一次、再回到图例上核对一次。一个都没有的档不出现，否则各段相加对不上总数，
- * 那条横条就成了假的。
- */
-function AvailBar({
-  stats,
-  filter,
-  onFilter,
-  archived,
-}: {
-  stats: AccountSummary;
-  filter: AvailFilter;
-  onFilter: (f: AvailFilter) => void;
-  archived: boolean;
-}) {
-  const shown = AVAIL_ORDER.filter((s) => stats.by[s] > 0);
-  return (
-    <div className="pool">
-      <div className="pool-bar">
-        {shown.map((s) => (
-          <span key={s} className={`pool-seg is-${s}`} style={{ flexGrow: stats.by[s] }} />
-        ))}
-      </div>
-      <div className="pool-legend">
-        <AvailChip
-          state="all"
-          label={archived ? "已归档" : "全部"}
-          n={stats.total}
-          active={filter === "all"}
-          onClick={() => onFilter("all")}
-        />
-        {shown.map((s) => (
-          <AvailChip
-            key={s}
-            state={s}
-            label={AVAIL_LABEL[s]}
-            n={stats.by[s]}
-            active={filter === s}
-            onClick={() => onFilter(s)}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AvailChip({
-  state,
-  label,
-  n,
-  active,
-  onClick,
-}: {
-  state: Availability | "all";
-  label: string;
-  n: number;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button type="button" className="pool-chip" aria-pressed={active} onClick={onClick}>
-      <i className={`pool-dot is-${state}`} />
-      {label}
-      <b>{n}</b>
-    </button>
   );
 }
