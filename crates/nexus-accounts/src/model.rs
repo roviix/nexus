@@ -138,14 +138,23 @@ impl Account {
         self.has_refresh || self.has_live_access() || self.has_api_key
     }
 
-    /// 能不能加进切号本、写进 Cursor。
+    /// 此刻拿得出一把能用的会话吗——刷用量、进网关号池看这个。
     ///
-    /// 有 refresh 最好：写进去的登录态能自己续期。没有时，手上那把还活着的 session
-    /// token 也能切——token 导入的号经常只有这一把。到期后 Cursor 续不上会掉登录，
-    /// 和这个号本身「到期得重新粘」是同一回事，比一开始就拒收有用。
-    /// 云端号池仍要 refresh（那边没有浏览器、续不了短期会话），调用方自己看 `has_refresh`。
-    pub fn can_switch(&self) -> bool {
+    /// 有 refresh 就永远拿得出；没有时手上那把 access 还活着也算。只有 `crsr_` 的号**不算**：
+    /// 那把 key 兑出来的是 `api_key_token`，查用量可以，当不了会话。
+    pub fn has_usable_session(&self) -> bool {
         self.status != Status::Dead && (self.has_refresh || self.has_live_access())
+    }
+
+    /// 能不能把登录态写进本机 Cursor（加进切号本）。**必须有 refresh。**
+    ///
+    /// 仅会话的号曾经也放行，代价是：Cursor 的登录态要成对 token，没有 refresh 就只能把
+    /// access 复制一份填进 `cursorAuth/refreshToken` 占位。Cursor 拿这个假 refresh 去续期
+    /// 必然 401，然后掉登录——而这批号（token 导入、没密码、接不了验证码）掉了就找不回来。
+    /// 与其让它死在一次切号上，不如一开始就不让进：这类号该走 CRSR 通道 / 网关用额度，
+    /// 那两条路都不需要写 Cursor 的登录态。
+    pub fn can_write_cursor_login(&self) -> bool {
+        self.status != Status::Dead && self.has_refresh
     }
 }
 
@@ -373,7 +382,7 @@ mod tests {
         assert_eq!(v["codeChannel"], "auto");
         assert_eq!(v["source"], "purchased");
         assert_eq!(v["status"], "active");
-        assert!(a.can_query_usage() && a.can_switch());
+        assert!(a.can_query_usage() && a.has_usable_session() && a.can_write_cursor_login());
     }
 
     #[test]
@@ -405,13 +414,15 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         };
-        assert!(!a.can_switch());
+        assert!(!a.can_write_cursor_login());
+        assert!(!a.has_usable_session());
         a.status = Status::Active;
-        assert!(a.can_switch());
+        assert!(a.can_write_cursor_login());
+        assert!(a.has_usable_session());
     }
 
     #[test]
-    fn a_session_only_account_switches_while_its_access_lives() {
+    fn a_session_only_account_serves_requests_but_never_writes_the_cursor_login() {
         let mut a = Account {
             id: AccountId::from_raw("x"),
             email: "a@example.com".into(),
@@ -441,12 +452,19 @@ mod tests {
         };
         assert!(a.session_only());
         assert!(a.can_query_usage(), "有效期内拿它查用量 / 进网关都行");
-        assert!(a.can_switch(), "有效期内的 session token 也能写进 Cursor");
+        assert!(a.has_usable_session(), "有效期内拿得出一把会话");
+        // 这是这批号的命门：写进 Cursor 就要拿 access 去占 refresh 那一格，
+        // Cursor 续期 401 就掉登录，而它们没密码、接不了码，掉了找不回来。
+        assert!(
+            !a.can_write_cursor_login(),
+            "没有 refresh 就绝不写 Cursor 登录态"
+        );
         a.access_expires_at = Some("2020-01-01T00:00:00Z".into());
         assert!(!a.can_query_usage());
-        assert!(!a.can_switch(), "过期之后切不进去，得重新粘一份");
+        assert!(!a.has_usable_session(), "过期之后连会话都拿不出来");
         a.has_api_key = true;
         assert!(a.can_query_usage(), "session 过期后 crsr_ 还能查基础用量");
-        assert!(!a.can_switch(), "API Key 登不回 Cursor");
+        assert!(!a.has_usable_session(), "crsr_ 兑出来的 JWT 当不了会话");
+        assert!(!a.can_write_cursor_login(), "API Key 登不回 Cursor");
     }
 }

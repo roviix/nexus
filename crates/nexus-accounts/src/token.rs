@@ -7,13 +7,18 @@
 //! client_id 是 Cursor 内置的桌面端 id，不是按账号分的。
 
 use nexus_core::{AppError, Result, Secret};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
 const TOKEN_URL: &str = "https://api2.cursor.sh/oauth/token";
 const EXCHANGE_URL: &str = "https://api2.cursor.sh/auth/exchange_user_api_key";
+const DASHBOARD_SERVICE: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService";
 pub const DEFAULT_CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
+/// 铸出来的 key 在 Cursor Dashboard 的 API Keys 列表里叫这个名字，方便一眼认出是我们铸的。
+pub const DEFAULT_API_KEY_NAME: &str = "nexus";
+/// Dashboard 自己的默认档就是 90 天。重铸不会自动撤销旧 key。
+pub const API_KEY_TTL_MS: u64 = 90 * 24 * 60 * 60 * 1000;
 
 /// 一次刷新的产物。
 #[derive(Debug)]
@@ -228,6 +233,119 @@ pub async fn exchange_api_key(http: &reqwest::Client, api_key: &str) -> Result<S
         .ok_or_else(|| AppError::upstream("兑换响应缺少 accessToken。"))
 }
 
+/// 铸出来的一把长期 Key。`api_key` 是秘密，只在落库那一步经手。
+#[derive(Debug)]
+pub struct MintedApiKey {
+    pub api_key: Secret,
+    pub name: String,
+    pub expires_at: Option<String>,
+}
+
+/// 给界面看的、不含秘密的摘要。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MintedApiKeyInfo {
+    pub name: String,
+    /// `crsr_…1a2b`。只够人确认「确实铸出来了」，要完整的去凭证页点「显示」。
+    pub masked: String,
+    pub expires_at: Option<String>,
+}
+
+impl MintedApiKey {
+    pub fn info(&self) -> MintedApiKeyInfo {
+        MintedApiKeyInfo {
+            name: self.name.clone(),
+            masked: mask_user_api_key(self.api_key.expose()),
+            expires_at: self.expires_at.clone(),
+        }
+    }
+}
+
+pub fn mask_user_api_key(key: &str) -> String {
+    let k = key.trim();
+    match k.len() >= 12 {
+        true => format!("crsr_…{}", &k[k.len() - 4..]),
+        false => "crsr_…".to_string(),
+    }
+}
+
+/// access token → 一把长期 `crsr_` User API Key。
+///
+/// 走 `DashboardService/CreateUserApiKey`，和 `@cursor/sdk` 在 `Cursor.auth.login()` 之后
+/// 铸 key 是同一个 RPC：只认 `Bearer access_token`，**不要密码、不要验证码、不要重新登录**。
+///
+/// 这条路对「只有一把 session token」的号是**唯一的保命出口**：那批号没有 refresh、接不了
+/// 验证码，access 的 `exp`（约 60 天）一到就再也换不出任何东西。趁它还活着铸一把 `crsr_`，
+/// 查用量、进网关、走 CRSR 通道就都不再挂在那把会死的 access 上。
+///
+/// 换来的 key **仍然切不回 Cursor 登录**（兑出来的是 `api_key_token`，见 `exchange_api_key`），
+/// 所以它保住的是「这个号的额度还能用」，不是「还能切号」。
+pub async fn mint_user_api_key(
+    http: &reqwest::Client,
+    access_token: &str,
+    name: &str,
+) -> Result<MintedApiKey> {
+    let token = access_token.trim();
+    if token.is_empty() {
+        return Err(AppError::invalid("缺少 access_token，铸不了 API Key。"));
+    }
+    let name = match name.trim() {
+        "" => DEFAULT_API_KEY_NAME,
+        n => n,
+    };
+    let expires_at_ms = now_millis().saturating_add(API_KEY_TTL_MS);
+
+    let res = http
+        .post(format!("{DASHBOARD_SERVICE}/CreateUserApiKey"))
+        .timeout(Duration::from_secs(20))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json")
+        .header("connect-protocol-version", "1")
+        .json(&serde_json::json!({
+            "name": name,
+            "expiresAt": expires_at_ms.to_string(),
+        }))
+        .send()
+        .await
+        .map_err(|err| AppError::network(format!("铸 API Key 请求失败：{err}")))?;
+
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(
+            AppError::unauthorized("这个号的会话已失效，铸不出 API Key。")
+                .with_hint("到凭证页粘一份还活着的 session token 再试。"),
+        );
+    }
+    if !status.is_success() {
+        let head: String = body.chars().take(160).collect();
+        return Err(AppError::upstream(format!(
+            "铸 API Key 返回 {status}：{head}"
+        )));
+    }
+    let json: Value = serde_json::from_str(&body)
+        .map_err(|_| AppError::upstream("铸 API Key 响应不是 JSON。"))?;
+    let key = pick(&json, &["apiKey", "api_key"])
+        .ok_or_else(|| AppError::upstream("铸 API Key 响应里没有 apiKey。"))?;
+    if !looks_like_user_api_key(&key) {
+        return Err(AppError::upstream("铸出来的不是 crsr_ Key。"));
+    }
+
+    Ok(MintedApiKey {
+        api_key: Secret::new(key),
+        name: name.to_string(),
+        expires_at: nexus_core::clock::iso_from_millis(expires_at_ms as i64),
+    })
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// 会话 token 只是拿来查用量的短期物；过期就重新刷。
 pub fn session_expired(access_expires_at: Option<&str>) -> bool {
     let Some(raw) = access_expires_at else {
@@ -386,6 +504,32 @@ mod tests {
         let http = reqwest::Client::new();
         let err = exchange_api_key(&http, "   ").await.unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn minting_without_an_access_token_fails_before_any_request() {
+        let http = reqwest::Client::new();
+        let err = mint_user_api_key(&http, "  ", "nexus").await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn a_masked_key_keeps_the_prefix_and_the_last_four() {
+        assert_eq!(mask_user_api_key("crsr_abcdef123456"), "crsr_…3456");
+        // 短得不像钥匙的不要泄一半出去。
+        assert_eq!(mask_user_api_key("crsr_a"), "crsr_…");
+    }
+
+    #[test]
+    fn the_minted_summary_carries_no_secret() {
+        let minted = MintedApiKey {
+            api_key: Secret::new("crsr_abcdef123456".to_string()),
+            name: "nexus".into(),
+            expires_at: Some("2099-01-01T00:00:00Z".into()),
+        };
+        let v = serde_json::to_value(minted.info()).unwrap();
+        assert_eq!(v["masked"], "crsr_…3456");
+        assert!(!v.to_string().contains("crsr_abcdef123456"));
     }
 
     #[test]

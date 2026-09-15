@@ -104,7 +104,8 @@ export function GrokBotTab({ account }: { account: Account }) {
   const directOk = !!direct && (!direct.expired || direct.canRenew);
   const directOwner = direct?.accountEmail?.toLowerCase() ?? null;
   const directIsMine = directOk && directOwner === mine;
-  // 换 Grok 额度只要一把活的 access：仅会话的号有效期内也行。切 Cursor 同样：有效期内的 session token 就能热切。
+  // 换 Grok 额度只要一把活的 access：仅会话的号有效期内也行。切 Cursor 则另说——那要 refresh
+  // （`canAddToSwitchPool`），仅会话的号不写登录态，所以这两件事在这里判据不同。
   const canUse = canUseDashboard(account) && account.status !== "dead";
   const cursorIsMine = cursorEmail === mine;
   const willSwitch = switchToo && canUse && canAddToSwitchPool(account) && !cursorIsMine;
@@ -180,7 +181,7 @@ export function GrokBotTab({ account }: { account: Account }) {
           {cursorIsMine ? (
             <Tag tone="ok">当前</Tag>
           ) : !canAddToSwitchPool(account) ? (
-            <span className="faint tiny" title={account.hasAccess ? "session token 已过期，更新后再切" : "切 Cursor 需要一份还活着的 session token 或 refresh token"}>不可切</span>
+            <span className="faint tiny" title={account.hasRefresh ? "这个号已失效" : "只有 session token 的号不写 Cursor 登录态：续期会失败并掉登录。Grok 额度仍能换。"}>不可切</span>
           ) : (
             <label className="row items-center tiny muted" style={{ gap: 6, cursor: "pointer" }}>
               <input

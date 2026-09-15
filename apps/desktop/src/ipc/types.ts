@@ -103,6 +103,12 @@ export interface SwitchProfile {
   lastSwitchedAt?: string | null;
   /** 这一档的登录态还在不在。没有 = 切不进去。 */
   hasAuth: boolean;
+  /**
+   * `refreshToken` 那一格里其实是 access —— 旧版本给「仅会话」号收录时留下的毒档案。
+   * 切过去 Cursor 续期会 401 掉登录，而这类号（没密码、接不了验证码）掉了找不回来，
+   * 所以它也算切不进去。Rust 侧 `switch_to` 还有一道硬闸。
+   */
+  refreshIsPlaceholder: boolean;
   isCurrent: boolean;
 }
 
@@ -332,6 +338,14 @@ export interface Account {
 }
 
 export type SecretKind = "refresh" | "access" | "cursorPassword" | "emailPassword" | "recoveryEmail" | "apiKey";
+
+/** 刚铸出来的一把 `crsr_`。不含完整钥匙——要看完整的去凭证页点「显示」。 */
+export interface MintedApiKey {
+  name: string;
+  /** `crsr_…1a2b`，只够确认确实铸出来了。 */
+  masked: string;
+  expiresAt?: string | null;
+}
 
 /** 批量导入的预览：每一条会不会被收下、为什么。 */
 export interface ImportRow {

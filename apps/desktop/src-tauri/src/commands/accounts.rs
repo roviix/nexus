@@ -3,8 +3,8 @@
 use crate::commands::events;
 use crate::state::AppState;
 use nexus_accounts::{
-    Account, AccountBilling, AccountPatch, AccountUsage, ActiveSession, KickOutcome, NewAccount,
-    OauthSession, OauthState,
+    Account, AccountBilling, AccountPatch, AccountUsage, ActiveSession, KickOutcome,
+    MintedApiKeyInfo, NewAccount, OauthSession, OauthState,
 };
 use nexus_core::{AccountId, AppError, Clock, ErrorCode, Result};
 use nexus_cursor::AuthBundle;
@@ -465,6 +465,31 @@ pub async fn accounts_reveal_session(state: State<'_, AppState>, id: String) -> 
     Ok(session.session_token.expose().to_string())
 }
 
+/// 用这个号手上那把 access 铸一把长期 `crsr_` API Key 并落库。
+///
+/// **给只有一把 session token 的号保命。** 那批号没有 refresh、接不了验证码，授权链走不通；
+/// access 的 `exp`（约 60 天）一到就彻底拿不回来了。`DashboardService/CreateUserApiKey`
+/// 只认 `Bearer access_token`，趁 access 还活着铸一把 `crsr_`，这个号的额度就不再挂在
+/// 那把会死的 token 上：查用量、进网关、走 CRSR 通道都能接着用。
+///
+/// 铸出来的 key **仍然切不回 Cursor 登录**（兑出来的是 `api_key_token`）。记活动日志。
+#[tauri::command(async)]
+pub async fn accounts_mint_api_key(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<MintedApiKeyInfo> {
+    let id = AccountId::from_raw(id);
+    let account = state.accounts.repo.get(&id)?;
+    let minted = state.accounts.mint_api_key(&id).await?;
+    activity::info(
+        &state.db,
+        "accounts",
+        Some(&account.email),
+        format!("已铸一把 crsr_ API Key（{}）", minted.masked),
+    );
+    Ok(minted)
+}
+
 /// 改一条凭证：线下改过密码、手上换了一份 refresh_token，都从这里落库。
 ///
 /// `value` 为空即**清除**这一条。这里之所以敢把「空」当清除，是因为它来自用户在界面上
@@ -518,8 +543,9 @@ pub fn accounts_set_secret(
 /// **这是 `nexus-accounts` 与 `nexus-switcher` 之间唯一的数据通路**（ARCHITECTURE R1）。
 /// 两个 crate 互不依赖，拷贝发生在这里、由用户点击触发、一次一个号。
 ///
-/// 切号需要 `accessToken`。有 refresh 就先换一把足寿的 session；仅会话的号用手上
-/// 那把还活着的 access（Cursor 热登录要成对 token，缺 refresh 时用 access 占位）。
+/// **只收有 refresh 的号。** Cursor 的登录态要成对 token 并且会自己续期，仅会话的号
+/// 凑不出这一对——以前拿 access 占 refresh 那一格，结果是 Cursor 续期 401、掉登录，
+/// 而那批号（没密码、接不了验证码）掉了就再也找不回来。详见 `can_write_cursor_login`。
 #[tauri::command]
 pub async fn accounts_add_to_switch_book(
     state: State<'_, AppState>,
@@ -527,34 +553,28 @@ pub async fn accounts_add_to_switch_book(
 ) -> Result<SwitchProfile> {
     let id = AccountId::from_raw(id);
     let account = state.accounts.repo.get(&id)?;
-    if !account.can_switch() {
+    if !account.can_write_cursor_login() {
         return Err(AppError::new(
             ErrorCode::ProfileIncomplete,
-            format!("{} 还不能切入 Cursor。", account.email),
+            format!("{} 不能写进 Cursor 的登录态。", account.email),
         )
         .with_hint(if account.session_only() {
-            "session token 已过期。到凭证页粘一份新的，或授权一次拿到 refresh_token。"
+            "这个号只有一把 session token，没有 refresh。写进去之后 Cursor 续期会失败并掉登录，\
+             而这类号掉了就找不回来。要用它的额度请走 CRSR 通道或网关——那两条都不写登录态。"
         } else {
-            "这个号需要一份还活着的 session token，或授权一次拿到 refresh_token。"
+            "切号要一份能自己续期的 refresh_token；授权一次就有了。"
         }));
     }
 
-    // 有 refresh：强制换一把足寿的 access 再写进 Cursor。复用的可能只剩一分钟寿命，
-    // Cursor 一启动就得先去续期，而那正是用户在切号的当口。
-    // 仅会话：换不出新的，就用手上这把。Cursor 的热登录路由要成对 token，没有
-    // refresh 就把 access 再填一格——到期后续不上，Cursor 会掉登录，和这个号
-    // 本身「到期得重新粘」同义。
-    let session = if account.has_refresh {
-        state.accounts.fresh_session(&id).await?
-    } else {
-        state.accounts.session(&id).await?
-    };
+    // 强制换一把足寿的 access 再写进 Cursor。复用的可能只剩一分钟寿命，Cursor 一启动
+    // 就得先去续期，而那正是用户在切号的当口。
+    let session = state.accounts.fresh_session(&id).await?;
+    // 到这儿一定有 refresh（`can_write_cursor_login` 已经挡住没有的）。**绝不拿 access 去
+    // 占这一格**：Cursor 用它续期必然 401，然后掉登录。
     let refresh = state
         .accounts
         .repo
-        .secret(&id, AccountSecret::Refresh)?
-        .filter(|s| !s.expose().trim().is_empty())
-        .unwrap_or_else(|| session.access_token.clone());
+        .require_secret(&id, AccountSecret::Refresh)?;
 
     let mut bundle = AuthBundle::new();
     bundle.insert("cursorAuth/cachedEmail", &account.email);

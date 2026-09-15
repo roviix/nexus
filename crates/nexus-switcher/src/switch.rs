@@ -204,6 +204,21 @@ impl Switcher {
             )
             .with_hint("到「我的账号」里给它重新授权，再加入切号本。"));
         }
+        // 毒档案：refresh 那一格里其实是 access（旧版本给仅会话号收录时留下的）。
+        // 切过去 Cursor 续期就会 401 掉登录，而这类号掉了找不回来 —— 宁可切不成。
+        if target.refresh_is_placeholder() {
+            return Err(AppError::new(
+                ErrorCode::ProfileIncomplete,
+                format!(
+                    "{} 这一档没有真正的 refreshToken，切过去会掉登录。",
+                    profile.email
+                ),
+            )
+            .with_hint(
+                "它是旧版本用 access 占位收录的仅会话号。Cursor 没有被改动。\
+                 要用这个号的额度请走 CRSR 通道或网关；想切号得先给它授权拿到 refresh_token。",
+            ));
+        }
         let check = self.cursor.check();
         if !check.writable() {
             return Err(AppError::new(
@@ -775,6 +790,30 @@ mod tests {
         let err = h.switcher.capture_current(None).unwrap_err();
         assert_eq!(err.code, ErrorCode::ProfileIncomplete);
         assert!(err.hint.unwrap().contains("先在 Cursor 里登录"));
+    }
+
+    /// 旧版本给「仅会话」号收录的毒档案：refresh 那一格里其实是 access。
+    /// 入口已经堵死，但**那之前存进来的档还躺在切号本里**，这道闸就是为它们设的。
+    #[test]
+    fn a_profile_with_a_placeholder_refresh_is_refused_before_anything_is_touched() {
+        let h = Harness::new();
+        h.login_as("mine@example.com");
+        let before = h.state().read_auth().unwrap();
+
+        let mut poisoned = AuthBundle::new();
+        poisoned.insert("cursorAuth/accessToken", "same-jwt");
+        poisoned.insert("cursorAuth/refreshToken", "same-jwt");
+        poisoned.insert("cursorAuth/cachedEmail", "session-only@example.com");
+        let p = h.switcher.adopt(&poisoned, None).unwrap();
+
+        let err = h
+            .switcher
+            .switch_to(&p.id, SwitchOptions::default(), &ignore_progress)
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProfileIncomplete);
+        assert!(err.hint.unwrap().contains("CRSR"));
+        // 最要紧的一条：Cursor 的登录态一个字节都没动。
+        assert_eq!(h.state().read_auth().unwrap(), before);
     }
 
     #[test]

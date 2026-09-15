@@ -23,8 +23,27 @@ export const SWITCH_SORT_LABEL: Record<SwitchSort, string> = {
 
 export const DEFAULT_SWITCH_SORT: SwitchSort = "switched";
 
-export function canAddToSwitchPool(account: Account, now = Date.now()): boolean {
+/**
+ * 能不能把这个号的登录态写进 Cursor。**必须有 refresh**，和 Rust 侧
+ * `Account::can_write_cursor_login` 同口径。
+ *
+ * 仅会话的号曾经也放行，代价是要拿 access 去占 `cursorAuth/refreshToken` 那一格——
+ * Cursor 拿这个假 refresh 续期必然 401 然后掉登录，而那批号（没密码、接不了验证码）
+ * 掉了就找不回来。它们该走 CRSR 通道 / 网关用额度，那两条都不写登录态。
+ */
+export function canAddToSwitchPool(account: Account): boolean {
   if (account.status === "dead") return false;
+  return account.hasRefresh;
+}
+
+/**
+ * 能不能给这个号铸一把长期 `crsr_`：要一把此刻拿得出的会话，且还没有 key。
+ *
+ * 这是仅会话号唯一的保命动作，所以判据跟着 `hasLiveAccess` 走而不是 `hasRefresh`——
+ * 恰恰是没有 refresh 的号最需要它。
+ */
+export function canMintApiKey(account: Account, now = Date.now()): boolean {
+  if (account.status === "dead" || account.hasApiKey) return false;
   return account.hasRefresh || hasLiveAccess(account, now);
 }
 

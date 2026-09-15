@@ -73,12 +73,14 @@ function describe(p: SwitchProgress): string {
 }
 
 function switchable(entry: SwitchPoolEntry): boolean {
-  return entry.profile.hasAuth;
+  return entry.profile.hasAuth && !entry.profile.refreshIsPlaceholder;
 }
 
 function blockReason(entry: SwitchPoolEntry): string | null {
   if (switchable(entry)) return null;
   if (entry.account?.status === "dead") return "已失效";
+  // 旧版本用 access 占位收录的仅会话号：切过去会掉登录，而它掉了找不回来。
+  if (entry.profile.refreshIsPlaceholder) return "无 refresh";
   return "缺登录态";
 }
 
@@ -185,11 +187,13 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
       setAdding(true);
       return;
     }
+    // 说不能切的**真实**原因。仅会话的号不是「过期了」——它活着也不许切，
+    // 因为写进 Cursor 会在续期时掉登录，而这类号掉了找不回来。
     setNotice(
       account
-        ? sessionOnly(account)
-          ? `${account.email} 的 session token 已过期，更新后再切`
-          : `${account.email} 需要先授权或粘一份有效的 session token`
+        ? entry?.profile.refreshIsPlaceholder || sessionOnly(account)
+          ? `${account.email} 没有 refresh_token，切进 Cursor 会掉登录且找不回来；用它的额度请走 CRSR 通道或网关`
+          : `${account.email} 需要先授权拿到 refresh_token`
         : `${wanted} 不在账号中`,
     );
   }, [wanted, loaded, pool, known, onGo]);

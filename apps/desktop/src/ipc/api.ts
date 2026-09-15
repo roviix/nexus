@@ -39,6 +39,7 @@ import type {
   KickOutcome,
   LocalBackup,
   MediaJob,
+  MintedApiKey,
   OauthStarted,
   OauthState,
   Overview,
@@ -181,6 +182,14 @@ export const accounts = {
     call<string>("accounts_reveal_secret", { id, kind }),
   /** 会话 token（`user_xxx::<jwt>`）。派生自 refresh_token，手上那把过期就当场换一把。 */
   revealSession: (id: string) => call<string>("accounts_reveal_session", { id }),
+  /**
+   * 用这个号手上那把 access 铸一把长期 `crsr_` API Key 并落库。
+   *
+   * 给只有 session token 的号保命用：那批号没有 refresh、接不了验证码，access 一过期就
+   * 彻底拿不回来。铸 key 只认 access，不要密码、不要验证码。铸完额度仍能用（网关 / CRSR
+   * 通道），但**换不回切号能力**——`crsr_` 兑出来的 JWT 登不进 Cursor。
+   */
+  mintApiKey: (id: string) => call<MintedApiKey>("accounts_mint_api_key", { id }),
   /** 改一条凭证（线下改过密码就从这里更新）。传空字符串 = 清除这一条。 */
   setSecret: (id: string, kind: SecretKind, value: string) =>
     call<Account>("accounts_set_secret", { id, kind, value }),

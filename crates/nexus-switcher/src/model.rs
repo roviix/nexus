@@ -27,6 +27,10 @@ pub struct SwitchProfile {
     pub last_switched_at: Option<String>,
     /// 这一档的登录态还在不在。没有 = 切不进去，界面要标出来。
     pub has_auth: bool,
+    /// `refreshToken` 那一格里其实是 access —— 旧版本给「仅会话」号收录时留下的毒档案。
+    /// 切过去 Cursor 续期会 401 掉登录，而这类号掉了找不回来，所以这里也算切不进去
+    /// （见 `AuthBundle::refresh_is_placeholder`）。
+    pub refresh_is_placeholder: bool,
     /// 是不是 Cursor 当前登录的这个号。
     pub is_current: bool,
 }

@@ -14,6 +14,7 @@ const profile = (email: string): SwitchProfile => ({
   createdAt: "2026-09-01T00:00:00Z",
   updatedAt: "2026-09-01T00:00:00Z",
   hasAuth: true,
+  refreshIsPlaceholder: false,
   isCurrent: false,
 });
 

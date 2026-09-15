@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Account, SwitchProfile } from "../ipc/types";
-import { buildSwitchPool, canAddToSwitchPool, listAvailableSwitchAccounts } from "./switcher";
+import { buildSwitchPool, canAddToSwitchPool, canMintApiKey, listAvailableSwitchAccounts } from "./switcher";
 
 function account(
   email: string,
@@ -41,6 +41,7 @@ function profile(
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
     hasAuth: true,
+    refreshIsPlaceholder: false,
     isCurrent: false,
     ...overrides,
   };
@@ -100,15 +101,16 @@ describe("listAvailableSwitchAccounts", () => {
       [profile(enrolled.email)],
     );
 
+    // 活着的 session token 不再够格：写进 Cursor 要成对 token，没有 refresh 就只能拿
+    // access 去占那一格，Cursor 续期 401 就把号弄掉了。
     expect(candidates.map((candidate) => candidate.email)).toEqual([
       available.email,
-      sessionLive.email,
     ]);
   });
 });
 
 describe("canAddToSwitchPool", () => {
-  it("lets a live session-token account join, but not an expired or dead one", () => {
+  it("refuses a session-only account even while its access is alive", () => {
     expect(
       canAddToSwitchPool(
         account("live@example.com", {
@@ -117,25 +119,38 @@ describe("canAddToSwitchPool", () => {
           accessExpiresAt: "2099-01-01T00:00:00Z",
         }),
       ),
+    ).toBe(false);
+    expect(
+      canAddToSwitchPool(account("refresh@example.com", { hasRefresh: true })),
     ).toBe(true);
     expect(
       canAddToSwitchPool(
-        account("expired@example.com", {
-          hasRefresh: false,
-          hasAccess: true,
-          accessExpiresAt: "2020-01-01T00:00:00Z",
-        }),
+        account("dead@example.com", { hasRefresh: true, status: "dead" }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("canMintApiKey", () => {
+  it("offers the escape hatch exactly to the accounts that need it", () => {
+    // 仅会话、access 还活着：这正是唯一能保命的窗口。
+    const sessionOnly = account("session@example.com", {
+      hasRefresh: false,
+      hasAccess: true,
+      accessExpiresAt: "2099-01-01T00:00:00Z",
+    });
+    expect(canMintApiKey(sessionOnly)).toBe(true);
+
+    // access 过期了就铸不出来了——这条路只在 token 还活着时存在。
     expect(
-      canAddToSwitchPool(
-        account("dead@example.com", {
-          hasRefresh: false,
-          hasAccess: true,
-          accessExpiresAt: "2099-01-01T00:00:00Z",
-          status: "dead",
-        }),
-      ),
+      canMintApiKey({ ...sessionOnly, accessExpiresAt: "2020-01-01T00:00:00Z" }),
     ).toBe(false);
+    // 已经有 key 的不用再铸。
+    expect(canMintApiKey({ ...sessionOnly, hasApiKey: true })).toBe(false);
+    expect(canMintApiKey({ ...sessionOnly, status: "dead" })).toBe(false);
+    // 有 refresh 的号也能铸一把当备份。
+    expect(
+      canMintApiKey(account("refresh@example.com", { hasRefresh: true })),
+    ).toBe(true);
   });
 });

@@ -7,7 +7,7 @@
  * 标题区把这个号的「身份」摆齐：邮箱、档位、健康度、来源、备注（可就地改）。
  * 动作也在标题区 —— 刷新 / 授权 / 切号 是来这一页最常按的三个键，不该藏在页脚。
  * 「切号」就地热切：Cursor 在跑时不退出；只有开了「切换时同时切机器码」才会问一句。
- * 仅会话（token 导入、没有 refresh）的号，有效期内同样能切。
+ * 仅会话（token 导入、没有 refresh）的号切不了，凭证页给它「铸一把 crsr_ Key」当出路。
  *
  * 标题区下面先答「它在哪儿被用着」：切号池里有没有、网关号池里有没有，各一行，能就地加入 /
  * 移出。账号总库是一份、两个使用池是子集（ARCHITECTURE §5.2），以前要走到那两页才知道一个号进了
@@ -22,12 +22,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { AccountPlacement } from "../../accounts/model";
 import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster, usePools } from "../../accounts/pools";
-import type { Account, CrsrStatus, KickOutcome, SecretKind } from "../../ipc/types";
+import type { Account, CrsrStatus, KickOutcome, MintedApiKey, SecretKind } from "../../ipc/types";
 import { accounts, crsr, gateway as gatewayApi, switcher as switcherApi } from "../../ipc/api";
 import { Banner, CopyButton, Drawer, ErrorNote, Gauge, Health, Icon, Reset, Spinner, Switch, Tag } from "../../ui/primitives";
 import { accountSourceLabel, timeAgo, timeUntil } from "../../ui/format";
 import { canQueryUsage, canUseDashboard, hasLiveAccess, sessionOnly } from "../../ui/accounts";
-import { canAddToSwitchPool } from "../../ui/switcher";
+import { canAddToSwitchPool, canMintApiKey } from "../../ui/switcher";
 import { GrokBotTab } from "./GrokBotTab";
 import { BillTab } from "./BillTab";
 import {
@@ -162,11 +162,9 @@ export function AccountDrawer({
                 ? dead
                   ? "这个号已失效"
                   : sessionOnly(account)
-                    ? "session token 已过期，到凭证页粘一份新的"
-                    : "需要一份还活着的 session token，或授权一次拿到 refresh_token"
-                : sessionOnly(account)
-                  ? "切入 Cursor（仅会话，到期会掉登录；Cursor 在跑时不重启）"
-                  : "切入 Cursor（Cursor 在跑时不重启）"
+                    ? "这个号只有 session token，没有 refresh：写进 Cursor 会在续期时掉登录，而它掉了找不回来。用它的额度请走 CRSR 通道或网关。"
+                    : "切号要一份能自己续期的 refresh_token；授权一次就有了"
+                : "切入 Cursor（Cursor 在跑时不重启）"
             }
           >
             {switching ? <Spinner /> : <Icon name="switcher" size={13} />}
@@ -279,7 +277,7 @@ function UsedIn({ account, placement, onChanged }: { account: Account; placement
         type="button"
         className="btn btn-sm btn-soft"
         disabled={busy != null || !canAddToSwitchPool(account)}
-        title={canAddToSwitchPool(account) ? "把它的登录态拷进切号池，之后可以一键切进 Cursor" : dead ? "这个号已失效" : sessionOnly(account) ? "session token 已过期，更新后再加入" : "需要一份还活着的 session token，或授权一次拿到 refresh_token"}
+        title={canAddToSwitchPool(account) ? "把它的登录态拷进切号池，之后可以一键切进 Cursor" : dead ? "这个号已失效" : sessionOnly(account) ? "只有 session token 的号不写 Cursor 登录态：续期会失败并掉登录，而它掉了找不回来" : "切号要一份能自己续期的 refresh_token；授权一次就有了"}
         onClick={() => void act("switcher", () => accounts.addToSwitchBook(account.id))}
       >
         {busy === "switcher" ? <Spinner /> : "加入"}
@@ -1099,7 +1097,11 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
         </div>
       </section>
 
-      {account.hasApiKey ? <CrsrCredRow account={account} /> : null}
+      {account.hasApiKey ? (
+        <CrsrCredRow account={account} />
+      ) : canMintApiKey(account) ? (
+        <MintApiKeyRow account={account} onChanged={onChanged} />
+      ) : null}
 
 
       {/* 会话管理跟凭证是一回事：都是这个号的登录态。放在这里，页脚就只剩「删除」一件事。 */}
@@ -1114,6 +1116,69 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
         </section>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * 「铸一把 crsr_ Key」。
+ *
+ * 对仅会话的号这是**保命动作**，所以它摆在凭证页最显眼的位置而不是折在某个菜单里：
+ * 那批号没有 refresh、接不了验证码，手上那把 access 一过期整个号就拿不回来了。铸 key
+ * 只认 access（`DashboardService/CreateUserApiKey`），趁它还活着铸出来，额度就不再挂在
+ * 一个会死的凭证上。
+ *
+ * 文案不许含糊两件事：铸完**不能**恢复切号能力；以及这件事有时限。
+ */
+function MintApiKeyRow({ account, onChanged }: { account: Account; onChanged: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [minted, setMinted] = useState<MintedApiKey | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const urgent = sessionOnly(account);
+
+  async function mint() {
+    setBusy(true);
+    setError(null);
+    try {
+      setMinted(await accounts.mintApiKey(account.id));
+      await onChanged();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="sect">
+      <div className="sect-cap">
+        <span>长期 API Key</span>
+        <span className="sect-aside">不需要密码或验证码</span>
+      </div>
+      <ErrorNote error={error} />
+      {minted ? (
+        <Banner
+          tone="ok"
+          title={`已铸出 ${minted.masked}`}
+          hint={
+            minted.expiresAt
+              ? `${timeUntil(Date.parse(minted.expiresAt))}到期；完整钥匙在上面「crsr_ API Key」那一行点「显示」。`
+              : "完整钥匙在上面「crsr_ API Key」那一行点「显示」。"
+          }
+        />
+      ) : (
+        <p className="sect-none">
+          {urgent
+            ? "这个号只有一把 session token：没有 refresh、接不了验证码，access 一到期就再也拿不回来。趁它还活着铸一把 crsr_，之后查用量、进网关、走 CRSR 通道都不再依赖它。注意铸完也换不回切号能力——crsr_ 兑出来的 JWT 登不进 Cursor。"
+            : "铸一把长期 crsr_ Key 当备份凭证。session 过期后它还能查基础用量、走 CRSR 通道。"}
+        </p>
+      )}
+      <div className="row" style={{ marginTop: 10 }}>
+        <button type="button" className={urgent ? "btn btn-sm btn-primary" : "btn btn-sm"} disabled={busy} onClick={() => void mint()}>
+          {busy ? <Spinner /> : null}
+          {minted ? "再铸一把" : "铸一把 crsr_ Key"}
+        </button>
+      </div>
+    </section>
   );
 }
 

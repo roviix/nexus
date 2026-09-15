@@ -208,6 +208,8 @@ Rust 侧只要一个 `reqwest`。
 - **一机一码是默认。** 本机机器码不随切号改动——同机换号把账号漂到多套指纹上会触发
   `too many computers`。「切换时同时切机器码」留作高级选项。真机的原始机器码在第一次动手前
   就存下来了，**永不覆盖**，随时可还原。
+- **只收有 refresh 的号。** 仅会话的号凑不出 Cursor 要的那对 token，写进去等于让它在下一次
+  续期时掉登录，而那批号掉了找不回来。判据是 `can_write_cursor_login()`，理由见 §5.1。
 - **只由用户点击触发。** 进程内没有任何自动路径会调用切号。
 
 ### 4.2 Cursor 的本地状态
@@ -232,11 +234,39 @@ Rust 侧只要一个 `reqwest`。
 
 ### 5.1 托管什么
 
-**门槛是邮箱 + refresh token**（或者能换出 refresh token 的东西）。只有一次性 session token 的号
-会过期成死号，原则上不收；确实要收的走单独的路径并在界面上说清它的局限。
+**门槛是邮箱 + 一样能证明身份的东西**：refresh token、Cursor 密码、还活着的 session token、
+或者一把 `crsr_` API Key。只有 session token 的号（token 导入、没密码）在有效期内是真能查用量、
+真能进网关的，扔掉太浪费；但它能干什么要分清楚，见下面三条判据。
 
 状态只反映**能不能用**：`active` / `needs_login` / `dead`。「这个号是哪来的、给谁了」是备注，
 不是状态——把它们混在一起，界面就没法回答「现在有几个号能用」这种最常问的问题。
+
+**三条判据，从宽到严。** 它们不是同义词，混用过一次就赔掉了一批号：
+
+| 判据 | 条件 | 谁在用 |
+|---|---|---|
+| `can_query_usage()` | refresh \| 活着的 access \| `crsr_` | 刷用量、凭证页 |
+| `has_usable_session()` | 非 dead 且（refresh \| 活着的 access） | 网关号池、Grok Bot 换额度 |
+| `can_write_cursor_login()` | 非 dead 且**有 refresh** | 切号本、写 Cursor 登录态 |
+
+最严的那条是被一个真实事故校正出来的。Cursor 的登录态要**成对** token（`accessToken` +
+`refreshToken`）并且会自己续期，仅会话的号凑不出这一对，早先的做法是把 access 复制一份去占
+refresh 那一格。Cursor 拿这个假 refresh 去续期必然 401，然后掉登录——对有密码的号这只是
+「重新粘一份」，但对 token 导入、没密码、接不了验证码的号，授权链整条走不通，掉了就再也拿不
+回来。切号那一步把一个还有几十天寿命的号当场变成废号。所以规矩是：**绝不拿 access 去占
+refresh 那一格**，仅会话的号切号入口直接置灰，界面说清原因和替代路径。网关不受影响，它走
+`has_usable_session()`——借一把会话发请求而已，不写任何登录态。
+
+**替代路径：趁 access 还活着铸一把 `crsr_`。** `DashboardService/CreateUserApiKey` 只认
+`Bearer access_token`，不要密码、不要验证码、不要重新登录，这是仅会话号唯一的保命出口
+（`AccountsService::mint_api_key`，默认 90 天）。铸完这个号的额度就不再挂在一个会死的凭证上：
+查用量、进网关、走 CRSR 通道都能接着用。边界必须说清——铸 key **换不回切号能力**，`crsr_`
+兑出来的是 `api_key_token` 而不是 `WorkosCursorSessionToken`，登不进 Cursor。
+
+**堵入口不够，还要认存量。** 规矩生效之前收录的档案还躺在切号本里，切过去照样杀号。指纹很好认：
+`accessToken` 和 `refreshToken` 两格一模一样（`AuthBundle::refresh_is_placeholder`）。切号本列表
+把这类档标成「无 refresh」并置灰，`switch_to` 里还有一道硬闸——**在碰 Cursor 任何状态之前**就拒绝，
+失败时 Cursor 的登录态一个字节都没动。
 
 用量从各平台自己的接口拉。Cursor 这边是 dashboard 系列接口，四个桶（Bot / 总量 / Auto / API）
 加两个重置时间（Bot 周额与月账期），两个都显示。

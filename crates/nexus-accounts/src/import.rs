@@ -106,7 +106,8 @@ pub fn preview(text: &str) -> (Vec<ParsedAccount>, ImportPreview) {
         } else if has_access {
             (
                 true,
-                "仅 session token（有效期内可查用量、可切号，到期需重新粘）".to_string(),
+                "仅 session token（有效期内可查用量、可进网关，不能切号，到期需重新粘）"
+                    .to_string(),
             )
         } else if has_api_key {
             (true, "仅 API Key（可查基础用量，不能切号）".to_string())

@@ -6,7 +6,8 @@
  *
  * 托管门槛（ARCHITECTURE §5.1）：邮箱 + (refresh_token | Cursor 密码 | session token | crsr_ API Key)。只有邮箱密码的
  * 不收 —— 那登不进 Cursor。表单把这条规则直接摆在「凭证」一节的标题旁，而不是等按下保存才报错。
- * 只填 session token 的号是「仅会话」：有效期内能查用量、能切进 Cursor，到期得重新粘；标题旁会直接说出来。
+ * 只填 session token 的号是「仅会话」：有效期内能查用量、能进网关，但**不能切进 Cursor**
+ * （凑不出 Cursor 要的那对 token，写进去会掉登录），到期得重新粘；标题旁会直接说出来。
  * 只填 crsr_ 的号能查基础用量，不能切号。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -95,7 +96,7 @@ function useSinglePane(onDone: () => Promise<void>): Pane {
   const credHint = longLived
     ? "已满足"
     : sessionOnly
-      ? "仅会话 · 到期需重新粘"
+      ? "仅会话 · 不能切号，到期需重新粘"
       : apiKeyOnly
         ? "仅 API Key · 可查基础用量，不能切号"
         : apiKeyRaw

@@ -186,6 +186,7 @@ pub fn run() {
             commands::accounts::accounts_kick_sessions,
             commands::accounts::accounts_reveal_secret,
             commands::accounts::accounts_reveal_session,
+            commands::accounts::accounts_mint_api_key,
             commands::accounts::accounts_set_secret,
             commands::accounts::accounts_add_to_switch_book,
             commands::accounts::accounts_export_dump,

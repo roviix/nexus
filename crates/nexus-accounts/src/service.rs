@@ -81,6 +81,27 @@ impl AccountsService {
         Ok(token::reuse_session(&user_id, &access, refresh.as_ref()))
     }
 
+    /// 用这个号手上那把 access 铸一把长期 `crsr_` API Key，落库。
+    ///
+    /// **这是「只有一把 session token」的号唯一的保命动作。** 那批号没有 refresh、接不了
+    /// 验证码，授权链整条走不通；access 的 `exp` 一到，这个号就再也拿不回来了。趁它还活着
+    /// 铸一把 `crsr_`，之后查用量、进网关、走 CRSR 通道都不再依赖那把会死的 access。
+    ///
+    /// 复用手上那把 access（`session()`）而不是强制换新：仅会话的号本来就换不出新的，而
+    /// 有 refresh 的号也没必要为铸一把 key 多轮换一次 refresh。
+    pub async fn mint_api_key(&self, id: &AccountId) -> Result<token::MintedApiKeyInfo> {
+        let session = self.session(id).await?;
+        let minted = token::mint_user_api_key(
+            &self.http,
+            session.access_token.expose(),
+            token::DEFAULT_API_KEY_NAME,
+        )
+        .await?;
+        self.repo
+            .put_secret(id, AccountSecret::ApiKey, Some(minted.api_key.expose()))?;
+        Ok(minted.info())
+    }
+
     /// 强制换一把新的，不复用。
     ///
     /// 给「要把 token 交出去」的场合用 —— 典型是写进 Cursor 的登录态。复用的那把可能只剩

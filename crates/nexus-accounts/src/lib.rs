@@ -31,5 +31,5 @@ pub use oauth::{OauthHandle, OauthSession, OauthState, OauthTokens, DEFAULT_TIME
 pub use repo::Accounts;
 pub use service::AccountsService;
 pub use sessions::{ActiveSession, KickOutcome};
-pub use token::{extract_user_id, refresh_to_session, RefreshedSession};
+pub use token::{extract_user_id, refresh_to_session, MintedApiKeyInfo, RefreshedSession};
 pub use usage::{AccountUsage, BotQuota, ModelUsage};

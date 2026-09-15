@@ -467,7 +467,7 @@ mod tests {
         let a = accounts.upsert(with_refresh("a@example.com")).unwrap();
         assert_eq!(a.status, Status::Active);
         assert!(a.has_refresh && !a.has_password);
-        assert!(a.can_query_usage() && a.can_switch());
+        assert!(a.can_query_usage() && a.has_usable_session() && a.can_write_cursor_login());
         assert_eq!(a.code_channel, "auto");
         assert_eq!(a.source, Source::Local);
     }
@@ -511,7 +511,11 @@ mod tests {
             })
             .unwrap();
         assert_eq!(a.status, Status::Active);
-        assert!(a.session_only() && a.can_query_usage() && a.can_switch());
+        assert!(a.session_only() && a.can_query_usage() && a.has_usable_session());
+        assert!(
+            !a.can_write_cursor_login(),
+            "没有 refresh 就不写 Cursor 登录态"
+        );
         assert_eq!(a.workos_user_id.as_deref(), Some("user_42"));
         assert!(a.access_expires_at.is_some());
         // 库里只有裸 JWT：前缀能从 JWT 算回来，存两份迟早对不上。
@@ -555,7 +559,7 @@ mod tests {
             .unwrap();
         assert_eq!(a.status, Status::Active);
         assert!(a.has_api_key && a.can_query_usage());
-        assert!(!a.can_switch());
+        assert!(!a.has_usable_session() && !a.can_write_cursor_login());
         let stored = secrets
             .get(&account_secret(&a.id, AccountSecret::ApiKey))
             .unwrap()
@@ -596,7 +600,7 @@ mod tests {
             Status::Dead,
             "crsr_ 查到花费不该把已死的 refresh 复活成可切号"
         );
-        assert!(!got.can_switch());
+        assert!(!got.has_usable_session() && !got.can_write_cursor_login());
         assert_eq!(got.usage.as_ref().and_then(|u| u.spend_cents), Some(12.0));
     }
 
