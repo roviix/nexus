@@ -1,7 +1,11 @@
 name: gitleaks
 
 # 这个仓库天生要碰 token：账号池里全是别人平台的凭证，测试夹具里也有 JWT 形状的字符串。
-# 每个 PR 和每次推 main 都扫一遍历史，防止真凭证混进来。
+# 每个 PR 和每次推 main 都扫一遍历史，防止真凭证混进来。规则与放行清单在根目录 `.gitleaks.toml`。
+#
+# 为什么直接调 CLI 而不用 `gitleaks/gitleaks-action@v2`：那个 Action 对**组织**名下的仓库
+# 要求付费 license（不配 `GITLEAKS_LICENSE` 就直接 exit 1，扫都不扫）。gitleaks 的二进制本身
+# 是 MIT、免费，跑起来是同一个引擎、同一份配置，所以这里自己下载二进制。
 on:
   push:
     branches: [main]
@@ -11,6 +15,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # 钉版本：规则集会随版本变，不钉的话某天上游加一条规则，CI 会在一个谁也没改过的 PR 上变红。
+  GITLEAKS_VERSION: 8.30.1
+
 jobs:
   scan:
     name: 扫描泄漏的凭证
@@ -18,7 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # 扫全部历史，不只是这一次改动：凭证一旦进过历史，后来删掉也还在。
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 安装 gitleaks
+        run: |
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: 扫描
+        run: gitleaks git . --config .gitleaks.toml --redact --verbose --no-banner
