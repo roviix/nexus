@@ -779,23 +779,16 @@ export interface RemoteHostView {
   /** Rust 的 `Result<RemoteStatus, String>`：连不上时是 `{ Err: string }`。 */
   status: { Ok: RemoteStatus } | { Err: string };
   tunnel: TunnelStatus;
-  /** 隧道本机这头接到哪个端口（网关透传口 / 本机代理口）；null = 这条路不用隧道，或代理端口猜不到。 */
+  /** 隧道本机这头接到哪个端口（本机代理口）；null = 这条路不用隧道，或代理端口猜不到。 */
   localPort: number | null;
   /** 代理模式：Cursor 那三个设置此刻给这台主机配的地址；null = 没配。 */
   proxyConfigured: string | null;
-  /** 本机那头（网关口 / 代理口）现在有没有人听。 */
+  /** 本机那头（代理口）现在有没有人听。 */
   localListening: boolean;
-  /** 网关模式：装补丁时会写进远程 bundle 的端点。和盘上的 `inferenceEndpoint` 对不上 = 要重装。 */
-  expectedEndpoint: string | null;
 }
 
 export interface RemoteOverview {
   hosts: RemoteHostView[];
-  /** 本机 passthrough 网关是否在跑；不跑，隧道那头就没人接。 */
-  gatewayRunning: boolean;
-  gatewayPassthroughPort: number;
-  /** 网关改写进请求头的 client-type；不是 `sand` 时远程的 sand 身份会在网关被换掉。 */
-  gatewayClientType: string;
   localCommit: string | null;
   /** 猜出来的本机代理端口（代理模式的默认值）；null = 常见端口都没人听。 */
   detectedProxyPort: number | null;
@@ -835,10 +828,6 @@ export interface RemoteOutcome {
 
 export interface GatewaySettings {
   port: number;
-  /** 透传模式（cursor-agent -e / --agent-endpoint）的端口，和 `port` 分开监听，两者不能相同。 */
-  passthroughPort: number;
-  /** cli | ide | sand */
-  clientType: string;
   autostart: boolean;
   /** 强制上游模型；null/缺省 = 不强制。 */
   forceModel: string | null;
@@ -849,20 +838,7 @@ export interface GatewaySettings {
 export interface GatewayRunning {
   addr: string;
   baseUrl: string;
-  /** 透传监听地址；和翻译口一起起停，运行中必有值。 */
-  passthroughAddr: string;
-  passthroughBaseUrl: string;
   startedAt: string;
-}
-
-export interface GatewayEntrance {
-  id: string;
-  title: string;
-  how: string;
-  /** 能贴进 shell 的环境变量行，`<KEY>` 待替换成口令。 */
-  env: string[];
-  available: boolean;
-  note: string | null;
 }
 
 export type GatewayCandidateState =
@@ -939,48 +915,6 @@ export interface MediaJob {
   updatedMs: number;
 }
 
-/** 哨兵放哪：最后一条 user 消息末尾 / 第一条 user 消息开头（Cursor 把 system 折在那里）。 */
-export type MarkerPosition = "tail" | "head";
-
-/** IDE 拦截的上下文改写规则。与 Rust `intercept::RewriteRule` 对齐。 */
-export interface RewriteRule {
-  enabled: boolean;
-  position: MarkerPosition;
-  /** 原样插入，不加分隔符。 */
-  marker: string;
-}
-
-/** 透传口拦下的一次 Agent 面板模型调用。只有名字和数字，没有对话内容。 */
-export interface InterceptRecord {
-  at: string;
-  account: string;
-  conversationId: string | null;
-  model: string;
-  routed: string | null;
-  ok: boolean;
-  status: number;
-  kind: string | null;
-  error: string | null;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  measured: boolean;
-  rewritten: boolean;
-  messageCount: number;
-  ttftMs: number | null;
-  durationMs: number;
-}
-
-export interface InterceptSnapshot {
-  rule: RewriteRule;
-  /** 本进程内累计（网关重启归零）；跨天看 `gateway_ide_usage`。 */
-  calls: number;
-  rewritten: number;
-  errors: number;
-  recent: InterceptRecord[];
-}
-
 export interface GatewayStatus {
   running: GatewayRunning | null;
   settings: GatewaySettings;
@@ -991,16 +925,6 @@ export interface GatewayStatus {
   channels: ChannelSnapshot[];
   /** 最近的异步媒体任务（生视频），新的在前。 */
   mediaJobs: MediaJob[];
-  entrances: GatewayEntrance[];
-  intercept: InterceptSnapshot;
-  /** 透传口的 Grok Bot 额度开关（只对 Agent 面板的 `InferenceService/Stream`）。 */
-  grokbotStream: GrokBotStreamSnapshot;
-}
-
-export interface GrokBotStreamSnapshot {
-  enabled: boolean;
-  /** 本地直连凭证状态；开着而这里为 null / 过期不可续，Agent 面板会 502。 */
-  credential: GrokBotDirectInfo | null;
 }
 
 // ── ChatGPT 订阅号（本地网关的第二种号源）──────────────────────────────────────

@@ -35,6 +35,7 @@ import {
   onDemandParts,
   pctText,
   resetInShort,
+  shortDate,
   type BucketView,
 } from "./usage";
 
@@ -228,6 +229,21 @@ function QuotaCell({
   const p = bucket.percent;
   const known = p != null && Number.isFinite(p);
   const tone = !known ? " is-idle" : p! > 90 ? " is-bad" : p! >= 70 ? " is-warn" : p! <= 0 ? " is-idle" : "";
+
+  let valNode: ReactNode = "—";
+  if (bucket.note) {
+    valNode = bucket.note;
+  } else if (known) {
+    const used = Math.round(p!);
+    const remain = Math.max(0, 100 - used);
+    valNode = (
+      <>
+        <span className="qc-used">{used}%</span>
+        <span className="qc-rem">余 {remain}%</span>
+      </>
+    );
+  }
+
   return (
     <div className="qc" title={bucket.hint}>
       <span className="qc-k">{bucket.label}</span>
@@ -240,7 +256,7 @@ function QuotaCell({
         />
       </span>
       <span className={bucket.note ? `qc-v is-note${tone}` : `qc-v${tone}`}>
-        {bucket.note ?? pctText(p)}
+        {valNode}
       </span>
     </div>
   );
@@ -249,11 +265,11 @@ function QuotaCell({
 /* ── 末行 ─────────────────────────────────────────────────────────────────── */
 
 /**
- * 两个重置的倒计时：`Bot 6 天后重置 · 月账期 3 天后重置`。
+ * 两个重置的倒计时：`月额 17 天后重置 · Bot 2 天后重置`。
  *
- * 四个桶分属两套周期（Bot 按周、其余共用月账期），所以两个都要给，且各自点名它管的是哪一档。
- * **卡片上只给倒计时**，绝对时刻退进抽屉 —— 倒计时回答「还能等多久」，那是扫列表时的问题；
- * 「几点回来看」要的是精确值，而现在点开一张卡的成本已经降到「点卡片任意位置」。
+ * 四个桶分属两套周期（Bot 按周、其余共用月账期），所以两个都要给。
+ * **卡片上只给倒计时**，绝对时刻悬停可见或退进抽屉 —— 倒计时回答「还能等多久」，那是扫列表时的问题；
+ * 「几点回来看」要的是精确值，点开卡片看详情。
  */
 export function AccountResets({
   usage,
@@ -263,14 +279,14 @@ export function AccountResets({
   /** 前面那句状态已经点过 Bot 的名了（「Bot 已耗尽」），这里就别再写一遍。 */
   weeklyLabel?: string | null;
 }) {
-  return (
-    <FootResets
-      items={[
-        { label: weeklyLabel, at: usage.bot?.resetAt },
-        { label: "月账期", at: usage.cycleEnd },
-      ]}
-    />
-  );
+  const items: Array<{ label?: string | null; at?: number | null }> = [];
+  if (usage.cycleEnd && Number.isFinite(usage.cycleEnd)) {
+    items.push({ label: "月额", at: usage.cycleEnd });
+  }
+  if (usage.bot?.resetAt && Number.isFinite(usage.bot.resetAt)) {
+    items.push({ label: weeklyLabel, at: usage.bot.resetAt });
+  }
+  return <FootResets items={items} />;
 }
 
 /** 末行倒计时。各平台自己点名窗口，这里只负责「标签 + 多久后重置」和中间的点。 */
@@ -294,8 +310,9 @@ export function FootResets({
 }
 
 function ResetItem({ k, at }: { k?: string | null; at: number }) {
+  const dateStr = shortDate(at);
   return (
-    <span className="qf-i">
+    <span className="qf-i" title={`重置于 ${dateStr}`}>
       {k ? <span className="qf-k">{k}</span> : null}
       <span className="qf-in">{resetInShort(at)}</span>
     </span>

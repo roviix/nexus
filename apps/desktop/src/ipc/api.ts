@@ -313,19 +313,10 @@ export const gateway = {
    */
   usage: (days: number) =>
     call<UsageSummary>("gateway_usage", { days, tzOffsetMin: -new Date().getTimezoneOffset() }),
-  /** IDE Agent 面板经本机网关的用量，与 `usage` 的账分开（口径不同）。 */
-  ideUsage: (days: number) =>
-    call<UsageSummary>("gateway_ide_usage", { days, tzOffsetMin: -new Date().getTimezoneOffset() }),
-  /** 改 IDE 拦截的改写规则；落库并立刻生效。 */
-  setIntercept: (rule: RewriteRule) => call<GatewayStatus>("gateway_set_intercept", { rule }),
-  /** 透传口的 Grok Bot 额度开关（热生效；开时没凭证会当场生成，可能弹钥匙串授权）。 */
-  setGrokbotStream: (on: boolean) => call<GatewayStatus>("gateway_set_grokbot_stream", { on }),
   start: () => call<GatewayStatus>("gateway_start"),
   stop: () => call<GatewayStatus>("gateway_stop"),
   updateSettings: (patch: {
     port?: number;
-    passthroughPort?: number;
-    clientType?: string;
     autostart?: boolean;
     forceModel?: string | null;
     defaultChannel?: string;

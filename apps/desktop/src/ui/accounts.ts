@@ -129,11 +129,11 @@ export function canUseDashboard(a: Account, now = Date.now()): boolean {
 }
 
 /**
- * 五种排序。曾经还有「按状态」和「余量最多」，都撤了：状态那一维已经由分布条 + 额度筛子
+ * 四种排序。曾经还有「按状态」和「余量最多」，都撤了：状态那一维已经由分布条 + 额度筛子
  * 回答（筛出来比排出来直接）；「余量最多」按最紧的桶排，可卡上并排摆着三个桶的数字，
  * 排出来的第一名常常不是人眼看到的「最空的那张」，解释不清的排序不如没有。
  */
-export type AccountSort = "added" | "registered" | "reset" | "botReset" | "checked";
+export type AccountSort = "added" | "reset" | "botReset" | "checked";
 
 /**
  * 默认按**加入的先后**排，新加的在最上面。
@@ -147,7 +147,6 @@ export const DEFAULT_SORT: AccountSort = "added";
 
 export const SORT_LABEL: Record<AccountSort, string> = {
   added: "添加时间 · 新→旧",
-  registered: "注册时间 · 新→旧",
   reset: "月账期最快重置",
   botReset: "Bot 最快重置",
   checked: "最近查过",
@@ -167,7 +166,6 @@ export function matchesQuery(a: Account, query: string): boolean {
  *
  * - 添加时间：新加的在前。同一秒入库的一批（批量导入）按 `seq`（rowid）倒排，等于导入清单
  *   的逆序；**刷新用量不改任何一项**，这正是它当默认的理由。
- * - 注册时间：Cursor 那边的 `created_at`（随用量拉回来），新注册的在前；没查过的沉底。
  * - 月账期最快重置：`cycleEnd` 越近越靠前；不知道的排最后。**只看月账期，不看「最紧的桶」**：
  *   以前按最紧的桶的重置时刻排，可 Bot 桶按周、其余按月，一个号最紧的是 Bot、另一个最紧的是 API，
  *   两个号就在拿周和月比 —— 卡上写着「月账期 20 天后重置」的排到了「3 天后」的前面，看着就是排错了。
@@ -180,7 +178,7 @@ export function matchesQuery(a: Account, query: string): boolean {
 export function sortAccounts(list: Account[], by: AccountSort, now = Date.now()): Account[] {
   const keyed = list.map((a) => ({ a, k: sortKey(a, by, now) }));
   keyed.sort((x, y) => {
-    // 失效的号在「重置 / 查过 / 注册」里垫底：它的额度再快回来也用不上，摆在头一个是误导。
+    // 失效的号在「重置 / 查过」里垫底：它的额度再快回来也用不上，摆在头一个是误导。
     // 但「添加时间」里不挪 —— 那一档承诺的就是顺序不变，一个号今天失效了也不该换位置。
     if (by !== "added") {
       const dx = deadRank(x.a) - deadRank(y.a);
@@ -202,11 +200,6 @@ function sortKey(a: Account, by: AccountSort, now: number): number {
   switch (by) {
     case "added": {
       const t = Date.parse(a.createdAt);
-      return Number.isFinite(t) ? -t : Number.POSITIVE_INFINITY;
-    }
-    case "registered": {
-      const raw = a.usage?.accountCreatedAt;
-      const t = raw ? Date.parse(raw) : Number.NaN;
       return Number.isFinite(t) ? -t : Number.POSITIVE_INFINITY;
     }
     case "reset": {

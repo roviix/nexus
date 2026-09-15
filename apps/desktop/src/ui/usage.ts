@@ -562,7 +562,10 @@ export function allBuckets(usage?: AccountUsage | null): BucketView[] {
  * 那类模型就调不动了。精确的总额度数字在抽屉里，那是看清一个号时才要的。
  */
 export function cardBuckets(usage?: AccountUsage | null): BucketView[] {
-  return allBuckets(usage).filter((b) => b.key !== "total");
+  const all = allBuckets(usage);
+  const byKey = new Map(all.map((b) => [b.key, b]));
+  const order: Bucket["key"][] = ["auto", "api", "bot"];
+  return order.map((k) => byKey.get(k)).filter((b): b is BucketView => b != null);
 }
 
 function tightest(list: Bucket[]): Bucket | null {

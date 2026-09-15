@@ -160,15 +160,6 @@ describe("sortAccounts · 添加时间（默认）", () => {
   });
 });
 
-describe("sortAccounts · 注册时间", () => {
-  it("orders by Cursor's own created_at, newest first, unchecked last", () => {
-    const older = acct({ usage: usage({ accountCreatedAt: "2026-05-01T00:00:00Z" }) });
-    const newer = acct({ usage: usage({ accountCreatedAt: "2026-08-01T00:00:00Z" }) });
-    const never = acct();
-    expect(sortAccounts([never, older, newer], "registered").map((a) => a.id)).toEqual([newer.id, older.id, never.id]);
-  });
-});
-
 describe("sortAccounts", () => {
   it("puts dead accounts last regardless of the chosen order", () => {
     const dead = acct({ status: "dead", availability: "dead", usage: usage({ cycleEnd: NOW + DAY }) });

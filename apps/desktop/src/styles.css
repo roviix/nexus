@@ -2314,15 +2314,15 @@ h2 {
 /* 高度定死、不靠行高凑（§14.33）：行高一漂，上面那个 67px 就对不上了。 */
 .qc {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 42px;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
-  height: 19px;
+  gap: 10px;
+  height: 20px;
   min-width: 0;
 }
 
 .qc-k {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--color-muted);
   white-space: nowrap;
@@ -2340,13 +2340,26 @@ h2 {
   color: var(--color-ink);
   text-align: right;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
 }
 
-.qc-v.is-warn {
+.qc-used {
+  color: var(--color-ink);
+}
+
+.qc-rem {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--color-muted);
+}
+
+.qc-v.is-warn .qc-used {
   color: var(--warn);
 }
 
-.qc-v.is-bad {
+.qc-v.is-bad .qc-used {
   color: var(--bad);
 }
 
@@ -2357,17 +2370,16 @@ h2 {
 
 /* 「无 / 无权限 / 已耗尽」这种词占不下 11.5px 的位置，收一档。 */
 .qc-v.is-note {
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 500;
   color: var(--color-faint);
 }
 
-/* 内联之后条子比原来矮的那 1px 加回来：短条要够厚才看得出长短。 */
 .qc-track {
   display: block;
-  height: 3px;
+  height: 4px;
   border-radius: 999px;
-  background: var(--track);
+  background: rgba(255, 255, 255, 0.06);
   overflow: hidden;
 }
 
@@ -2376,8 +2388,8 @@ h2 {
   height: 100%;
   border-radius: 999px;
   transition:
-    width 0.5s ease-out,
-    background 0.3s ease;
+    width 0.3s ease-out,
+    background 0.2s ease;
 }
 
 /* ── 统一账号控制栏（单一高级收敛控制台） ────────────────────────────────── */

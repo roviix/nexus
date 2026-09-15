@@ -399,12 +399,12 @@ describe("allBuckets", () => {
 describe("cardBuckets", () => {
   it("drops 总额度 —— 那是结论，由卡上那颗状态点在说", () => {
     const rows = cardBuckets(usage({ totalPercentUsed: 15, autoPercentUsed: 3, apiPercentUsed: 96 }));
-    expect(rows.map((b) => b.key)).toEqual(["bot", "auto", "api"]);
+    expect(rows.map((b) => b.key)).toEqual(["auto", "api", "bot"]);
   });
 
   it("其余三个桶原样保留，包括 Bot 的特殊状态", () => {
     const rows = cardBuckets(usage({ autoPercentUsed: 3, bot: { access: "blocked" } }));
-    expect(rows[0]).toMatchObject({ key: "bot", note: "无权限" });
+    expect(rows.find((b) => b.key === "bot")).toMatchObject({ key: "bot", note: "无权限" });
     expect(rows.find((b) => b.key === "auto")?.percent).toBe(3);
     // 缺数仍然是 null，不能画成 0%。
     expect(rows.find((b) => b.key === "api")?.percent).toBeNull();

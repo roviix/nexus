@@ -97,7 +97,7 @@ const AVAILS = new Set<AvailFilter>(["all", "long_lived", "session", "api_key", 
 const QUOTAS = new Set<QuotaFilter>(["all", "ok", "warn", "full", "unknown"]);
 const POOLS = new Set<PoolFilter>(["any", "switcher", "gateway", "unpooled"]);
 const PLANS = new Set<PlanFilter>(["all", "paid", "ultra", "proplus", "pro", "team", "free", "unknown"]);
-const SORTS = new Set<AccountSort>(["added", "registered", "reset", "botReset", "checked"]);
+const SORTS = new Set<AccountSort>(["added", "reset", "botReset", "checked"]);
 
 /** 上一版的凭证筛子怎么对到可用性上。`authorized` 那时的含义就是「有 refresh 且没掉」。 */
 const LEGACY_CRED: Record<string, AvailFilter> = {

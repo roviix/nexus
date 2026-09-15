@@ -65,7 +65,7 @@ import { AuthorizeModal } from "./accounts/AuthorizeModal";
 import { ChatGptAccounts } from "./accounts/ChatGptAccounts";
 import { GrokAccounts, KiroAccounts } from "./accounts/DeviceAccounts";
 
-const SORTS: AccountSort[] = ["added", "registered", "reset", "botReset", "checked"];
+const SORTS: AccountSort[] = ["added", "reset", "botReset", "checked"];
 const POOL_FILTERS: PoolFilter[] = ["any", "switcher", "gateway", "unpooled"];
 
 /**
