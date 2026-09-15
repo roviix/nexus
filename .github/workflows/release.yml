@@ -152,6 +152,17 @@ jobs:
         shell: bash
         working-directory: apps/desktop
         run: |
+          # GitHub Actions 把未配置的 Secret 注成空字符串。Tauri 只要见到
+          # APPLE_CERTIFICATE 这个变量就会 `security import`，空值报
+          # `SecKeychainItemImport: One or more parameters passed to a function were not valid`，
+          # 编译已经完成的 universal 包也打不出来。没配证书就清掉，出未签名包。
+          if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
+            echo "没有 Apple 证书，打未签名包。"
+          fi
+          if [[ -z "${APPLE_ID:-}" ]]; then
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
           npx tauri build \
             --target universal-apple-darwin \
             --bundles app,dmg \
