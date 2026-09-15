@@ -1,12 +1,15 @@
 /**
  * Sand 页的第二张卡：远程主机（remote SSH）。同一份补丁，对象在远端。
  *
- * 出网方式是主轴（见 `ROUTES`）：经本机网关 / 经本机代理 / 远程自己出网。前两条都要一条回到
- * 本机的隧道（ssh 会话里的多路复用中继，不是 `ssh -R`）。ssh 认证不归我们管。
+ * 出网方式是主轴（见 `ROUTES`）：经本机代理 / 远程自己出网。前者要一条回到本机的隧道
+ * （ssh 会话里的多路复用中继，不是 `ssh -R`）。ssh 认证不归我们管。
  * 一台主机一张卡：三盏灯（补丁 / 隧道 / 本机那头）加一句结论；「验一遍」从远程实地打一次，报出断在哪一跳。
+ *
+ * 早先还有一条「经本机网关」（端点改道 + 隧道接回网关透传口），随透传口一起拆掉了。远程盘上若还
+ * 留着那时写的改道，卡片上会点名报出来并给「重新安装」——那个端点已经没人接了。
  */
 import { useCallback, useEffect, useState } from "react";
-import { gateway, onSandRemoteProgress, sandRemote } from "../../ipc/api";
+import { onSandRemoteProgress, sandRemote } from "../../ipc/api";
 import type {
   MarkerCounts,
   ProbeReport,
@@ -25,18 +28,12 @@ import { STEP_LABEL } from "../SandPage";
 /** 新主机默认的远程端口；与 Rust `DEFAULT_REMOTE_PORT` 一致。 */
 export const DEFAULT_REMOTE_PORT = 41777;
 
-/** 三条出网路线。每条把代价写出来：经网关有号池接力，经代理链路短但只用远程当前的号。 */
+/** 两条出网路线。 */
 export const ROUTES: Array<{ id: RemoteRoute; label: string; desc: string; icon: string }> = [
-  {
-    id: "gateway",
-    label: "经本机网关",
-    desc: "经隧道回到本机网关。多号接力、额度用尽自动换号、面板拦截都在这条路上。",
-    icon: "gateway",
-  },
   {
     id: "proxy",
     label: "经本机代理",
-    desc: "经隧道走本机的代理出网。链路短一跳，但只用远程当前登录的号，没有轮换。",
+    desc: "经隧道走本机的代理出网。远程照旧打官方端点，用远程当前登录的号。",
     icon: "globe",
   },
   {
@@ -48,7 +45,6 @@ export const ROUTES: Array<{ id: RemoteRoute; label: string; desc: string; icon:
 ];
 
 export const ROUTE_LABEL: Record<RemoteRoute, string> = {
-  gateway: "经本机网关",
   proxy: "经本机代理",
   direct: "远程自己出网",
 };
@@ -95,10 +91,9 @@ export function unwrapStatus(
  * 「远程盘上 / Cursor 设置里已经指着我们、隧道却不通」是所有故障形态里最没有提示的一种，
  * 所以单独判一次。
  *
- * 两条路都有这个毛病，只是那份「永久状态」放在不同地方：网关模式是**写进远程 bundle 的端点**，
- * 代理模式是**写进 Cursor 设置的 `HTTP_PROXY`**。隧道却只活在本应用进程里。两者一旦不同步，
- * 远程每次请求都打在一个没人监听的端口上（`ECONNREFUSED` → 重试），而用户在 Cursor 那边只看得到
- * 一直转圈——桌面端这边「已打补丁」「网关在跑」还都是绿的。返回 `null` = 这条链路没问题。
+ * 那份「永久状态」是**写进 Cursor 设置的 `HTTP_PROXY`**，隧道却只活在本应用进程里。两者一旦
+ * 不同步，远程每次请求都打在一个没人监听的端口上（`ECONNREFUSED` → 重试），而用户在 Cursor 那边
+ * 只看得到一直转圈——桌面端这边「已打补丁」还是绿的。返回 `null` = 这条链路没问题。
  */
 export function tunnelBlocker(
   /** 远程那一侧指着我们的证据：端点地址，或代理地址。null = 没指着我们，隧道断了也无妨。 */
@@ -115,30 +110,27 @@ export function tunnelBlocker(
   };
 }
 
-/** 这台主机的「远程那侧已经指着我们」是什么。两条路各看各的永久状态。 */
-export function pinnedTarget(view: RemoteHostView, status: RemoteStatus | undefined): string | null {
-  if (view.host.route === "proxy") return view.proxyConfigured;
-  if (view.host.route === "direct") return null;
-  return status?.inferenceEndpoint ?? null;
+/** 这台主机的「远程那侧已经指着我们」是什么：代理模式看 Cursor 设置里的代理地址。 */
+export function pinnedTarget(view: RemoteHostView): string | null {
+  return view.host.route === "proxy" ? view.proxyConfigured : null;
 }
 
 /**
- * 网关模式：盘上写的端点和现在设置该写的端点不一样（改过远程端口、或早期版本装的是
- * 「两端同口」那种）。隧道再通也没用——远程打的是旧端口。返回要说的那句话，null = 一致。
+ * 早期版本「经本机网关」写进远程 bundle 的端点改道。那条路已经没有了，端点指着一个永远没人
+ * 听的口——远程每次推理都是 ECONNREFUSED。重新安装（任何出网方式）会把它剥掉。null = 干净。
  */
-export function endpointDrift(view: RemoteHostView, status: RemoteStatus | undefined): string | null {
-  if (view.host.route !== "gateway" || !view.expectedEndpoint) return null;
+export function legacyEndpoint(status: RemoteStatus | undefined): string | null {
   const onDisk = status?.inferenceEndpoint ?? null;
-  if (!onDisk || onDisk === view.expectedEndpoint) return null;
-  return `远程写的端点是 ${onDisk}，现在的设置是 ${view.expectedEndpoint}，重新安装一次才会改过来。`;
+  if (!onDisk) return null;
+  return `远程盘上还有旧版「经本机网关」的改道 ${onDisk}——那个端点已经没人接，远程 Agent 会一直连不上。重新安装一次会把它剥掉。`;
 }
 
 /** 探针结果翻成一句结论 + 下一步。分阶段说断在哪一跳，含糊成一句「失败」等于没验。 */
-export function probeVerdict(r: ProbeReport, route: RemoteRoute): { tone: "ok" | "bad"; title: string; hint: string } {
+export function probeVerdict(r: ProbeReport): { tone: "ok" | "bad"; title: string; hint: string } {
   if (r.ok) {
     return {
       tone: "ok",
-      title: route === "proxy" ? `链路通了：远程 → 隧道 → 本机代理 → 外网（HTTP ${r.status}）。` : `链路通了：远程 → 隧道 → 本机网关（HTTP ${r.status}）。`,
+      title: `链路通了：远程 → 隧道 → 本机代理 → 外网（HTTP ${r.status}）。`,
       hint: "这里验的是链路，不是鉴权。",
     };
   }
@@ -148,7 +140,7 @@ export function probeVerdict(r: ProbeReport, route: RemoteRoute): { tone: "ok" |
       return {
         tone: "bad",
         title: `断在第一跳：远程连不上 127.0.0.1:${r.remotePort}${detail}`,
-        hint: route === "proxy" ? "看隧道是不是「已连接」、本机代理开着没、端口对不对。" : "看隧道是不是「已连接」，再把本机网关开起来。",
+        hint: "看隧道是不是「已连接」、本机代理开着没、端口对不对。",
       };
     case "proxy":
       return {
@@ -171,7 +163,7 @@ export function probeVerdict(r: ProbeReport, route: RemoteRoute): { tone: "ok" |
   }
 }
 
-/** 隧道那一格怎么写。`farEndUp` = 本机那头（网关 / 代理）有人听。 */
+/** 隧道那一格怎么写。`farEndUp` = 本机那头（代理）有人听。 */
 export function tunnelLabel(
   tunnel: TunnelStatus,
   farEndUp: boolean,
@@ -314,23 +306,6 @@ export function RemoteHosts() {
     }
   }
 
-  // 网关是隧道那一头的接收方；这两个动作都是「本地网关」页也能做的事，这里给个就近入口，
-  // 免得用户在两个 tab 之间来回找。改 client-type 的语义写在 GatewayGuard 的文案里。
-  const [gatewayBusy, setGatewayBusy] = useState(false);
-  async function fixGateway(what: "start" | "sand") {
-    setGatewayBusy(true);
-    setError(null);
-    try {
-      if (what === "sand") await gateway.updateSettings({ clientType: "sand" });
-      else await gateway.start();
-      setOverview(await sandRemote.overview());
-    } catch (e) {
-      setError(e);
-    } finally {
-      setGatewayBusy(false);
-    }
-  }
-
   return (
     <div style={{ marginTop: 28 }}>
       <div className="section-head">
@@ -347,16 +322,6 @@ export function RemoteHosts() {
       </div>
 
       <ErrorNote error={error} onRetry={() => void reload()} />
-
-      {/* 网关那两条提示只对「经本机网关」的主机成立；一台都没有的话不该摆在这儿。 */}
-      {overview && overview.hosts.some((h) => h.host.route === "gateway") ? (
-        <GatewayGuard
-          overview={overview}
-          busy={gatewayBusy}
-          onStart={() => void fixGateway("start")}
-          onUseSand={() => void fixGateway("sand")}
-        />
-      ) : null}
 
       {outcome ? <RemoteOutcomeBanner outcome={outcome} /> : null}
 
@@ -454,15 +419,15 @@ function HostCard({
   const tally = s ? serverTally(s.markers) : null;
   const route = view.host.route;
 
-  // 三盏灯：补丁、隧道、本机那头（网关在跑 / 代理在听）。都亮才算通。
+  // 三盏灯：补丁、隧道、本机那头（代理在听）。都亮才算通。
   const patched = !!s?.complete;
   const needsTunnel = route !== "direct";
-  const farEndUp = route === "gateway" ? overview.gatewayRunning : route === "proxy" ? view.localListening : true;
+  const farEndUp = route === "proxy" ? view.localListening : true;
   const tunnelOn = view.tunnel.phase === "connected";
-  const live = patched && (!needsTunnel || (tunnelOn && farEndUp));
+  const live = patched && (!needsTunnel || (tunnelOn && farEndUp)) && !legacyEndpoint(s);
   // 远程那侧已经指着我们、承接的那一头却不在——这一条要摊开说，光把状态点变黄没人看得懂。
-  const blocker = needsTunnel ? tunnelBlocker(pinnedTarget(view, s), view.tunnel) : null;
-  const drift = endpointDrift(view, s);
+  const blocker = needsTunnel ? tunnelBlocker(pinnedTarget(view), view.tunnel) : null;
+  const drift = legacyEndpoint(s);
   const tunnelChip = tunnelLabel(view.tunnel, farEndUp);
 
   return (
@@ -520,7 +485,7 @@ function HostCard({
       {drift ? (
         <div style={{ marginTop: 10 }}>
           <Banner
-            tone="warn"
+            tone="bad"
             title={drift}
             action={
               <button type="button" className="btn btn-sm" disabled={anyBusy || !s?.versionSupported} onClick={onInstall}>
@@ -533,7 +498,7 @@ function HostCard({
 
       {probe ? (
         <div style={{ marginTop: 10 }}>
-          <ProbeBanner report={probe} route={route} />
+          <ProbeBanner report={probe} />
         </div>
       ) : null}
 
@@ -548,20 +513,12 @@ function HostCard({
           <span>
             出网：<span className="faint">{ROUTE_LABEL[route]}</span>
           </span>
-          <span>
-            {route === "proxy" ? "远程的 HTTP_PROXY：" : "推理出口："}
-            {route === "proxy" ? (
-              view.proxyConfigured ? (
-                <span className="mono">{view.proxyConfigured}</span>
-              ) : (
-                <span className="faint">未配置</span>
-              )
-            ) : s.inferenceEndpoint ? (
-              <span className="mono">{s.inferenceEndpoint}</span>
-            ) : (
-              <span className="faint">远程直连</span>
-            )}
-          </span>
+          {route === "proxy" ? (
+            <span>
+              远程的 HTTP_PROXY：
+              {view.proxyConfigured ? <span className="mono">{view.proxyConfigured}</span> : <span className="faint">未配置</span>}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -761,11 +718,9 @@ function RoutePicker({
             ) : null}
           </div>
           <p className="sect-none" style={{ marginTop: 6 }}>
-            {host.route === "gateway"
-              ? "远程端口改了要重新安装一次；避开远程上已被占用的端口。"
-              : effectiveLocal
-                ? `远程经 127.0.0.1:${host.remotePort} 出网，本机这头接到 127.0.0.1:${effectiveLocal}${host.proxyPort ? "" : "（自动探测）"}。改端口后重开隧道生效。`
-                : "没探测到本机的代理端口：先把代理开起来，或在这里手填。"}
+            {effectiveLocal
+              ? `远程经 127.0.0.1:${host.remotePort} 出网，本机这头接到 127.0.0.1:${effectiveLocal}${host.proxyPort ? "" : "（自动探测）"}。改端口后重开隧道生效。`
+              : "没探测到本机的代理端口：先把代理开起来，或在这里手填。"}
           </p>
         </div>
       ) : null}
@@ -774,61 +729,9 @@ function RoutePicker({
 }
 
 /** 探针结果：一句结论 + 下一步。失败时把断点写在脸上。 */
-function ProbeBanner({ report, route }: { report: ProbeReport; route: RemoteRoute }) {
-  const v = probeVerdict(report, route);
+function ProbeBanner({ report }: { report: ProbeReport }) {
+  const v = probeVerdict(report);
   return <Banner tone={v.tone} title={v.title} hint={v.hint} />;
-}
-
-/**
- * 网关是隧道那一头的接收方，两种状态会让远程装好了也用不了：没在跑；或 client-type 不是 sand
- * （网关转发时会把身份改写成自己的设置，远程的推理就记到普通额度上）。这里给就近入口。
- */
-export function GatewayGuard({
-  overview,
-  busy,
-  onStart,
-  onUseSand,
-}: {
-  overview: RemoteOverview;
-  busy: boolean;
-  onStart: () => void;
-  onUseSand: () => void;
-}) {
-  if (!overview.gatewayRunning) {
-    return (
-      <div style={{ marginBottom: 12 }}>
-        <Banner
-          tone="warn"
-          title="本机网关没在跑，远程装好了也用不了。"
-          hint="远程的推理经隧道回到本机网关；网关不开，隧道通了也没人接。"
-          action={
-            <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={onStart}>
-              {busy ? <Spinner /> : null}
-              开启网关
-            </button>
-          }
-        />
-      </div>
-    );
-  }
-  if (overview.gatewayClientType !== "sand") {
-    return (
-      <div style={{ marginBottom: 12 }}>
-        <Banner
-          tone="warn"
-          title={`网关的 client-type 是 ${overview.gatewayClientType}，远程走不到 Sand 通道。`}
-          hint="改成 sand 后，远程的推理才记到 Sand 额度上。"
-          action={
-            <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={onUseSand}>
-              {busy ? <Spinner /> : null}
-              改成 sand
-            </button>
-          }
-        />
-      </div>
-    );
-  }
-  return null;
 }
 
 function RemoteOutcomeBanner({ outcome }: { outcome: RemoteOutcome }) {
@@ -858,7 +761,7 @@ function RemoteOutcomeBanner({ outcome }: { outcome: RemoteOutcome }) {
 function AddHostModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => Promise<void> }) {
   const [host, setHost] = useState("");
   const [label, setLabel] = useState("");
-  const [route, setRoute] = useState<RemoteRoute>("gateway");
+  const [route, setRoute] = useState<RemoteRoute>("proxy");
   const [probing, setProbing] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [probe, setProbe] = useState<RemoteStatus | null>(null);
@@ -905,7 +808,7 @@ function AddHostModal({ onClose, onAdded }: { onClose: () => void; onAdded: () =
           <span>显示名（可选）</span>
           <input className="input" placeholder="公司工作站" value={label} disabled={probing} onChange={(e) => setLabel(e.target.value)} />
         </label>
-        {/* 出网方式在添加时就问：它决定装补丁时写不写端点改道，装完再改要重装一次。 */}
+        {/* 出网方式在添加时就问：它决定要不要起隧道、要不要写 Cursor 的代理设置。 */}
         <div className="opts is-flush">
           {ROUTES.map((r) => (
             <Opt key={r.id} icon={r.icon} title={r.label} desc={r.desc} tone={route === r.id ? "on" : undefined}>

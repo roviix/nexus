@@ -4,14 +4,8 @@
  * （docs/SAND.md §8：marker 与期望计数各处必须一致）。
  */
 import { describe, expect, it } from "vitest";
-import { cursorDownloadLabel, MARKER_ROWS, passthroughUrlOf, STEP_LABEL } from "./SandPage";
-import type {
-  CursorDownload,
-  CursorRelease,
-  GatewayStatus,
-  MarkerCounts,
-  SandStep,
-} from "../ipc/types";
+import { cursorDownloadLabel, GROKBOT_MODE_CHOICES, GROKBOT_MODE_LABEL, MARKER_ROWS, STEP_LABEL } from "./SandPage";
+import type { CursorDownload, CursorRelease, MarkerCounts, SandStep } from "../ipc/types";
 
 /** 显式列全 19 个字段：`MarkerCounts` 增删字段时这里编译不过，测试就跟着更新。 */
 const SAMPLE_COUNTS: MarkerCounts = {
@@ -39,9 +33,9 @@ const FIELDS = Object.keys(SAMPLE_COUNTS) as Array<keyof MarkerCounts>;
 
 /**
  * 与 Rust `RuleId::expected()` 逐项对应：client-type 23（isGlass 16 + 对象头 3 + header.set 4），
- * agent host enable / completion wake / subagent model variants 每文件一处共 2，eligibility 与
- * inference endpoint（可选项：本机开「推理经本机网关」或远程默认带）以及 3.19.x 官方已做的
- * subagent route / session 不校验，其余都是 1。
+ * agent host enable / completion wake / subagent model variants 每文件一处共 2，eligibility、
+ * inference endpoint（旧版遗留的改道，应为 0，另有横幅报）以及 3.19.x 官方已做的
+ * subagent route 不校验，其余都是 1。
  */
 const EXPECTED_NEED: Record<keyof MarkerCounts, number | null> = {
   clientType: 23,
@@ -113,40 +107,14 @@ describe("STEP_LABEL", () => {
  * 写进补丁的端点必须和网关真正监听的地址一致，否则 Agent 面板一发推理就连不上：
  * 在跑用绑定到的真实地址（端口被占会自动挪），没在跑按设置里的端口算。
  */
-describe("passthroughUrlOf", () => {
-  const base: GatewayStatus = {
-    running: null,
-    settings: { port: 8787, passthroughPort: 8788, clientType: "sand", autostart: false, forceModel: null, defaultChannel: "cursor" },
-    restartNeeded: false,
-    apiKeySet: true,
-    channels: [],
-    mediaJobs: [],
-    entrances: [],
-    intercept: { rule: { enabled: false, position: "tail", marker: "[nexus-mark]" }, calls: 0, rewritten: 0, errors: 0, recent: [] },
-  grokbotStream: { enabled: false, credential: null },
-    lane: { current: null, candidates: [], missing: [], available: [] },
-  };
-
-  it("is null when the gateway status is unavailable", () => {
-    expect(passthroughUrlOf(null)).toBeNull();
-  });
-
-  it("falls back to the configured passthrough port when the gateway is stopped", () => {
-    expect(passthroughUrlOf(base)).toBe("http://127.0.0.1:8788");
-  });
-
-  it("prefers the actually bound address when the gateway is running", () => {
-    const running: GatewayStatus = {
-      ...base,
-      running: {
-        addr: "127.0.0.1:8790",
-        baseUrl: "http://127.0.0.1:8790",
-        passthroughAddr: "127.0.0.1:8791",
-        passthroughBaseUrl: "http://127.0.0.1:8791",
-        startedAt: "2026-09-05T00:00:00Z",
-      },
-    };
-    expect(passthroughUrlOf(running)).toBe("http://127.0.0.1:8791");
+/**
+ * Grok Bot 鉴权没有「关」这一档：`sand` 头配 Cursor 会话 JWT 上游一律 401，早先靠网关透传口换
+ * token 才成立，那条口子拆掉之后「关」等于装一个必定 401 的面板。Rust 侧 `sand_install` 也拒绝它。
+ */
+describe("GROKBOT_MODE_CHOICES", () => {
+  it("never offers the retired off mode", () => {
+    expect(GROKBOT_MODE_CHOICES).toEqual(["box_relay", "direct"]);
+    for (const k of GROKBOT_MODE_CHOICES) expect(GROKBOT_MODE_LABEL[k].length).toBeGreaterThan(0);
   });
 });
 

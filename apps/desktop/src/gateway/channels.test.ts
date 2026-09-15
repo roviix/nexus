@@ -22,14 +22,11 @@ const channel = (over: Partial<ChannelSnapshot>): ChannelSnapshot => ({
 
 const base: GatewayStatus = {
   running: null,
-  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null, defaultChannel: "cursor" },
+  settings: { port: 8787, autostart: false, forceModel: null, defaultChannel: "cursor" },
   restartNeeded: false,
   apiKeySet: true,
   channels: [],
   mediaJobs: [],
-  entrances: [],
-  intercept: { rule: { enabled: false, position: "tail", marker: "[nexus-mark]" }, calls: 0, rewritten: 0, errors: 0, recent: [] },
-  grokbotStream: { enabled: false, credential: null },
   lane: { current: null, candidates: [], missing: [], available: [] },
 };
 
@@ -109,7 +106,7 @@ describe("laneOf / starved", () => {
 
   it("is starved only when running and no channel has a usable account", () => {
     expect(starved(base)).toBe(false);
-    const running = { ...base, running: { addr: "a", baseUrl: "b", passthroughAddr: "c", passthroughBaseUrl: "d", startedAt: "" } };
+    const running = { ...base, running: { addr: "a", baseUrl: "b", startedAt: "" } };
     expect(starved(running)).toBe(true);
     const withGrok = { ...running, channels: [channel({ lane: { current: null, candidates: [candidate("a", { kind: "ready" })], missing: [], available: [] } })] };
     expect(starved(withGrok)).toBe(false);

@@ -9,7 +9,7 @@
  *     之后裸名或不写模型都走那条，不再按名字猜。Cursor 那一行点进去是它的号池
  *     （`#gateway/pool`）；其余通道的号在「账号」对应页签里，授权了就自动在队里。
  *
- * 设置不在页面上。端口、额度通道、强制模型这些是引擎室里的阀门，一年拧不到一次，摊在
+ * 设置不在页面上。端口、强制模型这些是引擎室里的阀门，一年拧不到一次，摊在
  * 主页面上只会让人一进来就觉得「这么一大坨」；收进右上角一个齿轮后面的弹窗。端口更是
  * 连弹窗里都退到「高级」折叠区：被占了会自动换一个空闲的并记住，用户本不该为它操心。
  *
@@ -37,15 +37,8 @@ import type { Account, GatewayAvailable, GatewayCandidate, GatewaySettings, Gate
 import { go, type AccountPlatform, type Route } from "../shell/nav";
 import { ShellIcon } from "../shell/ShellIcon";
 import { timeAgo } from "../ui/format";
-import { Banner, CopyButton, Empty, ErrorNote, Health, Icon, Modal, Opt, Switch, Tag } from "../ui/primitives";
+import { Banner, CopyButton, Empty, ErrorNote, Icon, Modal, Opt, Switch, Tag } from "../ui/primitives";
 import { accountProblem, planLabel, planTone } from "../ui/usage";
-
-/** 额度通道。这个词比 `client-type` 说得清它是干什么的：上游按它决定从哪个池子扣额度。 */
-const CLIENT_TYPES: Array<{ id: string; label: string; hint: string }> = [
-  { id: "cli", label: "CLI", hint: "稳定默认" },
-  { id: "ide", label: "IDE", hint: "IDE 流量" },
-  { id: "sand", label: "Sand", hint: "Bot 周额度 · 谨慎" },
-];
 
 export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) => void }) {
   const inPool = route.sub === "pool";
@@ -132,8 +125,6 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
 
   async function saveSettings(patch: {
     port?: number;
-    passthroughPort?: number;
-    clientType?: string;
     autostart?: boolean;
     forceModel?: string | null;
     defaultChannel?: string;
@@ -183,7 +174,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
   const starved = Boolean(status && isStarved(status));
 
   /** 设置里有没有偏离默认的东西：有就在齿轮旁点一个点，让人知道「这台引擎调过」。 */
-  const tuned = Boolean(status && (status.settings.clientType !== "cli" || status.settings.forceModel || status.settings.autostart || status.settings.defaultChannel !== "cursor"));
+  const tuned = Boolean(status && (status.settings.forceModel || status.settings.autostart || status.settings.defaultChannel !== "cursor"));
 
   const channels = useMemo(() => localChannels(status, local), [status, local]);
   const currentLabel = candidates.find((c) => c.state.kind === "current")?.label ?? null;
@@ -355,8 +346,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
 
             {wiringOpen ? (
               <div className="gw-addrs">
-                <AddrRow k="标准协议" v={status.running?.baseUrl ?? `http://127.0.0.1:${status.settings.port}`} hint="OpenAI / Anthropic · Claude Code、Codex、SDK" live={running} />
-                <AddrRow k="Cursor 协议" v={status.running?.passthroughBaseUrl ?? `http://127.0.0.1:${status.settings.passthroughPort}`} hint="cursor-agent CLI" live={running} />
+                <AddrRow k="服务地址" v={status.running?.baseUrl ?? `http://127.0.0.1:${status.settings.port}`} hint="OpenAI / Anthropic · Claude Code、Codex、SDK" live={running} />
                 <div className="gw-addr">
                   <span className="gw-addr-k">口令</span>
                   <span className="gw-addr-v">
@@ -735,12 +725,11 @@ function SettingsModal({
   settings: GatewaySettings;
   running: boolean;
   onClose: () => void;
-  onSave: (patch: { port?: number; passthroughPort?: number; clientType?: string; autostart?: boolean; forceModel?: string | null; defaultChannel?: string }) => Promise<void>;
+  onSave: (patch: { port?: number; autostart?: boolean; forceModel?: string | null; defaultChannel?: string }) => Promise<void>;
 }) {
   const [saving, setSaving] = useState(false);
   const [portError, setPortError] = useState<string | null>(null);
   const [portsOpen, setPortsOpen] = useState(false);
-  const current = CLIENT_TYPES.find((t) => t.id === settings.clientType);
 
   async function save(patch: Parameters<typeof onSave>[0]) {
     setSaving(true);
@@ -751,14 +740,14 @@ function SettingsModal({
     }
   }
 
-  function commitPort(which: "port" | "passthroughPort", raw: string) {
+  function commitPort(raw: string) {
     const p = Number(raw);
     if (!Number.isFinite(p) || p < 1024 || p > 65535) {
       setPortError("端口要在 1024–65535 之间。");
       return;
     }
     setPortError(null);
-    if (p !== settings[which]) void save({ [which]: p });
+    if (p !== settings.port) void save({ port: p });
   }
 
   return (
@@ -766,41 +755,6 @@ function SettingsModal({
       <div className="opts is-flush">
         <Opt icon="power" title="自动启动" desc="随 Nexus 一起开" tone={settings.autostart ? "on" : undefined}>
           <Switch checked={settings.autostart} disabled={saving} label="随应用启动" onChange={(next) => void save({ autostart: next })} />
-        </Opt>
-
-        {/* 出图是 Sand 通道独有的能力（上游门禁），所以它不跟这里的选择走，否则选 CLI 的人永远出不了图。
-            这句后果留在描述里，原理不留。 */}
-        <Opt
-          icon="sand"
-          title="额度通道"
-          desc="只管对话；出图固定走 Sand（Bot 额度）"
-          tone={settings.clientType === "sand" ? "warn" : undefined}
-          body={
-            <div className="gwset-options" role="radiogroup" aria-label="额度通道">
-              {CLIENT_TYPES.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={settings.clientType === t.id}
-                  className={`gwset-option${settings.clientType === t.id ? " is-active" : ""}${t.id === "sand" ? " is-caution" : ""}`}
-                  title={t.hint}
-                  disabled={saving}
-                  onClick={() => {
-                    if (settings.clientType !== t.id) void save({ clientType: t.id });
-                  }}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
-          }
-        >
-          {settings.clientType === "sand" ? (
-            <Health tone="warn">{current?.hint}</Health>
-          ) : (
-            <span className="faint tiny">{current?.hint ?? "自定义"}</span>
-          )}
         </Opt>
 
         <Opt
@@ -837,19 +791,15 @@ function SettingsModal({
             portsOpen ? (
               <div className="gwset-ports">
                 <label>
-                  <span>API</span>
-                  <input className="input mono gwset-port" type="number" min={1024} max={65535} defaultValue={settings.port} disabled={saving} onBlur={(ev) => commitPort("port", ev.currentTarget.value)} />
-                </label>
-                <label>
-                  <span>Cursor</span>
-                  <input className="input mono gwset-port" type="number" min={1024} max={65535} defaultValue={settings.passthroughPort} disabled={saving} onBlur={(ev) => commitPort("passthroughPort", ev.currentTarget.value)} />
+                  <span>API 端口</span>
+                  <input className="input mono gwset-port" type="number" min={1024} max={65535} defaultValue={settings.port} disabled={saving} onBlur={(ev) => commitPort(ev.currentTarget.value)} />
                 </label>
               </div>
             ) : undefined
           }
         >
           <span className="faint tiny mono">
-            {settings.port} / {settings.passthroughPort}
+            {settings.port}
           </span>
           <button
             type="button"
@@ -867,7 +817,7 @@ function SettingsModal({
       {running ? (
         <div className="gwset-restart">
           <i aria-hidden />
-          通道与端口将在重启后生效
+          端口将在重启后生效
         </div>
       ) : null}
     </Modal>

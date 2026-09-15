@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_REMOTE_PORT,
-  endpointDrift,
+  legacyEndpoint,
   pinnedTarget,
   probeVerdict,
   ROUTE_LABEL,
@@ -56,17 +56,16 @@ const view = (over: Partial<RemoteHostView["host"]>, extra: Partial<RemoteHostVi
     host: {
       host: "box",
       label: "",
-      route: "gateway",
+      route: "proxy",
       remotePort: 41777,
       proxyPort: null,
       ...over,
     },
     status: { Ok: {} as RemoteStatus },
     tunnel: tunnel(),
-    localPort: 8788,
+    localPort: 7890,
     proxyConfigured: null,
     localListening: true,
-    expectedEndpoint: "http://127.0.0.1:41777",
     ...extra,
   }) as RemoteHostView;
 
@@ -115,7 +114,7 @@ describe("unwrapStatus", () => {
 describe("tunnelBlocker", () => {
   it("stays quiet when the tunnel is up, or when nothing on the remote points at us", () => {
     expect(tunnelBlocker("http://127.0.0.1:41777", tunnel({ phase: "connected" }))).toBeNull();
-    // 没装端点改道 = 远程直连 api2，隧道开不开都不影响它。
+    // Cursor 设置里没指着我们 = 远程直连 api2，隧道开不开都不影响它。
     expect(tunnelBlocker(null, tunnel())).toBeNull();
   });
 
@@ -134,44 +133,34 @@ describe("tunnelBlocker", () => {
 });
 
 /**
- * 「远程那侧已经指着我们」这个证据，两条路放在不同地方：网关模式是写进 bundle 的端点，
- * 代理模式是写进 Cursor 设置的 HTTP_PROXY。看错地方的后果是**代理模式永远不报警**——
- * 那正是 §9.5 那次静默失效的形状，只是换了条路。
+ * 「远程那侧已经指着我们」这个证据只有一处：写进 Cursor 设置的 HTTP_PROXY。看错地方的后果是
+ * **代理模式永远不报警**——那正是 §9.5 那次静默失效的形状。
  */
 describe("pinnedTarget", () => {
-  it("reads the endpoint for the gateway route and the proxy setting for the proxy route", () => {
-    const status = { inferenceEndpoint: "http://127.0.0.1:41777" } as RemoteStatus;
-    expect(pinnedTarget(view({ route: "gateway" }), status)).toBe("http://127.0.0.1:41777");
-    // 代理模式不看端点（它压根不改端点），只看 Cursor 那份设置。
-    expect(pinnedTarget(view({ route: "proxy" }, { proxyConfigured: "http://127.0.0.1:41777" }), status)).toBe(
+  it("reads the proxy setting for the proxy route and nothing for direct", () => {
+    expect(pinnedTarget(view({ route: "proxy" }, { proxyConfigured: "http://127.0.0.1:41777" }))).toBe(
       "http://127.0.0.1:41777",
     );
-    expect(pinnedTarget(view({ route: "proxy" }), status)).toBeNull();
-    // 直连模式：哪怕盘上还留着旧端点，隧道也不是它的事——不报。
-    expect(pinnedTarget(view({ route: "direct" }), status)).toBeNull();
+    expect(pinnedTarget(view({ route: "proxy" }))).toBeNull();
+    expect(pinnedTarget(view({ route: "direct" }))).toBeNull();
   });
 });
 
 /**
- * 2026-09-08 真机：早期版本把端点写成本机网关的端口（两端同口），而远程上那个号被平台代理占着；
- * 改成独立的远程端口后，盘上的旧端点和新设置对不上——隧道全绿、推理照样打在旧端口上。
- * 这种漂移要点名说出来，并且给「重新安装」。
+ * 早期版本「经本机网关」把推理端点改道写进了远程 bundle。那条路随透传口一起拆掉，端点指着一个
+ * 永远没人听的口——远程每次推理都是 ECONNREFUSED。不论现在选哪条出网方式，盘上有它就要点名报出来，
+ * 并且给「重新安装」（任何选项的重装都会把它剥掉）。
  */
-describe("endpointDrift", () => {
-  it("flags a bundle that still points at a different port than the current setting", () => {
-    const stale = { inferenceEndpoint: "http://127.0.0.1:7897" } as RemoteStatus;
-    const msg = endpointDrift(view({ route: "gateway" }), stale);
+describe("legacyEndpoint", () => {
+  it("flags any endpoint rewrite still on the remote disk", () => {
+    const msg = legacyEndpoint({ inferenceEndpoint: "http://127.0.0.1:7897" } as RemoteStatus);
     expect(msg).toContain("http://127.0.0.1:7897");
-    expect(msg).toContain("http://127.0.0.1:41777");
     expect(msg).toContain("重新安装");
   });
 
-  it("is silent when they agree, when nothing is installed, or on the other routes", () => {
-    expect(endpointDrift(view({ route: "gateway" }), { inferenceEndpoint: "http://127.0.0.1:41777" } as RemoteStatus)).toBeNull();
-    expect(endpointDrift(view({ route: "gateway" }), { inferenceEndpoint: null } as RemoteStatus)).toBeNull();
-    expect(endpointDrift(view({ route: "gateway" }), undefined)).toBeNull();
-    // 代理模式不改端点，盘上有什么都不是这一条要管的。
-    expect(endpointDrift(view({ route: "proxy" }, { expectedEndpoint: null }), { inferenceEndpoint: "http://127.0.0.1:1" } as RemoteStatus)).toBeNull();
+  it("is silent when the bundle is clean or unknown", () => {
+    expect(legacyEndpoint({ inferenceEndpoint: null } as RemoteStatus)).toBeNull();
+    expect(legacyEndpoint(undefined)).toBeNull();
   });
 });
 
@@ -186,16 +175,14 @@ describe("probeVerdict", () => {
   });
 
   it("calls any HTTP status a success — the probe checks the path, not the auth", () => {
-    const v = probeVerdict(report({ ok: true, stage: "http", status: 404 }), "proxy");
+    const v = probeVerdict(report({ ok: true, stage: "http", status: 404 }));
     expect(v.tone).toBe("ok");
     expect(v.title).toContain("404");
     expect(v.title).toContain("本机代理");
-    // 网关模式的终点是本机网关，不是代理。
-    expect(probeVerdict(report({ ok: true, stage: "http", status: 200 }), "gateway").title).not.toContain("代理");
   });
 
   it("blames a different hop for each stage and says what to do next", () => {
-    const tunnelHop = probeVerdict(report({ stage: "tunnel", detail: "ECONNREFUSED" }), "proxy");
+    const tunnelHop = probeVerdict(report({ stage: "tunnel", detail: "ECONNREFUSED" }));
     expect(tunnelHop.tone).toBe("bad");
     expect(tunnelHop.title).toContain("41777");
     expect(tunnelHop.title).toContain("ECONNREFUSED");
@@ -203,13 +190,10 @@ describe("probeVerdict", () => {
     // 探针打的是常驻隧道的口，所以「断在第一跳」首先要去看隧道状态。
     expect(tunnelHop.hint).toContain("隧道");
 
-    // 同一个 stage，网关模式要给的建议不一样（开网关，而不是查代理端口）。
-    expect(probeVerdict(report({ stage: "tunnel" }), "gateway").hint).toContain("网关");
-
     // 断在代理 = 端口不是 HTTP 代理，最常见是把 SOCKS 口填进来了。
-    expect(probeVerdict(report({ stage: "proxy" }), "proxy").hint).toContain("SOCKS");
+    expect(probeVerdict(report({ stage: "proxy" })).hint).toContain("SOCKS");
     // 断在 TLS = 多半有中间人。
-    expect(probeVerdict(report({ stage: "tls" }), "proxy").hint).toContain("中间人");
+    expect(probeVerdict(report({ stage: "tls" })).hint).toContain("中间人");
   });
 });
 
@@ -232,8 +216,8 @@ describe("tunnelLabel", () => {
 });
 
 describe("ROUTES", () => {
-  it("covers exactly the three routes and every one has a label", () => {
-    expect(ROUTES.map((r) => r.id)).toEqual(["gateway", "proxy", "direct"]);
+  it("covers exactly the two routes and every one has a label", () => {
+    expect(ROUTES.map((r) => r.id)).toEqual(["proxy", "direct"]);
     for (const r of ROUTES) {
       expect(ROUTE_LABEL[r.id]).toBe(r.label);
       // 每条路都要把**代价**写出来，光有名字等于没得选。

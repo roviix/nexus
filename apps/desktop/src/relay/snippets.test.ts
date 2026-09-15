@@ -11,23 +11,20 @@ import {
   envLines,
   grokToml,
   opencodeJson,
-  passthroughAgentExample,
   protocolBase,
   sdkSnippet,
   shellLabel,
   toolMeta,
   toolWhere,
-  TOOLS,
 } from "./snippets";
 
-const LOCAL = endpointOf("http://127.0.0.1:8787", "http://127.0.0.1:8788");
+const LOCAL = endpointOf("http://127.0.0.1:8787");
 const CLOUD = endpointOf("https://relay.example.com/v1");
 
 describe("endpointOf", () => {
   it("normalises trailing slashes and a stray /v1", () => {
     expect(CLOUD).toEqual({ root: "https://relay.example.com", v1: "https://relay.example.com/v1" });
     expect(endpointOf("http://127.0.0.1:8787/")).toEqual({ root: "http://127.0.0.1:8787", v1: "http://127.0.0.1:8787/v1" });
-    expect(LOCAL.passthrough).toBe("http://127.0.0.1:8788");
   });
 
   it("Anthropic takes the root, OpenAI-style protocols take /v1", () => {
@@ -66,19 +63,6 @@ describe("Codex config", () => {
   });
 });
 
-describe("cursor-agent passthrough", () => {
-  it("points both -e and --agent-endpoint at the passthrough base url", () => {
-    const cmd = passthroughAgentExample("http://127.0.0.1:8788");
-    expect(cmd).toBe('cursor-agent -e http://127.0.0.1:8788 --agent-endpoint http://127.0.0.1:8788 --model auto --print "你好"');
-    expect(passthroughAgentExample("http://127.0.0.1:9999", "hi")).toContain('--print "hi"');
-  });
-
-  it("is a local-only tool", () => {
-    expect(TOOLS.find((t) => t.id === "cursor_agent")!.passthrough).toBe(true);
-    expect(envLines("cursor_agent", CLOUD, "k", "m")).toEqual([]);
-    expect(envLines("cursor_agent", LOCAL, "k", "m")).toEqual(["export CURSOR_API_ENDPOINT=http://127.0.0.1:8788"]);
-  });
-});
 
 /**
  * 这几条盯的是同一件事：Windows 用户复制走的东西，在 PowerShell 里能原样跑。

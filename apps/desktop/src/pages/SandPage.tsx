@@ -8,11 +8,10 @@
  */
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
-import { gateway, onSandProgress, sand } from "../ipc/api";
+import { onSandProgress, sand } from "../ipc/api";
 import type {
   CursorDownload,
   CursorRelease,
-  GatewayStatus,
   GrokBotAuthMode,
   MarkerCounts,
   ModeGate,
@@ -24,7 +23,6 @@ import type {
 import { go, type Route } from "../shell/nav";
 import { Banner, Empty, ErrorNote, Icon, Modal, Opt, Spinner, Switch, Tag } from "../ui/primitives";
 import { timeAgo } from "../ui/format";
-import { InterceptCard } from "./sand/InterceptCard";
 import { RemoteHosts } from "./sand/RemoteHosts";
 
 const GROK45_CUA_KEY = "nexus.sand.grok45ViaCua";
@@ -80,30 +78,23 @@ export const MARKER_ROWS: Array<{
   { key: "subagentModelVariants", label: "subagent model variants", desc: "子代理模型档位", need: 2 },
   { key: "contextWindow", label: "context window", desc: "上下文窗口", need: 1 },
   { key: "eligibility", label: "eligibility", desc: "资格校验（不强制）", need: null },
-  // 可选项：把推理改道到本机网关的透传口（本机开「推理经本机网关」、或远程主机默认带）。
-  // 装了是 2 处，没装是 0，两种都合法，所以不进硬校验；装没装另有专门的校验。
-  { key: "inferenceEndpoint", label: "inference endpoint", desc: "推理经本机网关（可选）", need: null },
-  // 三种形态（关 / Box Relay / 开）；装了是 2 处，没装是 0，不进硬校验。
-  { key: "grokbotStreamAuth", label: "grokbot auth", desc: "Bot 通道（可选）", need: null },
+  // 早期版本的可选项「推理经本机网关」留在盘上的改道。产品里已经没有这个开关，正常应为 0；
+  // 不进硬校验，>0 时页面上方另有横幅说明。
+  { key: "inferenceEndpoint", label: "inference endpoint", desc: "推理改道（旧版遗留，应为 0）", need: null },
+  // Grok Bot 鉴权（Box Relay / 直连）；两处，不进硬校验。
+  { key: "grokbotStreamAuth", label: "grokbot auth", desc: "Grok Bot 鉴权", need: null },
 ];
 
-/** 界面上只说开 / 关；具体走法不写在选项里。 */
-export const GROKBOT_MODE_LABEL: Record<GrokBotAuthMode, string> = {
-  off: "关",
-  box_relay: "Box Relay",
-  direct: "开",
+/**
+ * Grok Bot 鉴权的两种落法。没有「关」：`sand` 头配 Cursor 自己的会话 JWT 上游一律 401，
+ * 早先靠网关透传口换 token 才成立，那条口子已经拆掉；Rust 侧 `sand_install` 也拒绝 `off`。
+ */
+export const GROKBOT_MODE_LABEL: Record<Exclude<GrokBotAuthMode, "off">, string> = {
+  box_relay: "Box Relay（经 Grok Bot 客户端）",
+  direct: "直连（Nexus 生成凭证）",
 };
 
-/** Box Relay 不主动露出；盘上已经装着的机器要能看见并切走，所以按盘上状态决定是否列出来。 */
-export function grokbotModeChoices(installed: GrokBotAuthMode): GrokBotAuthMode[] {
-  return installed === "box_relay" ? ["off", "box_relay", "direct"] : ["off", "direct"];
-}
-
-/** 网关透传口的地址：在跑就用真实绑定的，没在跑就按设置里的端口算——补丁写进盘上的是这个串。 */
-export function passthroughUrlOf(gw: GatewayStatus | null): string | null {
-  if (!gw) return null;
-  return gw.running?.passthroughBaseUrl ?? `http://127.0.0.1:${gw.settings.passthroughPort}`;
-}
+export const GROKBOT_MODE_CHOICES: Array<Exclude<GrokBotAuthMode, "off">> = ["box_relay", "direct"];
 
 const MODE_LABEL: Record<ModeGate, string> = {
   agent: "仅 Agent",
@@ -147,21 +138,8 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
   const [grok45ViaCuaChoice, setGrok45ViaCuaChoice] = useState<boolean | null>(readGrok45ViaCua);
   const [modeGate, setModeGate] = useState<ModeGate>("all");
   const [relaunch, setRelaunch] = useState(true);
-  // 「推理经本机网关」和自摘要相反：**跟着盘上状态初始化**（用户没碰之前 null = 盘上是什么就是什么）。
-  // 它不是要迁移的默认值，而是一条已经装着的改道——重装时静默把它剥掉，Agent 面板会当场断线。
-  const [viaGatewayChoice, setViaGatewayChoice] = useState<boolean | null>(null);
-  // Grok 鉴权形态同理跟着盘上：null = 盘上是什么就是什么；盘上没装时默认直连（Box Relay 暂不露出）。
-  const [grokbotChoice, setGrokbotChoice] = useState<GrokBotAuthMode | null>(null);
-  const [gw, setGw] = useState<GatewayStatus | null>(null);
-
-  // 网关状态：透传口地址、以及面板拦截那张卡的数据。网关模块坏了不该把 Sand 页一起拖倒，所以单独兜。
-  const reloadGateway = useCallback(async () => {
-    try {
-      setGw(await gateway.status());
-    } catch {
-      setGw(null);
-    }
-  }, []);
+  // Grok 鉴权形态跟着盘上：null = 盘上是什么就是什么；盘上没装（或装的是已废弃的「关」）时默认 Box Relay。
+  const [grokbotChoice, setGrokbotChoice] = useState<Exclude<GrokBotAuthMode, "off"> | null>(null);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -176,19 +154,11 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
         break;
       }
     }
-    await reloadGateway();
-  }, [reloadGateway]);
+  }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
-
-  // 拦截那张卡上的计数随 Agent 面板的请求变；补丁装着、改道开着的时候每 5 秒刷一次网关状态。
-  useEffect(() => {
-    if (!gw?.running || !status?.inferenceEndpoint) return;
-    const t = window.setInterval(() => void reloadGateway(), 5000);
-    return () => window.clearInterval(t);
-  }, [gw?.running, status?.inferenceEndpoint, reloadGateway]);
 
   useEffect(() => {
     const off = onSandProgress((p) => setProgress((prev) => [...prev, p]));
@@ -231,20 +201,13 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
       /* 记不住就当次有效 */
     }
   }
-  const installedEndpoint = status?.inferenceEndpoint ?? null;
-  const viaGateway = viaGatewayChoice ?? installedEndpoint !== null;
-  const passthroughUrl = passthroughUrlOf(gw);
-  // 要装进盘上的端点：开着就是透传口地址；关着是 null（盘上有的话安装时剥掉）。
-  // 读不到网关状态时退回盘上现有的那个——不能因为一次读取失败就把装着的改道剥掉。
-  const wantEndpoint = viaGateway ? (passthroughUrl ?? installedEndpoint) : null;
-  const endpointDiffers = !!status && wantEndpoint !== installedEndpoint;
-  const gatewayRunning = !!gw?.running;
+  // 早期版本「推理经本机网关」留在盘上的改道：指着一个已经不存在的本机端口，面板会一直连不上。
+  // 重新安装（任何选项）都会把它剥掉。
+  const legacyEndpoint = status?.inferenceEndpoint ?? null;
   const installedGrokbot: GrokBotAuthMode = status?.grokbotAuth ?? "off";
-  const grokbotAuth: GrokBotAuthMode =
-    grokbotChoice ?? (installedGrokbot === "off" && !status?.installed ? "direct" : installedGrokbot);
+  const grokbotAuth: Exclude<GrokBotAuthMode, "off"> =
+    grokbotChoice ?? (installedGrokbot === "off" ? "box_relay" : installedGrokbot);
   const grokbotDiffers = !!status && status.installed && grokbotAuth !== installedGrokbot;
-  // Box Relay 会把 Stream 的 URL 改到 Box 去，根本到不了本机网关——两者互斥，Rust 侧也会拒。
-  const grokbotConflictsWithGateway = viaGateway && grokbotAuth === "box_relay";
   const grokbotPrereqMissing =
     (grokbotAuth === "box_relay" && !status?.grokbotRelayConfigured) ||
     (grokbotAuth === "direct" && !status?.grokbotDirectConfigured);
@@ -253,7 +216,7 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
     grok45ViaCua,
     modeGate,
     relaunch,
-    inferenceEndpoint: wantEndpoint,
+    inferenceEndpoint: null,
     grokbotAuth,
   };
 
@@ -328,6 +291,16 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
             </div>
           ) : null}
 
+          {legacyEndpoint ? (
+            <div style={{ marginTop: 12 }}>
+              <Banner
+                tone="bad"
+                title={`盘上还有旧版「推理经本机网关」的改道：${legacyEndpoint}`}
+                hint="那条口子已经不存在，Agent 面板会一直连不上。点「重新安装」会把它剥掉。"
+              />
+            </div>
+          ) : null}
+
           {outcome ? <OutcomeBanner outcome={outcome} /> : null}
 
           <div className="section-head">
@@ -389,29 +362,29 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                 </Opt>
                 <Opt
                   icon="shield"
-                  title="Bot 通道"
-                  desc="Agent 面板用 Grok Bot 的额度；选 GLM 5.2 会改走 premium，其它模型原样"
+                  title="Grok Bot 鉴权"
+                  desc="Agent 面板用 Grok Bot 的额度付账；两种取凭证的方式"
                   hint={
                     grokbotAuth === "box_relay"
-                      ? "经 Grok Bot 客户端；和「推理经本机网关」互斥。"
-                      : grokbotAuth === "direct"
-                        ? "用哪个号，在账号页打开该账号的「Grok Bot」页选。要看实际解析模型，请同时开「推理经本机网关」。"
-                        : undefined
+                      ? "请求改道到 Grok Bot 客户端的 Box，token 不出 Box。需要 Grok Bot 客户端已登录。"
+                      : "注入体自己拿 Nexus 生成的凭证并续期。用哪个号，在账号页打开该账号的「Grok Bot」页选。"
                   }
-                  tone={grokbotConflictsWithGateway ? "warn" : grokbotDiffers ? "warn" : grokbotAuth !== "off" ? "on" : undefined}
+                  tone={grokbotDiffers ? "warn" : "on"}
                 >
                   {status.installed ? (
-                    <Tag tone={grokbotDiffers ? "warn" : installedGrokbot !== "off" ? "ok" : "default"}>盘上：{GROKBOT_MODE_LABEL[installedGrokbot]}</Tag>
+                    <Tag tone={grokbotDiffers ? "warn" : installedGrokbot !== "off" ? "ok" : "bad"}>
+                      盘上：{installedGrokbot === "off" ? "关（已废弃）" : GROKBOT_MODE_LABEL[installedGrokbot]}
+                    </Tag>
                   ) : null}
                   <select
                     className="input"
                     style={{ width: "auto" }}
-                    aria-label="Bot 通道"
+                    aria-label="Grok Bot 鉴权"
                     value={grokbotAuth}
                     disabled={busy}
-                    onChange={(e) => setGrokbotChoice(e.target.value as GrokBotAuthMode)}
+                    onChange={(e) => setGrokbotChoice(e.target.value as Exclude<GrokBotAuthMode, "off">)}
                   >
-                    {grokbotModeChoices(installedGrokbot).map((k) => (
+                    {GROKBOT_MODE_CHOICES.map((k) => (
                       <option key={k} value={k}>
                         {GROKBOT_MODE_LABEL[k]}
                       </option>
@@ -423,11 +396,9 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                   title="Grok 4.5 走 CUA"
                   desc="面板选 Grok 4.5 时改发 sand-cua。只有部分号会落到 4.7，其余仍是 luna"
                   hint={
-                    grokbotAuth === "off"
-                      ? "Bot 通道关着时这项写不进补丁。"
-                      : grok45ViaCua && status.grok45ViaCua === false
-                        ? "开关已开，但盘上还是关：必须再点一次安装，选 4.5 才会改发 sand-cua。"
-                        : "看「盘上」标签。开关开了还要再安装一次。Agent 日志里的 modelId 仍会写 grok-4.5，成功时会出现 [nexus-sand] resolved。"
+                    grok45ViaCua && status.grok45ViaCua === false
+                      ? "开关已开，但盘上还是关：必须再点一次安装，选 4.5 才会改发 sand-cua。"
+                      : "看「盘上」标签。开关开了还要再安装一次。Agent 日志里的 modelId 仍会写 grok-4.5，成功时会出现 [nexus-sand] resolved。"
                   }
                   tone={grok45ViaCuaDiffers ? "warn" : grok45ViaCua ? "on" : undefined}
                 >
@@ -438,28 +409,9 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                   ) : null}
                   <Switch
                     checked={grok45ViaCua}
-                    disabled={busy || grokbotAuth === "off"}
+                    disabled={busy}
                     onChange={setGrok45ViaCua}
                     label="Grok 4.5 走 CUA"
-                  />
-                </Opt>
-                <Opt
-                  icon="gateway"
-                  title="推理经本机网关"
-                  desc="Agent 面板的模型调用先经本机网关；用量统计和面板拦截都靠它"
-                  hint={passthroughUrl ? (viaGateway ? "开着时网关必须在跑，否则 Agent 面板连不上。" : undefined) : "读不到网关设置，这一项暂时装不了。"}
-                  tone={endpointDiffers ? "warn" : viaGateway ? "on" : undefined}
-                >
-                  {installedEndpoint !== null ? (
-                    <Tag tone={endpointDiffers ? "warn" : "ok"}>盘上：开</Tag>
-                  ) : status.installed ? (
-                    <Tag tone={endpointDiffers ? "warn" : "default"}>盘上：关</Tag>
-                  ) : null}
-                  <Switch
-                    checked={viaGateway}
-                    disabled={busy || (!passthroughUrl && !viaGateway)}
-                    onChange={setViaGatewayChoice}
-                    label="推理经本机网关"
                   />
                 </Opt>
                 <Opt icon="power" title="完成后重新启动 Cursor" tone={relaunch ? "on" : undefined}>
@@ -467,11 +419,7 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                 </Opt>
               </div>
 
-              {grokbotConflictsWithGateway ? (
-                <div style={{ marginTop: 12 }}>
-                  <Banner tone="bad" title="Box Relay 和「推理经本机网关」不能同开。" hint="把 Bot 通道改成「开」或「关」。" />
-                </div>
-              ) : grokbotPrereqMissing ? (
+              {grokbotPrereqMissing ? (
                 <div style={{ marginTop: 12 }}>
                   <Banner
                     tone="warn"
@@ -482,24 +430,6 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                         去账号页
                       </button>
                     }
-                  />
-                </div>
-              ) : null}
-
-              {viaGateway && !gatewayRunning ? (
-                <div style={{ marginTop: 12 }}>
-                  <Banner
-                    tone="warn"
-                    title="网关没在跑。"
-                    hint="安装时会自动打开网关和 Bot 通道。现在装也可以，不必先去「本地网关」页点。"
-                  />
-                </div>
-              ) : viaGateway && gw && !gw.grokbotStream.enabled ? (
-                <div style={{ marginTop: 12 }}>
-                  <Banner
-                    tone="warn"
-                    title="Bot 通道还没开。"
-                    hint="经网关的 Stream 必须用 grokBotToken。现在装会自动打开；也可以在下面拦截卡里先开。"
                   />
                 </div>
               ) : null}
@@ -519,16 +449,11 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                   <button
                     type="button"
                     className="btn btn-soft"
-                    disabled={!canInstall || dryRunBlocks || grokbotConflictsWithGateway}
+                    disabled={!canInstall || dryRunBlocks}
                     title="先卸再装，逼 Cursor 丢掉内存里的旧补丁。开关保持现在这样。"
                     onClick={() =>
                       void run(async () => {
                         await sand.uninstall(false);
-                        if (viaGateway) {
-                          if (!gw?.running) await gateway.start();
-                          if (!gw?.grokbotStream.enabled) await gateway.setGrokbotStream(true);
-                          await reloadGateway();
-                        }
                         return sand.install(optionsForInstall);
                       })
                     }
@@ -539,24 +464,9 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
                 <button
                   type="button"
                   className="btn btn-primary"
-                  disabled={!canInstall || dryRunBlocks || grokbotConflictsWithGateway}
-                  title={
-                    dryRunBlocks
-                      ? "锚点不齐，装不上"
-                      : grokbotConflictsWithGateway
-                        ? "Box Relay 与经本机网关互斥"
-                        : "会退出 Cursor，改动前自动备份"
-                  }
-                  onClick={() =>
-                    void run(async () => {
-                      if (viaGateway) {
-                        if (!gw?.running) await gateway.start();
-                        if (!gw?.grokbotStream.enabled) await gateway.setGrokbotStream(true);
-                        await reloadGateway();
-                      }
-                      return sand.install(optionsForInstall);
-                    })
-                  }
+                  disabled={!canInstall || dryRunBlocks}
+                  title={dryRunBlocks ? "锚点不齐，装不上" : "会退出 Cursor，改动前自动备份"}
+                  onClick={() => void run(() => sand.install(optionsForInstall))}
                 >
                   {busy ? <Spinner /> : <Icon name="sand" size={14} />}
                   {status.complete ? "重新安装（应用当前选项）" : "安装 Sand 补丁"}
@@ -566,14 +476,6 @@ export function SandPage({ onGo }: { onGo: (r: Route) => void }) {
           ) : null}
         </>
       )}
-
-      {/* 面板拦截：Sand 改道过来的 Agent 面板流量在透传口上被看见、被记账、可被改写。它归这一页，
-          因为没有补丁 + 改道就没有东西可拦；网关只是它借的那条管子。 */}
-      {gw ? (
-        <div style={{ marginTop: 28 }}>
-          <InterceptCard status={gw} onChanged={reloadGateway} onGo={onGo} />
-        </div>
-      ) : null}
 
       <RemoteHosts />
 

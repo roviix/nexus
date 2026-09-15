@@ -51,7 +51,6 @@ import type {
   RemoteRoute,
   RemoteStatus,
   RestoreOutcome,
-  RewriteRule,
   SandBackup,
   SandInstallOptions,
   GrokBotCuaProbe,
@@ -290,7 +289,7 @@ export const sandRemote = {
   removeHost: (host: string) => call<RemoteHost[]>("sand_remote_remove_host", { host }),
   updateHost: (host: RemoteHost) => call<RemoteHost[]>("sand_remote_update_host", { host }),
   /** 装完只要这条路要隧道就顺手拉起来。 */
-  install: (host: string, route: RemoteRoute = "gateway") =>
+  install: (host: string, route: RemoteRoute = "proxy") =>
     call<RemoteOutcome>("sand_remote_install", { host, route }),
   uninstall: (host: string) => call<RemoteOutcome>("sand_remote_uninstall", { host }),
   /**

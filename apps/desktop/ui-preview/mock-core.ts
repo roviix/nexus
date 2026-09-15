@@ -465,11 +465,9 @@ const GATEWAY: GatewayStatus = {
     : {
         addr: "127.0.0.1:8787",
         baseUrl: "http://127.0.0.1:8787",
-        passthroughAddr: "127.0.0.1:8788",
-        passthroughBaseUrl: "http://127.0.0.1:8788",
         startedAt: iso(40 * 60_000),
       },
-  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null, defaultChannel: "cursor" },
+  settings: { port: 8787, autostart: false, forceModel: null, defaultChannel: "cursor" },
   restartNeeded: false,
   apiKeySet: true,
   lane: laneSnapshot(),
@@ -533,39 +531,6 @@ const GATEWAY: GatewayStatus = {
     },
   ],
   mediaJobs: [],
-  grokbotStream: {
-    enabled: !EMPTY,
-    credential: EMPTY
-      ? null
-      : {
-          expiresAtMs: Date.now() + 8 * 60_000,
-          expired: false,
-          canRenew: true,
-          accountEmail: "bot@example.com",
-          source: "library",
-          mintedAtMs: Date.now() - 60_000,
-          renewedAtMs: null,
-        },
-  },
-  intercept: {
-    rule: { enabled: false, position: "tail", marker: "[nexus-mark]" },
-    calls: EMPTY ? 0 : 3,
-    rewritten: EMPTY ? 0 : 1,
-    errors: 0,
-    recent: EMPTY
-      ? []
-      : [
-          { at: iso(2 * 60_000), account: "a@example.com", conversationId: "8f1c2a9e-4b7d-4e2a-9c1f-000000000001", model: "claude-opus-5", routed: "claude-opus-5-thinking-high", ok: true, status: 200, kind: null, error: null, inputTokens: 412_338, outputTokens: 1_204, cacheReadTokens: 398_000, cacheWriteTokens: 2_100, measured: true, rewritten: true, messageCount: 187, ttftMs: 4_200, durationMs: 31_500 },
-          { at: iso(6 * 60_000), account: "a@example.com", conversationId: "8f1c2a9e-4b7d-4e2a-9c1f-000000000001", model: "claude-opus-5", routed: "claude-opus-5-thinking-high", ok: true, status: 200, kind: null, error: null, inputTokens: 409_900, outputTokens: 860, cacheReadTokens: 401_000, cacheWriteTokens: 0, measured: true, rewritten: false, messageCount: 185, ttftMs: 3_900, durationMs: 22_000 },
-          { at: iso(15 * 60_000), account: "a@example.com", conversationId: "1a2b3c4d-0000-4000-8000-000000000002", model: "grok-4.6", routed: null, ok: false, status: 429, kind: "rate_limit", error: "ERROR_RATE_LIMITED: Too many requests", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, measured: false, rewritten: false, messageCount: 12, ttftMs: null, durationMs: 800 },
-        ],
-  },
-  entrances: [
-    { id: "cursor_ide", title: "Cursor IDE", how: "IDE 请用切号或 Sand。", env: [], available: false, note: "官方 local mode 会关掉 Tab，已否决。" },
-    { id: "claude_code", title: "Claude Code", how: "Base URL 填网关地址。", env: ["ANTHROPIC_BASE_URL=http://127.0.0.1:8787", "ANTHROPIC_AUTH_TOKEN=<KEY>"], available: true, note: null },
-    { id: "openai_sdk", title: "OpenAI SDK / Codex", how: "Base URL 填 /v1。", env: ["OPENAI_BASE_URL=http://127.0.0.1:8787/v1", "OPENAI_API_KEY=<KEY>"], available: true, note: null },
-    { id: "cursor_agent_cli", title: "cursor-agent CLI", how: "透传模式，两个端点都要设。", env: ["CURSOR_API_ENDPOINT=http://127.0.0.1:8788"], available: true, note: "不解 body，只换身份头。" },
-  ],
 };
 
 // ── 本地用量（网关请求账本）────────────────────────────────────────────────
@@ -697,19 +662,16 @@ const MARKERS = {
 
 /**
  * 远程主机（remote SSH）预览：一台走网关、已装好、隧道已连；一台走代理、代理设置已配；
- * 一台连不上。三条出网路线里两条能在预览里点开看。
+ * 一台连不上。第一台盘上还留着旧版「经本机网关」的改道——预览里要能看到那条红横幅。
  */
 const REMOTE_OVERVIEW: RemoteOverview = {
-  gatewayRunning: !EMPTY,
-  gatewayPassthroughPort: 8788,
-  gatewayClientType: "sand",
   localCommit: "dd066f332fcea7382764400fde902f61920648d0",
   detectedProxyPort: 7890,
   hosts: EMPTY
     ? []
     : [
         {
-          host: { host: "devbox-01", label: "公司工作站", route: "gateway", remotePort: 41777, proxyPort: null },
+          host: { host: "devbox-01", label: "公司工作站", route: "proxy", remotePort: 41777, proxyPort: null },
           status: {
             Ok: {
               host: "devbox-01",
@@ -737,11 +699,10 @@ const REMOTE_OVERVIEW: RemoteOverview = {
               complete: true,
             },
           },
-          tunnel: { spec: { host: "devbox-01", remotePort: 41777, localPort: 8788 }, phase: "connected", reconnects: 1, lastError: null, streams: 2 },
-          localPort: 8788,
-          proxyConfigured: null,
+          tunnel: { spec: { host: "devbox-01", remotePort: 41777, localPort: 7890 }, phase: "connected", reconnects: 1, lastError: null, streams: 2 },
+          localPort: 7890,
+          proxyConfigured: "http://127.0.0.1:41777",
           localListening: true,
-          expectedEndpoint: "http://127.0.0.1:41777",
         },
         {
           // 代理模式：不改端点，Cursor 设置里的 HTTP_PROXY 指着隧道的远程口。隧道此刻在重连。
@@ -779,16 +740,14 @@ const REMOTE_OVERVIEW: RemoteOverview = {
           localPort: 7890,
           proxyConfigured: "http://127.0.0.1:21890",
           localListening: true,
-          expectedEndpoint: null,
         },
         {
-          host: { host: "gpu-box", label: "", route: "gateway", remotePort: 41777, proxyPort: null },
+          host: { host: "gpu-box", label: "", route: "direct", remotePort: 41777, proxyPort: null },
           status: { Err: "ssh gpu-box 失败（退出码 255）：Connection timed out during banner exchange\n连不上 gpu-box：确认网络 / VPN / ~/.ssh/config 里的 ProxyCommand。" },
           tunnel: { spec: null, phase: "stopped", reconnects: 0, lastError: null, streams: 0 },
-          localPort: 8788,
+          localPort: null,
           proxyConfigured: null,
-          localListening: true,
-          expectedEndpoint: "http://127.0.0.1:41777",
+          localListening: false,
         },
       ],
 };
@@ -1124,7 +1083,7 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     case "gateway_reset_lane":
       return v({ ...GATEWAY, lane: laneSnapshot() });
     case "gateway_start":
-      GATEWAY.running = { addr: "127.0.0.1:8787", baseUrl: "http://127.0.0.1:8787", passthroughAddr: "127.0.0.1:8788", passthroughBaseUrl: "http://127.0.0.1:8788", startedAt: new Date().toISOString() };
+      GATEWAY.running = { addr: "127.0.0.1:8787", baseUrl: "http://127.0.0.1:8787", startedAt: new Date().toISOString() };
       return delay({ ...GATEWAY, lane: laneSnapshot() } as T, 400);
     case "gateway_stop":
       GATEWAY.running = null;
@@ -1233,18 +1192,17 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
         slot.host = next;
         // 跟着 Rust 侧的语义：切到代理模式才有那份代理设置，切走就摘掉。
         const local = next.proxyPort ?? REMOTE_OVERVIEW.detectedProxyPort ?? 7890;
-        slot.localPort = next.route === "proxy" ? local : next.route === "gateway" ? 8788 : null;
+        slot.localPort = next.route === "proxy" ? local : null;
         slot.proxyConfigured = next.route === "proxy" ? `http://127.0.0.1:${next.remotePort}` : null;
-        slot.expectedEndpoint = next.route === "gateway" ? `http://127.0.0.1:${next.remotePort}` : null;
       }
       return delay(REMOTE_OVERVIEW.hosts.map((x) => x.host) as T, 400);
     }
-    // 探针：走网关那台报通，其余照实报断在第一跳——两种结果都要能在预览里看到。
+    // 探针：隧道连着的那台报通，其余照实报断在第一跳——两种结果都要能在预览里看到。
     case "sand_remote_probe": {
       const h = REMOTE_OVERVIEW.hosts.find((x) => x.host.host === args?.host);
       const port = h?.host.remotePort ?? 41777;
       return delay(
-        (h?.host.route === "gateway" && h.tunnel.phase === "connected"
+        (h?.host.route === "proxy" && h.tunnel.phase === "connected"
           ? { ok: true, stage: "http", status: 404, detail: null, remotePort: port }
           : {
               ok: false,

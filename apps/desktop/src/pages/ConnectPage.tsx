@@ -29,7 +29,6 @@ import {
   endpointOf,
   KEY_PLACEHOLDER,
   LANG_LABEL,
-  passthroughAgentExample,
   PROTOCOL_INFO,
   protocolBase,
   sdkSnippet,
@@ -63,7 +62,6 @@ const TOOL_DEFAULT_MODEL: Record<Tool, string[]> = {
   grok: ["grok-4.5", "grok-4.6"],
   cline: ["gpt-6-astra", "gpt-5.4", "claude-sonnet-5", "gpt-5.6-sol"],
   sdk: ["gpt-6-astra", "gpt-5.4", "claude-sonnet-5", "gpt-5.6-sol"],
-  cursor_agent: ["auto"],
 };
 
 function pickDefault(tool: Tool, ids: string[]): string {
@@ -115,10 +113,9 @@ export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
 
   const endpoint: Endpoint = useMemo(() => {
     const g = relay.gateway;
-    if (g?.running) return endpointOf(g.running.baseUrl, g.running.passthroughBaseUrl);
+    if (g?.running) return endpointOf(g.running.baseUrl);
     const port = g?.settings.port ?? 8787;
-    const pport = g?.settings.passthroughPort ?? 8788;
-    return endpointOf(`http://127.0.0.1:${port}`, `http://127.0.0.1:${pport}`);
+    return endpointOf(`http://127.0.0.1:${port}`);
   }, [relay.gateway]);
 
   const keyForText = keyVisible && shownKey ? shownKey : KEY_PLACEHOLDER;
@@ -418,27 +415,6 @@ export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
               </>
             ) : null}
 
-            {tool === "cursor_agent" ? (
-              <>
-                <FieldRow
-                  label="Cursor 协议地址"
-                  value={endpoint.passthrough ?? "—"}
-                  copied={copied === "pt"}
-                  onCopy={() => void copyWithKey("pt", () => endpoint.passthrough ?? "")}
-                />
-                <ConfigBlock
-                  title="cursor-agent"
-                  format="Shell"
-                  code={passthroughAgentExample(endpoint.passthrough ?? "http://127.0.0.1:8788")}
-                  copied={copied === "agent"}
-                  onCopy={() => void copyWithKey("agent", () => passthroughAgentExample(endpoint.passthrough ?? ""))}
-                />
-                <p className="muted" style={{ margin: 0, fontSize: 11.5, lineHeight: 1.6 }}>
-                  使用前需运行 <code className="mono">cursor-agent login</code>，或设置{" "}
-                  <code className="mono">CURSOR_API_KEY</code>。
-                </p>
-              </>
-            ) : null}
           </div>
         </div>
       </ConnectSection>
@@ -634,7 +610,6 @@ const TOOL_VENDOR: Partial<Record<Tool, "anthropic" | "openai" | "cursor" | "xai
   claude: "anthropic",
   codex: "openai",
   grok: "xai",
-  cursor_agent: "cursor",
 };
 
 function ConnectSection({ title, children }: { title: string; children: ReactNode }) {

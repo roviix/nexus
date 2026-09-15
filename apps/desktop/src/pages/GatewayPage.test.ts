@@ -8,7 +8,7 @@ import type { GatewayStatus } from "../ipc/types";
 
 const base: GatewayStatus = {
   running: null,
-  settings: { port: 8787, passthroughPort: 8788, clientType: "cli", autostart: false, forceModel: null, defaultChannel: "cursor" },
+  settings: { port: 8787, autostart: false, forceModel: null, defaultChannel: "cursor" },
   restartNeeded: false,
   apiKeySet: true,
   channels: [
@@ -26,9 +26,6 @@ const base: GatewayStatus = {
     },
   ],
   mediaJobs: [],
-  entrances: [],
-  intercept: { rule: { enabled: false, position: "tail", marker: "[nexus-mark]" }, calls: 0, rewritten: 0, errors: 0, recent: [] },
-  grokbotStream: { enabled: false, credential: null },
   lane: { current: null, candidates: [], missing: [], available: [] },
 };
 

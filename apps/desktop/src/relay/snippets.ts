@@ -6,7 +6,7 @@
  */
 import { homePath, PLATFORM, type Platform } from "../ui/platform";
 
-export type Tool = "claude" | "codex" | "opencode" | "grok" | "cline" | "sdk" | "cursor_agent";
+export type Tool = "claude" | "codex" | "opencode" | "grok" | "cline" | "sdk";
 export type Protocol = "openai" | "anthropic" | "responses";
 export type Lang = "curl" | "python" | "js";
 
@@ -19,8 +19,6 @@ export interface ToolMeta {
   glyph: string;
   /** 这个工具对中转讲哪种方言。SDK 卡可切。 */
   protocol: Protocol;
-  /** 走网关的透传口而不是方言口（cursor-agent 讲的是 Cursor 原生协议）。 */
-  passthrough?: boolean;
   /**
    * 配置文件相对家目录的位置。写相对形式而不是 `~/…`，是因为它在 Windows 上要显示成
    * `%USERPROFILE%\…`——同一份数据两种写法，只能存不带前缀的那部分。
@@ -91,36 +89,24 @@ export const TOOLS: ToolMeta[] = [
     configRel: null,
     where: "代码示例",
   },
-  {
-    id: "cursor_agent",
-    label: "cursor-agent CLI",
-    sub: "Cursor 协议",
-    glyph: "▶",
-    protocol: "openai",
-    passthrough: true,
-    configRel: null,
-    where: "终端命令",
-  },
 ];
 
 export function toolMeta(id: Tool): ToolMeta {
   return TOOLS.find((t) => t.id === id)!;
 }
 
-/** 一个号源对外的几个地址。`passthrough` 只有本地网关有。 */
+/** 一个号源对外的两个地址。 */
 export interface Endpoint {
   /** 不带 `/v1` 的根地址：Anthropic 协议填这个。 */
   root: string;
   /** 带 `/v1`：OpenAI / Responses 协议填这个。 */
   v1: string;
-  /** cursor-agent 透传口（本地网关专有）。 */
-  passthrough?: string;
 }
 
 /** 去掉尾部斜杠和多余的 `/v1`，再拼出 root / v1 两个地址。 */
-export function endpointOf(baseUrl: string, passthrough?: string | null): Endpoint {
+export function endpointOf(baseUrl: string): Endpoint {
   const root = baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
-  return { root, v1: `${root}/v1`, ...(passthrough ? { passthrough: passthrough.replace(/\/+$/, "") } : {}) };
+  return { root, v1: `${root}/v1` };
 }
 
 export const PROTOCOL_INFO: Record<Protocol, { label: string; path: string; base: "v1" | "root" }> = {
@@ -266,15 +252,7 @@ export function clineFields(ep: Endpoint, key: string, model: string): Field[] {
 }
 
 /**
- * cursor-agent 透传（模式⑤）的示例命令：`-e` 和 `--agent-endpoint` 都要指到透传端口，
- * 缺一个 agentic 主循环还是会硬拨官方 api5（见 `service.rs` 的入口说明）。
- */
-export function passthroughAgentExample(passthroughBaseUrl: string, prompt = "你好"): string {
-  return `cursor-agent -e ${passthroughBaseUrl} --agent-endpoint ${passthroughBaseUrl} --model auto --print "${prompt}"`;
-}
-
-/**
- * 一段能贴进 shell 的环境变量。`cursor_agent` 的透传口没有对应的环境变量，只给 `-e` 那个。
+ * 一段能贴进 shell 的环境变量。
  *
  * Windows 上给 PowerShell 的写法：`export` 在 PowerShell 里根本不是命令，照抄过去
  * 只会得到一句 "not recognized"，而这几行正是用户最可能整段复制的东西。
@@ -294,14 +272,10 @@ export function envLines(
           ["ANTHROPIC_AUTH_TOKEN", key],
           ["ANTHROPIC_MODEL", model],
         ]
-      : tool === "cursor_agent"
-        ? ep.passthrough
-          ? [["CURSOR_API_ENDPOINT", ep.passthrough]]
-          : []
-        : [
-            ["OPENAI_BASE_URL", ep.v1],
-            ["OPENAI_API_KEY", key],
-          ];
+      : [
+          ["OPENAI_BASE_URL", ep.v1],
+          ["OPENAI_API_KEY", key],
+        ];
   return pairs.map(([k, v]) =>
     platform === "windows" ? `$env:${k} = "${v}"` : `export ${k}=${v}`,
   );

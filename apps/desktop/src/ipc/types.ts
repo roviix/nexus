@@ -716,12 +716,13 @@ export type CrsrProgress = SandProgress;
 /**
  * 远程怎么出网。
  *
- * - `gateway`：改推理端点 → 隧道 → 本机网关。号池接力、记账、面板拦截都在这条路上。
- * - `proxy`：**不改端点**，远程照旧打官方 api2，只是经隧道走本机的 HTTP 代理。链路短，
- *   但用的就是远程当前登录的那个号，没有轮换。
+ * - `proxy`：**不改端点**，远程照旧打官方 api2，只是经隧道走本机的 HTTP 代理。
+ *   用的就是远程当前登录的那个号。
  * - `direct`：远程自己出得去网，不改也不起隧道。
+ *
+ * 早先的 `gateway`（端点改道 → 隧道 → 本机网关透传口）随透传口一起拆掉；Rust 侧把老配置读成 `direct`。
  */
-export type RemoteRoute = "gateway" | "proxy" | "direct";
+export type RemoteRoute = "proxy" | "direct";
 
 /**
  * 一台已保存的远程主机。`host` 是 ssh 认的名字（config 里的别名或 user@hostname）。
@@ -733,7 +734,7 @@ export interface RemoteHost {
   /** 出网方式。老配置里是布尔 `routeViaLocal`，Rust 侧读的时候已经归一了。 */
   route: RemoteRoute;
   /**
-   * 隧道在远程那头监听的端口。网关模式下写进远程 bundle 的端点就是它，代理模式下 Cursor
+   * 隧道在远程那头监听的端口。代理模式下 Cursor
    * 设置里的 HTTP_PROXY 就是它。远程上 7890 / 7897 常常有别的东西在听，所以默认是一个高位口。
    */
   remotePort: number;
