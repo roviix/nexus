@@ -139,7 +139,7 @@ Rust 侧只要一个 `reqwest`。
 | `nexus-chatgpt` | ChatGPT 订阅号：登录、刷 token、Codex 后端协议。 |
 | `nexus-grok` / `nexus-kiro` | 对应平台的账号、OAuth、协议、额度。 |
 | `nexus-grokbot` | Grok Bot 额度凭证的获取与维护。 |
-| `nexus-gateway` | 本地网关：方言口、透传口、通道注册表、额度接力、账本。 |
+| `nexus-gateway` | 本地网关：方言口、通道注册表、额度接力、账本。 |
 | `nexus-playground` | 游乐场的线程 / 消息 / 图片 / 视频存储与编排。 |
 | `nexus-connect` | 一键接入：改 Claude Code / Codex / OpenCode / Grok CLI 的配置文件。 |
 | `nexus-sand` | Sand 补丁引擎（本机 + 远程 SSH）。 |
@@ -391,13 +391,19 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 - 未登录标失效，等用户去重新授权；
 - 上游明说「指名的这个模型你出不了」时不能按限流处理——按限流每 5 分钟就会在它身上再白撞一次。
 
-### 6.4 透传口
+### 6.4 网关不碰 Cursor IDE 的面板（2026-09 的一次收缩）
 
-另开一个 h2c 口，把 `cursor-agent` 的原生 Connect 流量（`aiserver.*` → api2、`agent.v1.*` → api5）
-**换身份头后原样转发**。它不解析业务内容，只做身份替换，所以协议细节变化对它影响很小。
+网关的客户只有一种：讲 OpenAI / Anthropic 方言的标准客户端。Cursor IDE 的 Agent 面板**不经过**
+网关——面板走 `agent.v1` 到 api5，客户端没有任何指向 127.0.0.1 的口子；要让面板换号付账是补丁
+（§7.3 / §7.4）的事，和网关无关。
 
-`NEXUS_PASSTHROUGH_DUMP_DIR` 可以把入站推理请求体原样落盘（会关掉流式转发）。落的是业务明文，
-取证完就删。
+这里曾经另开过一条 h2c 透传口，给两个客户用：`cursor-agent` CLI（换身份头原样转发 Connect 帧）
+和 Sand 的「推理经本机网关」（把面板的 `InferenceService/Stream` 改道进来记账、改写上下文）。
+两条链路都没有端到端验收过；网关设置里为此长出一个 CLI / IDE / Sand 三选一的 `client_type`，其中
+`sand` 那一档实际是「换成 Grok Bot 凭证、旁路整个号池」——和 Sand 补丁同名却不是一回事，用户
+分不清。2026-09 整条拆掉：透传口、面板拦截、Grok Bot 旁路、`client_type` 与第二个端口都没有了，
+网关只回答「拿号池的号、讲标准方言」这一件事。老库里 `gateway.client_type` / `gateway.passthrough_port`
+两个键留着不读；账本里面板拦截写的 `ide-agent` 行在启动 prune 时清掉。
 
 ### 6.5 账本
 
@@ -431,8 +437,11 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 
 ### 7.3 Sand 补丁
 
-把 Cursor IDE 内置的 Agent 面板也改道到本地网关。决策记录、风险与完整的规则清单在
-[SAND.md](./SAND.md)。
+把 Cursor IDE 内置的 Agent 面板改道到 Cursor 内部的 sand 通道，用 Grok Bot 的额度付账。决策记录、
+风险与完整的规则清单在 [SAND.md](./SAND.md)。
+
+界面上它和 CRSR 不再是两个平级页面，而是「Cursor 面板」一页里的三档之一：**原生 / CRSR / Sand**——
+Agent 面板由谁付账，一个问题三个答案。盘上装着哪一档一眼可见，选哪一档只看那一档。
 
 这里只说结构上的一点：补丁改的是 Cursor 的**代码**，切号写的是 Cursor 的**数据**。前者追着版本跑，
 后者升级不失效——性质不同，所以是两个 crate、互不依赖，只共享 `nexus-cursor` 那层「定位 / 退出 /

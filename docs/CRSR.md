@@ -19,7 +19,7 @@
 |---|---|---|
 | 改什么 | `client-type: sand` + 路由到 `InferenceService/Stream` | 只改 `applyAuthorization` 的 Bearer |
 | 走哪条服务 | Cursor 的 bot 额度通道 | 原生 `agent.v1.AgentService/Run` |
-| 用什么身份 | Grok Bot 凭证 / 本地网关 | 账号里的 `crsr_` User API Key |
+| 用什么身份 | Grok Bot 凭证 | 账号里的 `crsr_` User API Key |
 | 改 URL / client-type | 改 | **不改** |
 | 覆盖范围 | Agent 面板的推理 | `agent.v1.*` 与 `BackgroundComposerService` |
 
@@ -105,7 +105,7 @@ Nexus 侧的 `crsr_mint_for_account` 只负责「第一次把哪个号的 key �
 
 ## 5. 界面
 
-侧栏「补丁」组里 Sand 通道的下面一行。页面回答四件事：版本认不认、装没装（几处命中 / 几个锚点）、
+侧栏「补丁」组只有一页「Cursor 面板」，CRSR 是它三档（原生 / CRSR / Sand）里的一档。这一档回答四件事：版本认不认、装没装（几处命中 / 几个锚点）、
 当前用的是哪个号的 key、有几个还原点。
 
 挑号在账号抽屉里：凭证区有 `crsr_` API Key 的号会多出一行「Agent 面板用这个号」。

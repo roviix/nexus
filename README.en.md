@@ -53,8 +53,6 @@ account system, no telemetry.
   Session stickiness therefore comes for free and accounts rotate very rarely.
 - **Model name mapping.** Claude Code sends `claude-sonnet-4-5`, Codex sends `gpt-5`; the gateway
   maps those to names the upstream recognises. You can also force every request onto one model.
-- **A passthrough port.** A separate h2c port forwards `cursor-agent`'s native Connect traffic
-  verbatim after swapping the identity headers.
 - **A request ledger.** Every request records account, model, tokens and latency. The overview page
   reads from it.
 
@@ -109,18 +107,24 @@ model output — not to be yet another chat UI.
 
 ![Playground](docs/images/playground.png)
 
-### Two Cursor patch channels (optional, advanced)
+### Cursor panel: who pays (optional, advanced)
 
-Both **modify Cursor's application files**. They occupy the same hook, so only one can be installed
-at a time. Read the corresponding document and the disclaimer below before you enable either.
+The Agent panel built into the Cursor IDE talks `agent.v1` to api5; the client has no knob that
+points at 127.0.0.1, so it **never goes through the local gateway**. The only way to make the panel
+bill someone else is a patch, and the "Cursor panel" page turns that into a three-way choice:
 
-- **Sand** ([`docs/SAND.md`](./docs/SAND.md)) reroutes the Agent panel built into the Cursor IDE to
-  the local gateway, so inference inside the IDE also runs on your account pool. It can be installed
-  on a remote dev box over SSH.
+- **Native**: Cursor untouched. The panel uses whatever account is signed in and spends that
+  account's quota; use the switcher to change accounts.
 - **CRSR** ([`docs/CRSR.md`](./docs/CRSR.md)) changes no routing at all. It only swaps the
   authorization header on panel requests for a short-lived token minted from one account's `crsr_`
   User API Key — the panel still speaks native `agent.v1.AgentService/Run`, someone else is just
   paying. The patch renews the token itself, so closing Nexus won't hand you a 401 mid-keystroke.
+- **Sand** ([`docs/SAND.md`](./docs/SAND.md)) reroutes the panel onto Cursor's internal sand channel
+  and pays with Grok Bot quota. Many more edits, pinned to an exact Cursor version; can be installed
+  on a remote dev box over SSH.
+
+Both patches **modify Cursor's application files**. They occupy the same hook, so only one can be
+installed at a time. Read the corresponding document and the disclaimer below before you enable either.
 
 ## Install
 
@@ -183,9 +187,7 @@ Without it, "CI is green" would only mean "it works on macOS".
 | `CURSOR_USER_DIR` | Override the Cursor data directory (also settable in the app) |
 | `CURSOR_STATE_DB` | Point at a specific `state.vscdb` — aim it at a copy to test switching safely |
 | `CURSOR_APP_PATH` | Override where the Cursor application itself lives (also settable in the app) |
-| `SAND_INFERENCE_ENDPOINT` | Reroute Cursor's inference to this endpoint when installing the Sand patch |
 | `NEXUS_CRSR_CREDENTIAL_FILE` | Point the CRSR credential file elsewhere. Nexus and the patched Cursor are separate processes, so it has to be set where both can see it (see [`docs/CRSR.md`](./docs/CRSR.md) §7) |
-| `NEXUS_PASSTHROUGH_DUMP_DIR` | Dump inbound inference request bodies verbatim into this directory (disables streaming; the dumps are plaintext business data — delete them when you're done) |
 
 ### Where the data lives
 
@@ -217,7 +219,7 @@ credentials — delete them when you're done.**
 │   ├── nexus-chatgpt/              # ChatGPT subscriptions: login, refresh, Codex backend
 │   ├── nexus-grok/ nexus-grokbot/  # Grok accounts and Grok Bot quota
 │   ├── nexus-kiro/                 # Kiro accounts
-│   ├── nexus-gateway/              # the local gateway: dialect port, passthrough port, quota relay, ledger
+│   ├── nexus-gateway/              # the local gateway: dialect port, quota relay, ledger
 │   ├── nexus-connect/              # one-click setup for Claude Code / Codex / OpenCode
 │   ├── nexus-playground/           # playground thread and message storage
 │   ├── nexus-sand/                 # Sand patch engine (local + remote over SSH)

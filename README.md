@@ -44,7 +44,6 @@ Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.
   换号频率极低。
 - **模型名映射。** Claude Code 发 `claude-sonnet-4-5`、Codex 发 `gpt-5`，网关把它们对到上游认识的
   名字；也可以强制所有请求走某个模型。
-- **透传口。** 另开一个 h2c 口把 `cursor-agent` 的原生 Connect 流量换身份头后原样转发。
 - **请求账本。** 每次请求记账号 / 模型 / token / 耗时，概览页看本地用量。
 
 ![本地网关](docs/images/gateway.png)
@@ -90,16 +89,20 @@ Codex CLI（`~/.codex/config.toml`）、OpenCode 指到本地网关上；改之�
 
 ![游乐场](docs/images/playground.png)
 
-### 两条 Cursor 补丁通道（可选，进阶）
+### Cursor 面板：由谁付账（可选，进阶）
 
-这两条都会**修改 Cursor 的应用文件**，占同一个挂点、只能装一条。装之前请先读对应文档与下方的
-「风险与免责」。
+Cursor IDE 内置的 Agent 面板走的是 `agent.v1` 到 api5，客户端没有任何指向 127.0.0.1 的口子——
+它**不经过本地网关**。要让面板换个人付账只有打补丁这一条路，「Cursor 面板」页把它做成三选一：
 
-- **Sand 通道**（[`docs/SAND.md`](./docs/SAND.md)）：把 Cursor IDE 内置的 Agent 面板改道到本地
-  网关，让 IDE 里的推理也走你的账号池；支持通过 SSH 在远程开发机上安装。
-- **CRSR 通道**（[`docs/CRSR.md`](./docs/CRSR.md)）：不改路由，只把面板请求的鉴权头换成某个账号
+- **原生**：不改 Cursor。面板用 IDE 里登着的号、扣它自己的额度；换号用「切号」。
+- **CRSR**（[`docs/CRSR.md`](./docs/CRSR.md)）：不改路由，只把面板请求的鉴权头换成某个账号
   `crsr_` User API Key 兑出来的票据——面板还是原生的 `agent.v1.AgentService/Run`，只是换了个人
   付账。票据续期由补丁自己完成，关掉 Nexus 也不会在写代码写到一半时突然 401。
+- **Sand**（[`docs/SAND.md`](./docs/SAND.md)）：把面板改道到 Cursor 内部的 sand 通道，用 Grok Bot
+  的额度付账。改动多、跟 Cursor 版本硬绑；支持通过 SSH 在远程开发机上安装。
+
+两条补丁都会**修改 Cursor 的应用文件**，占同一个挂点、只能装一条。装之前请先读对应文档与下方的
+「风险与免责」。
 
 ## 安装
 
@@ -157,9 +160,7 @@ node scripts/test-package-release.mjs
 | `CURSOR_USER_DIR` | 覆盖 Cursor 数据目录（也可在应用「设置」里改） |
 | `CURSOR_STATE_DB` | 直接指定 `state.vscdb`，指到副本上可以安全地试切号 |
 | `CURSOR_APP_PATH` | 覆盖 Cursor 应用本体位置（也可在应用「设置」里改） |
-| `SAND_INFERENCE_ENDPOINT` | 装 Sand 补丁时把 Cursor 的推理改道到这个端点 |
 | `NEXUS_CRSR_CREDENTIAL_FILE` | 把 CRSR 通道的凭证文件指到别处。Nexus 与被打补丁的 Cursor 是两个进程，要设在两边都看得见的地方才有效（见 [`docs/CRSR.md`](./docs/CRSR.md) §7） |
-| `NEXUS_PASSTHROUGH_DUMP_DIR` | 透传把入站推理请求体原样落盘到这个目录（会关掉流式转发；落盘的是业务明文，取证完就删） |
 
 ### 数据在哪
 
@@ -188,7 +189,7 @@ node scripts/test-package-release.mjs
 │   ├── nexus-chatgpt/              # ChatGPT 订阅号：登录、刷 token、Codex 后端
 │   ├── nexus-grok/ nexus-grokbot/  # Grok 账号与 Grok Bot 额度
 │   ├── nexus-kiro/                 # Kiro 账号
-│   ├── nexus-gateway/              # 本地网关：方言口 + 透传口 + 额度接力 + 账本
+│   ├── nexus-gateway/              # 本地网关：方言口 + 额度接力 + 账本
 │   ├── nexus-connect/              # 一键接入：改 Claude Code / Codex / OpenCode 配置
 │   ├── nexus-playground/           # 游乐场的线程 / 消息存储
 │   ├── nexus-sand/                 # Sand 补丁引擎（本机 + 远程 SSH）
