@@ -91,13 +91,31 @@ impl Accounts {
         let now = now_iso();
 
         let id = match self.by_email(&email)? {
-            Some(existing) => existing.id,
+            Some(existing) => {
+                if !incoming.tags.is_empty() {
+                    let mut tags = existing.tags;
+                    for t in incoming.tags {
+                        if !tags.contains(&t) {
+                            tags.push(t);
+                        }
+                    }
+                    let tags_json = serde_json::to_string(&tags)?;
+                    self.db.with(|c| {
+                        c.execute(
+                            "UPDATE accounts SET tags = ?2, updated_at = ?3 WHERE id = ?1",
+                            rusqlite::params![existing.id.as_str(), tags_json, now],
+                        )
+                    })?;
+                }
+                existing.id
+            }
             None => {
                 let id = AccountId::new();
+                let tags_json = serde_json::to_string(&incoming.tags)?;
                 self.db.with(|c| {
                     c.execute(
-                        "INSERT INTO accounts (id, email, source, status, note, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                        "INSERT INTO accounts (id, email, source, status, note, created_at, updated_at, tags)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?7)",
                         rusqlite::params![
                             id.as_str(),
                             &email,
@@ -105,6 +123,7 @@ impl Accounts {
                             Status::NeedsLogin.as_str(),
                             incoming.note.as_deref(),
                             &now,
+                            tags_json,
                         ],
                     )
                 })?;
@@ -558,6 +577,83 @@ mod tests {
         let back = accounts.set_archived(&a.id, false).unwrap();
         assert!(!back.is_archived());
         assert_eq!(accounts.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn upsert_with_tags_persists_and_merges() {
+        let (accounts, _) = setup();
+        let a = accounts
+            .upsert(NewAccount {
+                email: "t@example.com".into(),
+                refresh_token: Some("rt-t".into()),
+                tags: vec!["9.16批次".into(), "vip".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(a.tags, vec!["9.16批次", "vip"]);
+
+        // 合并同一个号时补充新 tag，不重复
+        let updated = accounts
+            .upsert(NewAccount {
+                email: "t@example.com".into(),
+                refresh_token: Some("rt-t2".into()),
+                tags: vec!["vip".into(), "主力".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(updated.tags, vec!["9.16批次", "vip", "主力"]);
+    }
+
+    #[test]
+    fn copy_selected_formats() {
+        let (accounts, _) = setup();
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.abc";
+        let a = accounts
+            .upsert(NewAccount {
+                email: "a@example.com".into(),
+                refresh_token: Some("rt-a".into()),
+                cursor_password: Some("pwa".into()),
+                access_token: Some(jwt.into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let b = accounts
+            .upsert(NewAccount {
+                email: "b@example.com".into(),
+                refresh_token: Some("rt-b".into()),
+                cursor_password: Some("pwb".into()),
+                access_token: Some(jwt.into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let emails = accounts
+            .copy_selected(&[a.id.clone(), b.id.clone()], "email")
+            .unwrap();
+        assert_eq!(emails, "a@example.com\nb@example.com");
+
+        let email_pw = accounts
+            .copy_selected(&[a.id.clone(), b.id.clone()], "email_password")
+            .unwrap();
+        assert_eq!(email_pw, "a@example.com----pwa\nb@example.com----pwb");
+
+        let email_rt = accounts
+            .copy_selected(&[a.id.clone(), b.id.clone()], "email_refresh")
+            .unwrap();
+        assert_eq!(email_rt, "a@example.com----rt-a\nb@example.com----rt-b");
+
+        let email_jwt = accounts
+            .copy_selected(&[a.id.clone(), b.id.clone()], "email_session")
+            .unwrap();
+        assert_eq!(
+            email_jwt,
+            format!("a@example.com----{jwt}\nb@example.com----{jwt}")
+        );
+
+        let json = accounts
+            .copy_selected(&[a.id.clone(), b.id.clone()], "json")
+            .unwrap();
+        assert!(json.contains("nexus-accounts/1") && json.contains("rt-a"));
     }
 
     #[test]

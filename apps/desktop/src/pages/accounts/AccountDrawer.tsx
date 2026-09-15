@@ -177,19 +177,48 @@ export function AccountDrawer({
     </div>
   );
 
+  const isArchived = Boolean(account.archivedAt);
+  const [archiving, setArchiving] = useState(false);
+
   const foot = (
     <>
       <span className="dr-foot-meta">
         {timeAgo(account.createdAt)}添加
         <span className="dr-foot-sep">·</span>
         {accountSourceLabel(account.source)}
+        {account.archivedAt ? (
+          <>
+            <span className="dr-foot-sep">·</span>
+            <span className="pill pill-session">已归档</span>
+          </>
+        ) : null}
       </span>
-      <DeleteAccount
-        onConfirm={async () => {
-          await onRemove();
-          onClose();
-        }}
-      />
+      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+        <button
+          type="button"
+          className="btn btn-sm btn-quiet"
+          disabled={archiving}
+          onClick={async () => {
+            setArchiving(true);
+            try {
+              await accounts.setArchived([account.id], !isArchived);
+              await onReload();
+            } finally {
+              setArchiving(false);
+            }
+          }}
+          title={isArchived ? "取回此账号" : "归档此账号"}
+        >
+          <Icon name={isArchived ? "undo" : "archive"} size={13} />
+          {isArchived ? "取回" : "归档"}
+        </button>
+        <DeleteAccount
+          onConfirm={async () => {
+            await onRemove();
+            onClose();
+          }}
+        />
+      </div>
     </>
   );
 

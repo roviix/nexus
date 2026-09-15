@@ -155,6 +155,7 @@ impl From<ParsedAccount> for NewAccount {
             api_key: a.api_key,
             note: a.note,
             source: None,
+            tags: Vec::new(),
         }
     }
 }

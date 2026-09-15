@@ -24,10 +24,12 @@ interface Pane {
 }
 
 export function AddAccountModal({
+  existingTags = [],
   onClose,
   onAdded,
   onImported,
 }: {
+  existingTags?: string[];
   onClose: () => void;
   /** 单个添加成功。 */
   onAdded: () => Promise<void>;
@@ -35,8 +37,8 @@ export function AddAccountModal({
   onImported: (count: number) => Promise<void>;
 }) {
   const [mode, setMode] = useState<Mode>("single");
-  const single = useSinglePane(onAdded);
-  const bulk = useBulkPane(onImported);
+  const single = useSinglePane(onAdded, existingTags);
+  const bulk = useBulkPane(onImported, existingTags);
   const pane = mode === "single" ? single : bulk;
 
   return (
@@ -78,9 +80,10 @@ const EMPTY_FORM = {
   emailPassword: "",
   recoveryEmail: "",
   note: "",
+  tag: "",
 };
 
-function useSinglePane(onDone: () => Promise<void>): Pane {
+function useSinglePane(onDone: () => Promise<void>, existingTags: string[] = []): Pane {
   const [form, setForm] = useState(EMPTY_FORM);
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
@@ -116,6 +119,7 @@ function useSinglePane(onDone: () => Promise<void>): Pane {
         emailPassword: form.emailPassword || undefined,
         recoveryEmail: form.recoveryEmail.trim() || undefined,
         note: form.note.trim() || undefined,
+        tag: form.tag.trim() || undefined,
       });
       await onDone();
     } catch (err) {
@@ -213,15 +217,34 @@ function useSinglePane(onDone: () => Promise<void>): Pane {
             />
           </Field>
         </div>
-        <Field id="acc-note" label="备注">
-          <input
-            id="acc-note"
-            className="input"
-            value={form.note}
-            onChange={(e) => set("note")(e.target.value)}
-            placeholder="这个号是谁的、用来干什么"
-          />
-        </Field>
+        <div className="grid-2">
+          <Field id="acc-tag" label="分组（标签）">
+            <input
+              id="acc-tag"
+              className="input"
+              list="existing-single-tags"
+              value={form.tag}
+              onChange={(e) => set("tag")(e.target.value)}
+              placeholder="如 主力 / 9.16批次"
+            />
+            {existingTags.length > 0 ? (
+              <datalist id="existing-single-tags">
+                {existingTags.map((t) => (
+                  <option key={t} value={t} />
+                ))}
+              </datalist>
+            ) : null}
+          </Field>
+          <Field id="acc-note" label="备注">
+            <input
+              id="acc-note"
+              className="input"
+              value={form.note}
+              onChange={(e) => set("note")(e.target.value)}
+              placeholder="这个号是谁的、用来干什么"
+            />
+          </Field>
+        </div>
       </div>
       {/* 让回车能提交。 */}
       <button type="submit" hidden />
@@ -280,8 +303,9 @@ function SecretInput({ id, value, onChange }: { id: string; value: string; onCha
 
 /* ── 批量 ─────────────────────────────────────────────────────────────────── */
 
-function useBulkPane(onDone: (count: number) => Promise<void>): Pane {
+function useBulkPane(onDone: (count: number) => Promise<void>, existingTags: string[] = []): Pane {
   const [text, setText] = useState("");
+  const [bulkTag, setBulkTag] = useState("");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -315,7 +339,7 @@ function useBulkPane(onDone: (count: number) => Promise<void>): Pane {
     setImporting(true);
     setError(null);
     try {
-      const outcome = await accounts.importDump(text);
+      const outcome = await accounts.importDump(text, bulkTag.trim() || undefined);
       if (outcome.failures.length) {
         setError(new Error(`部分失败：${outcome.failures.join("；")}`));
         setImporting(false);
@@ -342,6 +366,40 @@ function useBulkPane(onDone: (count: number) => Promise<void>): Pane {
           schedule(next);
         }}
       />
+      <div className="field">
+        <label htmlFor="bulk-tag">归入分组 / 标签（可选）</label>
+        <input
+          id="bulk-tag"
+          className="input"
+          list="existing-bulk-tags"
+          value={bulkTag}
+          onChange={(e) => setBulkTag(e.target.value)}
+          placeholder="选择已有分组或输入新分组，如 9.16批次"
+        />
+        {existingTags.length > 0 ? (
+          <datalist id="existing-bulk-tags">
+            {existingTags.map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
+        ) : null}
+        {existingTags.length > 0 ? (
+          <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+            <span className="faint tiny">已有分组：</span>
+            {existingTags.map((t) => (
+              <button
+                key={t}
+                type="button"
+                className={`pool-chip${bulkTag === t ? " is-active" : ""}`}
+                style={{ fontSize: 11, padding: "2px 8px" }}
+                onClick={() => setBulkTag(bulkTag === t ? "" : t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 

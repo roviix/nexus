@@ -64,7 +64,13 @@ pub fn accounts_add(
     recovery_email: Option<String>,
     api_key: Option<String>,
     note: Option<String>,
+    tag: Option<String>,
 ) -> Result<Account> {
+    let tags = tag
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .map(|t| vec![t])
+        .unwrap_or_default();
     let account = state.accounts.repo.upsert(NewAccount {
         email,
         refresh_token,
@@ -75,6 +81,7 @@ pub fn accounts_add(
         api_key,
         note,
         source: None,
+        tags,
     })?;
     activity::info(&state.db, "accounts", Some(&account.email), "已添加账号");
     Ok(account)
@@ -100,17 +107,26 @@ pub struct ImportOutcome {
 
 /// 执行导入。同一份文本再解析一次 —— 前端只拿到预览，明文凭证从没出过 Rust。
 #[tauri::command(async)]
-pub fn accounts_import_dump(state: State<'_, AppState>, text: String) -> Result<ImportOutcome> {
+pub fn accounts_import_dump(
+    state: State<'_, AppState>,
+    text: String,
+    tag: Option<String>,
+) -> Result<ImportOutcome> {
     let (accepted, report) = nexus_accounts::preview_import(&text);
     let mut outcome = ImportOutcome {
         imported: 0,
         skipped: report.rejected_count,
         failures: Vec::new(),
     };
+    let tag = tag.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
 
     for parsed in accepted {
         let email = parsed.email.clone();
-        match state.accounts.repo.upsert(parsed.into()) {
+        let mut new_account: NewAccount = parsed.into();
+        if let Some(ref t) = tag {
+            new_account.tags = vec![t.clone()];
+        }
+        match state.accounts.repo.upsert(new_account) {
             Ok(_) => outcome.imported += 1,
             Err(err) => outcome.failures.push(format!("{email}：{}", err.message)),
         }
@@ -127,6 +143,17 @@ pub fn accounts_import_dump(state: State<'_, AppState>, text: String) -> Result<
         ),
     );
     Ok(outcome)
+}
+
+/// 多选账号按格式复制。格式支持：email / email_password / email_refresh / email_session / json。
+#[tauri::command(async)]
+pub fn accounts_copy_selected(
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+    format: String,
+) -> Result<String> {
+    let ids: Vec<AccountId> = ids.into_iter().map(AccountId::from_raw).collect();
+    state.accounts.repo.copy_selected(&ids, &format)
 }
 
 #[derive(Debug, Serialize)]

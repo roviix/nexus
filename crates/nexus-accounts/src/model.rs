@@ -243,6 +243,7 @@ pub struct NewAccount {
     pub api_key: Option<String>,
     pub note: Option<String>,
     pub source: Option<Source>,
+    pub tags: Vec<String>,
 }
 
 impl NewAccount {

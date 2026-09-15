@@ -230,20 +230,6 @@ function QuotaCell({
   const known = p != null && Number.isFinite(p);
   const tone = !known ? " is-idle" : p! > 90 ? " is-bad" : p! >= 70 ? " is-warn" : p! <= 0 ? " is-idle" : "";
 
-  let valNode: ReactNode = "—";
-  if (bucket.note) {
-    valNode = bucket.note;
-  } else if (known) {
-    const used = Math.round(p!);
-    const remain = Math.max(0, 100 - used);
-    valNode = (
-      <>
-        <span className="qc-used">{used}%</span>
-        <span className="qc-rem">余 {remain}%</span>
-      </>
-    );
-  }
-
   return (
     <div className="qc" title={bucket.hint}>
       <span className="qc-k">{bucket.label}</span>
@@ -256,7 +242,7 @@ function QuotaCell({
         />
       </span>
       <span className={bucket.note ? `qc-v is-note${tone}` : `qc-v${tone}`}>
-        {valNode}
+        {bucket.note ?? (known ? `${Math.round(p!)}%` : "—")}
       </span>
     </div>
   );

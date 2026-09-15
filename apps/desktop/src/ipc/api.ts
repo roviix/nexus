@@ -145,10 +145,16 @@ export const accounts = {
     emailPassword?: string;
     recoveryEmail?: string;
     note?: string;
+    tag?: string;
   }) => call<Account>("accounts_add", input),
   /** 解析一份粘进来的清单，只预览不写库。 */
   parseDump: (text: string) => call<ImportPreview>("accounts_parse_dump", { text }),
-  importDump: (text: string) => call<ImportOutcome>("accounts_import_dump", { text }),
+  importDump: (text: string, tag?: string) => call<ImportOutcome>("accounts_import_dump", { text, tag }),
+  /** 多选账号按格式复制内容到剪贴板。 */
+  copySelected: (
+    ids: string[],
+    format: "email" | "email_password" | "email_refresh" | "email_session" | "json",
+  ) => call<string>("accounts_copy_selected", { ids, format }),
   /**
    * 把全部账号连凭证导出成清单文件（`~/.roviix/exports`），与 `importDump` 是同一种文件。
    * 只回路径和条数；文件里是明文凭证，Rust 侧会记一条 warn 级活动日志。

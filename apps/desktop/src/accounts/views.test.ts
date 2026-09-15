@@ -116,6 +116,7 @@ describe("persistence", () => {
     expect(spec.plan).toBe("all");
     expect(spec.sort).toBe("checked");
     expect(spec.avail).toBe("all");
+    expect(spec.tag).toBe("all");
     expect(spec.archived).toBe(false);
   });
 

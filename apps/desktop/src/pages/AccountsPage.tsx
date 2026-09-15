@@ -28,6 +28,7 @@ import {
 import { accounts, backup, grokbot, onAccountRefreshed, onOauthState, switcher } from "../ipc/api";
 import type { Account, ExportOutcome, GrokBotStatus } from "../ipc/types";
 import { ACCOUNT_PLATFORMS, go, type AccountPlatform, type Route } from "../shell/nav";
+import { maskEmail } from "../ui/format";
 import {
   BUILTIN_VIEWS,
   isDefaultView,
@@ -40,6 +41,16 @@ import {
   type SavedView,
   type ViewSpec,
 } from "../accounts/views";
+
+export type CopyFormat = "email" | "email_password" | "email_refresh" | "email_session" | "json";
+
+export const COPY_FORMATS: Array<{ id: CopyFormat; label: string }> = [
+  { id: "email", label: "仅邮箱" },
+  { id: "email_password", label: "邮箱----密码" },
+  { id: "email_refresh", label: "邮箱----Refresh" },
+  { id: "email_session", label: "邮箱----Session" },
+  { id: "json", label: "结构化 JSON" },
+];
 import {
   accountPlanGroup,
   applyAvailFilter,
@@ -124,11 +135,30 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
    */
   const [spec, setSpecState] = useState<ViewSpec>(loadSpec);
   const [savedViews, setSavedViews] = useState<SavedView[]>(loadSavedViews);
-  const { avail, quota, pool, plan, sort, archived } = spec;
+  const { avail, quota, pool, plan, tag = "all", sort, archived } = spec;
   /** 多选：只在按下「选择」后出现，选完做一件事（归档 / 取回 / 刷新）就退出。 */
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [archiving, setArchiving] = useState(false);
+
+  /** 账号打码开关：点击小眼睛切换明文 / 打码展示。 */
+  const [masked, setMasked] = useState(() => {
+    try {
+      return localStorage.getItem("nexus.accounts.masked") === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleMasked = () => {
+    setMasked((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("nexus.accounts.masked", next ? "1" : "0");
+      } catch {}
+      return next;
+    });
+  };
   const setSpec = useCallback((patch: Partial<ViewSpec>) => {
     setSpecState((prev) => {
       const next = { ...prev, ...patch };
@@ -278,15 +308,42 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
       })),
     ];
   }, [shelf, quota]);
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of list) {
+      for (const t of a.tags ?? []) {
+        if (t && t.trim()) set.add(t.trim());
+      }
+    }
+    return Array.from(set).sort();
+  }, [list]);
+
+  const tagOptions = useMemo(() => {
+    const untagged = shelf.filter((a) => !a.tags || a.tags.length === 0).length;
+    return [
+      { id: "all", label: "全部", meta: shelf.length },
+      ...allTags.map((t) => ({
+        id: t,
+        label: t,
+        meta: shelf.filter((a) => a.tags?.includes(t)).length,
+      })),
+      { id: "_untagged", label: "未分组", meta: untagged },
+    ];
+  }, [shelf, allTags]);
+
   const shown = useMemo(
     () =>
       sortAccounts(
-        applyPlanFilter(applyQuotaFilter(applyAvailFilter(searched, avail), quota), plan).filter((a) =>
-          matchesPoolFilter(pools.membership(a.email), pool),
-        ),
+        applyPlanFilter(applyQuotaFilter(applyAvailFilter(searched, avail), quota), plan)
+          .filter((a) => matchesPoolFilter(pools.membership(a.email), pool))
+          .filter((a) => {
+            if (!tag || tag === "all") return true;
+            if (tag === "_untagged") return !a.tags || a.tags.length === 0;
+            return a.tags?.includes(tag);
+          }),
         sort,
       ),
-    [searched, avail, quota, plan, pool, sort, pools],
+    [searched, avail, quota, plan, pool, tag, sort, pools],
   );
   const activeView = useMemo(() => matchView(spec, savedViews), [spec, savedViews]);
   const openAccount = useMemo(() => list.find((a) => a.id === openId) ?? null, [list, openId]);
@@ -304,6 +361,20 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   // 归档的号不参与批量刷新：收起来就是不想再管它。
   const refreshable = useMemo(() => list.filter((a) => !a.archivedAt && canQueryUsage(a)).length, [list]);
   const narrowed = query.trim() !== "" || !isDefaultView(spec);
+
+  async function copySelected(fmt: CopyFormat) {
+    const ids = [...selected];
+    if (!ids.length) return;
+    try {
+      const text = await accounts.copySelected(ids, fmt);
+      await navigator.clipboard.writeText(text);
+      const label = COPY_FORMATS.find((f) => f.id === fmt)?.label ?? "信息";
+      setNotice(`已复制 ${ids.length} 个账号的${label}到剪贴板。`);
+      setError(null);
+    } catch (err) {
+      setError(err);
+    }
+  }
 
   // 列表变了（刷新、归档、删除），选中集只留还在眼前的那些。
   useEffect(() => {
@@ -435,6 +506,15 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
               <Icon name="refresh" size={15} className={refreshing.size ? "is-spinning" : undefined} />
             </button>
           ) : null}
+          <button
+            type="button"
+            className={`btn btn-icon${masked ? " is-active" : ""}`}
+            data-tip={masked ? "显示明文账号" : "账号打码保护"}
+            aria-label={masked ? "显示明文账号" : "账号打码保护"}
+            onClick={toggleMasked}
+          >
+            <Icon name={masked ? "eyeOff" : "eye"} size={15} />
+          </button>
           {shelf.length > 0 ? (
             <button
               type="button"
@@ -640,6 +720,15 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                 options={POOL_FILTERS.map((p) => ({ id: p, label: POOL_FILTER_LABEL[p] }))}
                 onChange={(p) => setSpec({ pool: p })}
               />
+              {allTags.length > 0 ? (
+                <Picker<string>
+                  icon="folder"
+                  label="分组"
+                  value={tag}
+                  options={tagOptions}
+                  onChange={(t) => setSpec({ tag: t })}
+                />
+              ) : null}
               <i className="acct-controls-sep" aria-hidden />
               <Picker<AccountSort>
                 icon="sort"
@@ -698,6 +787,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
               onNone={() => setSelected(new Set())}
               onArchive={() => void archiveSelected(!archived)}
               onRefresh={() => void refreshSelected()}
+              onCopy={(fmt) => void copySelected(fmt)}
               onExit={exitSelecting}
             />
           ) : null}
@@ -712,7 +802,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                     className="btn btn-sm"
                     onClick={() => {
                       setQuery("");
-                      setSpec({ avail: "all", quota: "all", pool: "any", plan: "all" });
+                      setSpec({ avail: "all", quota: "all", pool: "any", plan: "all", tag: "all" });
                     }}
                   >
                     清除筛选
@@ -729,7 +819,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                   <AccountCard
                     key={a.id}
                     view={createCursorAccountView({
-                      label: a.email,
+                      label: masked ? maskEmail(a.email) : a.email,
                       managed: a,
                       placement: { kind: "library", label: "账号库" },
                     })}
@@ -791,6 +881,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
 
       {adding ? (
         <AddAccountModal
+          existingTags={allTags}
           onClose={() => setAdding(false)}
           onAdded={async () => {
             setAdding(false);
@@ -832,6 +923,7 @@ function SelectBar({
   onNone,
   onArchive,
   onRefresh,
+  onCopy,
   onExit,
 }: {
   count: number;
@@ -842,8 +934,11 @@ function SelectBar({
   onNone: () => void;
   onArchive: () => void;
   onRefresh: () => void;
+  onCopy: (format: CopyFormat) => void;
   onExit: () => void;
 }) {
+  const [format, setFormat] = useState<CopyFormat>("email");
+
   return (
     <div className="selbar" role="toolbar" aria-label="批量操作">
       <span className="selbar-n">
@@ -852,7 +947,36 @@ function SelectBar({
       <button type="button" className="btn btn-sm btn-quiet" onClick={count === total ? onNone : onAll}>
         {count === total ? "清空" : "全选"}
       </button>
+
       <span className="grow" />
+
+      {/* 复制选中账号按指定格式 */}
+      <div className="row" style={{ gap: 4, alignItems: "center" }}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={count === 0 || busy}
+          onClick={() => onCopy(format)}
+          title="将选中账号按右侧格式复制到剪贴板"
+        >
+          <Icon name="copy" size={13} />
+          复制
+        </button>
+        <select
+          className="input"
+          style={{ width: "auto", height: 26, fontSize: 11.5, padding: "0 6px" }}
+          value={format}
+          onChange={(e) => setFormat(e.target.value as CopyFormat)}
+          aria-label="复制格式"
+        >
+          {COPY_FORMATS.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {!archived ? (
         <button type="button" className="btn btn-sm" disabled={count === 0 || busy} onClick={onRefresh}>
           <Icon name="refresh" size={13} />

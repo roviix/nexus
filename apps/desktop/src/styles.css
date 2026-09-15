@@ -2303,6 +2303,18 @@ h2 {
   background: rgba(239, 68, 68, 0.08);
 }
 
+.pill-tag {
+  color: var(--color-ink-2);
+  border-color: rgba(255, 255, 255, 0.1);
+  background: var(--wash-2);
+}
+
+.pill-grant {
+  color: var(--warn);
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.08);
+}
+
 
 .qs {
   display: flex;

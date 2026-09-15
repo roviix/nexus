@@ -1055,6 +1055,16 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
         path: "/Users/me/.roviix/exports/nexus-accounts-20260903T080000Z.json",
         count: ACCOUNTS.length,
       });
+    case "accounts_copy_selected": {
+      const ids = new Set((args?.ids as string[]) ?? []);
+      const format = String(args?.format ?? "email");
+      const hit = ACCOUNTS.filter((a) => ids.has(a.id));
+      if (format === "email_password") return delay(hit.map((a) => `${a.email}----password123`).join("\n") as T, 200);
+      if (format === "email_refresh") return delay(hit.map((a) => `${a.email}----rt_fake_token_here`).join("\n") as T, 200);
+      if (format === "email_session") return delay(hit.map((a) => `${a.email}----session_token_here`).join("\n") as T, 200);
+      if (format === "json") return delay(JSON.stringify(hit, null, 2) as T, 200);
+      return delay(hit.map((a) => a.email).join("\n") as T, 200);
+    }
     case "accounts_add_to_switch_book":
       return delay(storeProfile(String(args?.id ?? "")) as T, 900);
 

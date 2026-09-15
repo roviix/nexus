@@ -79,6 +79,88 @@ impl Accounts {
         })?;
         Ok(Export { json, count })
     }
+
+    /// 多选账号按指定格式复制。
+    pub fn copy_selected(&self, ids: &[nexus_core::AccountId], format: &str) -> Result<String> {
+        match format {
+            "email" => {
+                let mut lines = Vec::new();
+                for id in ids {
+                    if let Ok(acc) = self.get(id) {
+                        lines.push(acc.email);
+                    }
+                }
+                Ok(lines.join("\n"))
+            }
+            "email_password" => {
+                let mut lines = Vec::new();
+                for id in ids {
+                    if let Ok(acc) = self.get(id) {
+                        let pw = self
+                            .secret(id, AccountSecret::CursorPassword)?
+                            .map(|s| s.expose().to_string())
+                            .unwrap_or_default();
+                        lines.push(format!("{}----{}", acc.email, pw));
+                    }
+                }
+                Ok(lines.join("\n"))
+            }
+            "email_refresh" => {
+                let mut lines = Vec::new();
+                for id in ids {
+                    if let Ok(acc) = self.get(id) {
+                        let rt = self
+                            .secret(id, AccountSecret::Refresh)?
+                            .map(|s| s.expose().to_string())
+                            .unwrap_or_default();
+                        lines.push(format!("{}----{}", acc.email, rt));
+                    }
+                }
+                Ok(lines.join("\n"))
+            }
+            "email_session" => {
+                let mut lines = Vec::new();
+                for id in ids {
+                    if let Ok(acc) = self.get(id) {
+                        let access = self
+                            .secret(id, AccountSecret::Access)?
+                            .map(|s| s.expose().to_string())
+                            .unwrap_or_default();
+                        lines.push(format!("{}----{}", acc.email, access));
+                    }
+                }
+                Ok(lines.join("\n"))
+            }
+            "json" => {
+                let mut entries = Vec::new();
+                for id in ids {
+                    if let Ok(account) = self.get(id) {
+                        let secret = |kind| -> Result<Option<String>> {
+                            Ok(self
+                                .secret(&account.id, kind)?
+                                .map(|s| s.expose().to_string()))
+                        };
+                        entries.push(Entry {
+                            email: account.email.clone(),
+                            refresh_token: secret(AccountSecret::Refresh)?,
+                            cursor_password: secret(AccountSecret::CursorPassword)?,
+                            email_password: secret(AccountSecret::EmailPassword)?,
+                            recovery_email: secret(AccountSecret::RecoveryEmail)?,
+                            user_api_key: secret(AccountSecret::ApiKey)?,
+                            note: account.note.clone(),
+                        });
+                    }
+                }
+                let json = serde_json::to_string_pretty(&Dump {
+                    format: FORMAT,
+                    exported_at: now_iso(),
+                    accounts: entries,
+                })?;
+                Ok(json)
+            }
+            _ => Err(nexus_core::AppError::invalid("不认识的复制格式。")),
+        }
+    }
 }
 
 #[cfg(test)]

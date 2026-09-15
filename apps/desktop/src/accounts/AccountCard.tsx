@@ -12,6 +12,7 @@ import {
 import {
   AccountLine,
   AccountResets,
+  AccountSpend,
   FootResets,
   QuotaBlank,
   QuotaRows,
@@ -105,10 +106,20 @@ function CursorAccountCard({
   ) : null;
   const tone = cursorTone(view);
 
-  // 卡片只展示添加时间，不外露实际金额与按需计费（账单相关去抽屉看）
-  const footSpend = managed ? (
+  // 卡片展示按需状态（用量/上限/未开启）与添加时间，不外露总配额与加量（详细账单进抽屉）
+  const footSpend = fullUsage ? (
     <span className="qf-meta">
-      {timeAgo(managed.createdAt)}添加
+      <AccountSpend usage={fullUsage} />
+      {managed ? (
+        <>
+          <i className="qf-sep">·</i>
+          <span className="qf-stamp">{timeAgo(managed.createdAt)}添加</span>
+        </>
+      ) : null}
+    </span>
+  ) : managed ? (
+    <span className="qf-meta">
+      <span className="qf-stamp">{timeAgo(managed.createdAt)}添加</span>
     </span>
   ) : null;
 
@@ -164,6 +175,11 @@ function CursorAccountCard({
               积分 {creditPoints(grantRemaining)}
             </span>
           ) : null}
+          {managed?.tags?.map((t) => (
+            <span key={t} className="pill pill-tag" title={`分组：${t}`}>
+              {t}
+            </span>
+          ))}
           {badges}
         </>
       }

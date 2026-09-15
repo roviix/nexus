@@ -21,6 +21,8 @@ export interface ViewSpec {
   quota: QuotaFilter;
   pool: PoolFilter;
   plan: PlanFilter;
+  /** 分组（标签）："all" 全部，或具体的分组名称。 */
+  tag: string;
   sort: AccountSort;
   /** 看归档的还是没归档的。归档的号平时不出现，这是唯一能看见它们的地方。 */
   archived: boolean;
@@ -31,6 +33,7 @@ export const DEFAULT_VIEW: ViewSpec = {
   quota: "all",
   pool: "any",
   plan: "all",
+  tag: "all",
   sort: DEFAULT_SORT,
   archived: false,
 };
@@ -74,6 +77,7 @@ export function sameSpec(a: ViewSpec, b: ViewSpec): boolean {
     a.quota === b.quota &&
     a.pool === b.pool &&
     a.plan === b.plan &&
+    a.tag === b.tag &&
     a.sort === b.sort &&
     a.archived === b.archived
   );
@@ -124,6 +128,7 @@ export function normalizeSpec(raw: unknown): ViewSpec {
     quota: pick(r.quota ?? r.filter, QUOTAS, DEFAULT_VIEW.quota),
     pool: pick(r.pool, POOLS, DEFAULT_VIEW.pool),
     plan: pick(r.plan, PLANS, DEFAULT_VIEW.plan),
+    tag: typeof r.tag === "string" ? r.tag : DEFAULT_VIEW.tag,
     sort: pick(r.sort, SORTS, DEFAULT_VIEW.sort),
     archived: r.archived === true,
   };
