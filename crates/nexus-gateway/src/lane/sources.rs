@@ -271,7 +271,7 @@ impl Source for StoredAccountsSource {
             // 拿得出一把会话的才进网关：有 refresh，或手上那把 session 还活着。
             // `can_query_usage` 还包含仅有 `crsr_` 的号——那把 key 查基础用量可以，
             // 兑出来的 JWT 当不了会话，不能拿去接力。
-            // 注意不是 `can_write_cursor_login`：那条更严（要 refresh），管的是写 Cursor
+            // 注意不是 `can_write_cursor_login`：那条管的是写 Cursor
             // 登录态；网关只是借一把会话发请求，仅会话的号在有效期内完全够用。
             .filter(|a| a.status == Status::Active && a.has_usable_session())
             .map(|a| Candidate {

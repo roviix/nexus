@@ -126,20 +126,6 @@ impl AuthBundle {
             .all(|k| self.get(k).is_some_and(|v| !v.is_empty()))
     }
 
-    /// `refreshToken` 那一格里放的其实是 access token。
-    ///
-    /// 这是**毒档案的指纹**。2026-09-15 之前，只有 session token 的号也能加进切号本，
-    /// 办法是把 access 复制一份去占 refresh 那一格（Cursor 的登录态要成对 token）。
-    /// Cursor 拿这个假 refresh 去续期必然 401，然后掉登录——对没密码、接不了验证码的
-    /// 号就是当场报废。入口已经堵死（`Account::can_write_cursor_login`），但**那之前
-    /// 存进来的档案还躺在切号本里**，切过去照样会杀号，所以切之前要再认一次。
-    pub fn refresh_is_placeholder(&self) -> bool {
-        match (self.access_token(), self.refresh_token()) {
-            (Some(a), Some(r)) => !a.is_empty() && a == r,
-            _ => false,
-        }
-    }
-
     /// 不含秘密的视图。**所有出口都走它。**
     pub fn summary(&self) -> AuthSummary {
         AuthSummary {

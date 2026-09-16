@@ -209,24 +209,10 @@ impl SwitchBook {
             .ok_or_else(|| not_found(id))
     }
 
-    /// 这一档存的 refresh 是不是 access 占位（毒档案，见 `AuthBundle::refresh_is_placeholder`）。
-    ///
-    /// 要解一次密才知道，比 `exists` 贵；但切号本只有几十档，而代价是切过去就报废一个
-    /// 找不回来的号——值得。解不开就当它没问题，让 `switch_to` 那道闸去拦。
-    fn refresh_is_placeholder(&self, id: &ProfileId) -> bool {
-        self.secrets
-            .get(&keys::profile_auth(id))
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str::<AuthBundle>(s.expose()).ok())
-            .is_some_and(|b| b.refresh_is_placeholder())
-    }
-
     fn hydrate(&self, row: ProfileRow, current_email: Option<&str>) -> SwitchProfile {
         let id = ProfileId::from_raw(row.id);
         SwitchProfile {
             has_auth: self.secrets.exists(&keys::profile_auth(&id)),
-            refresh_is_placeholder: self.refresh_is_placeholder(&id),
             is_current: current_email.is_some_and(|e| e.eq_ignore_ascii_case(&row.email)),
             id,
             email: row.email,
@@ -397,30 +383,6 @@ mod tests {
             book.auth(&p.id).unwrap_err().code,
             ErrorCode::ProfileIncomplete
         );
-    }
-
-    /// 旧版本给「仅会话」号收录时留下的毒档案：refresh 那一格里其实是 access。
-    #[test]
-    fn a_profile_whose_refresh_is_really_the_access_token_is_flagged() {
-        let book = book();
-        let mut poisoned = AuthBundle::new();
-        poisoned.insert("cursorAuth/accessToken", "same-jwt");
-        poisoned.insert("cursorAuth/refreshToken", "same-jwt");
-        poisoned.insert("cursorAuth/cachedEmail", "session-only@example.com");
-        let p = book.upsert(&poisoned, None, None).unwrap();
-
-        // 登录态确实在，看起来「能切」——正是它危险的地方。
-        assert!(p.has_auth);
-        assert!(book.auth(&p.id).unwrap().is_switchable());
-        // 但必须被认出来，否则切过去就报废一个找不回来的号。
-        assert!(p.refresh_is_placeholder);
-        assert!(book.list(None).unwrap()[0].refresh_is_placeholder);
-
-        // 成对的真 token 不该被误伤。
-        let ok = book
-            .upsert(&auth_for("normal@example.com"), None, None)
-            .unwrap();
-        assert!(!ok.refresh_is_placeholder);
     }
 
     #[test]

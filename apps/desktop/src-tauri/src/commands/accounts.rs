@@ -168,7 +168,10 @@ pub async fn accounts_copy_selected(
             &state.db,
             "accounts",
             None,
-            format!("已批量复制 {} 个账号的会话 token（user_id::access）", ids.len()),
+            format!(
+                "已批量复制 {} 个账号的会话 token（user_id::access）",
+                ids.len()
+            ),
         );
     }
     state
@@ -621,9 +624,12 @@ pub fn accounts_set_secret(
 /// **这是 `nexus-accounts` 与 `nexus-switcher` 之间唯一的数据通路**（ARCHITECTURE R1）。
 /// 两个 crate 互不依赖，拷贝发生在这里、由用户点击触发、一次一个号。
 ///
-/// **只收有 refresh 的号。** Cursor 的登录态要成对 token 并且会自己续期，仅会话的号
-/// 凑不出这一对——以前拿 access 占 refresh 那一格，结果是 Cursor 续期 401、掉登录，
-/// 而那批号（没密码、接不了验证码）掉了就再也找不回来。详见 `can_write_cursor_login`。
+/// 收两种号：有 refresh 的，和只有一把**还活着的**会话 JWT 的（`can_write_cursor_login`）。
+///
+/// 仅会话的号把同一把 JWT 写进 `accessToken` / `refreshToken` 两格。这不是占位、不是权宜——
+/// Cursor 自己每次续期成功后就是这么写盘的（`storeAccessRefreshToken(t, t)`），而它的
+/// `/oauth/token` 接受会话 JWT 当 `refresh_token`（2026-09-16 实测：200、不 rotate、旧的照活）。
+/// 0.5.1 把这类号挡在门外的理由已被推翻，见 `Account::can_write_cursor_login` 的注释。
 #[tauri::command]
 pub async fn accounts_add_to_switch_book(
     state: State<'_, AppState>,
@@ -637,22 +643,26 @@ pub async fn accounts_add_to_switch_book(
             format!("{} 不能写进 Cursor 的登录态。", account.email),
         )
         .with_hint(if account.session_only() {
-            "这个号只有一把 session token，没有 refresh。写进去之后 Cursor 续期会失败并掉登录，\
-             而这类号掉了就找不回来。要用它的额度请走 CRSR 通道或网关——那两条都不写登录态。"
+            "这个号的 session token 已经过期，写进去 Cursor 只会显示掉登录。到凭证页粘一份新的，\
+             或用密码授权一次拿到 refresh_token。"
         } else {
-            "切号要一份能自己续期的 refresh_token；授权一次就有了。"
+            "切号要一把活着的会话：粘一份 session token，或授权一次拿到 refresh_token。"
         }));
     }
 
-    // 强制换一把足寿的 access 再写进 Cursor。复用的可能只剩一分钟寿命，Cursor 一启动
-    // 就得先去续期，而那正是用户在切号的当口。
-    let session = state.accounts.fresh_session(&id).await?;
-    // 到这儿一定有 refresh（`can_write_cursor_login` 已经挡住没有的）。**绝不拿 access 去
-    // 占这一格**：Cursor 用它续期必然 401，然后掉登录。
-    let refresh = state
-        .accounts
-        .repo
-        .require_secret(&id, AccountSecret::Refresh)?;
+    // 有 refresh 的号强制换一把足寿的 access 再写进 Cursor：复用的可能只剩一分钟寿命，
+    // Cursor 一启动就得先去续期，而那正是用户在切号的当口。仅会话的号换不出新的，
+    // `session()` 会复用手上那把（`can_write_cursor_login` 已保证它还活着）。
+    let session = if account.has_refresh {
+        state.accounts.fresh_session(&id).await?
+    } else {
+        state.accounts.session(&id).await?
+    };
+    // refresh 那一格：有真 refresh 就写它；没有就写同一把 JWT——与 Cursor 续期后的盘上稳态一致。
+    let refresh = match state.accounts.repo.secret(&id, AccountSecret::Refresh)? {
+        Some(r) => r,
+        None => session.access_token.clone(),
+    };
 
     let mut bundle = AuthBundle::new();
     bundle.insert("cursorAuth/cachedEmail", &account.email);

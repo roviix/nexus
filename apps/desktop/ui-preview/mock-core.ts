@@ -353,7 +353,6 @@ const profile = (email: string, i: number, over: Partial<SwitchProfile> = {}): S
   updatedAt: iso(H),
   lastSwitchedAt: null,
   hasAuth: true,
-  refreshIsPlaceholder: false,
   isCurrent: false,
   ...over,
 });

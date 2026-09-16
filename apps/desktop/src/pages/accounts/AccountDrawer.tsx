@@ -164,9 +164,11 @@ export function AccountDrawer({
                 ? dead
                   ? "这个号已失效"
                   : sessionOnly(account)
-                    ? "这个号只有 session token，没有 refresh：写进 Cursor 会在续期时掉登录，而它掉了找不回来。用它的额度请走 CRSR 通道或网关。"
-                    : "切号要一份能自己续期的 refresh_token；授权一次就有了"
-                : "切入 Cursor（Cursor 在跑时不重启）"
+                    ? "这个号的 session token 已过期，写进 Cursor 只会显示掉登录。到凭证页粘一份新的，或授权一次拿到 refresh_token。"
+                    : "切号要一把活着的会话：粘一份 session token，或授权一次拿到 refresh_token"
+                : sessionOnly(account)
+                  ? "切入 Cursor（Cursor 在跑时不重启）。这个号只有 session token：Cursor 会拿它自己续期，到期前都能用"
+                  : "切入 Cursor（Cursor 在跑时不重启）"
             }
           >
             {switching ? <Spinner /> : <Icon name="switcher" size={13} />}
@@ -308,7 +310,7 @@ function UsedIn({ account, placement, onChanged }: { account: Account; placement
         type="button"
         className="btn btn-sm btn-soft"
         disabled={busy != null || !canAddToSwitchPool(account)}
-        title={canAddToSwitchPool(account) ? "把它的登录态拷进切号池，之后可以一键切进 Cursor" : dead ? "这个号已失效" : sessionOnly(account) ? "只有 session token 的号不写 Cursor 登录态：续期会失败并掉登录，而它掉了找不回来" : "切号要一份能自己续期的 refresh_token；授权一次就有了"}
+        title={canAddToSwitchPool(account) ? "把它的登录态拷进切号池，之后可以一键切进 Cursor" : dead ? "这个号已失效" : sessionOnly(account) ? "这个号的 session token 已过期；粘一份新的，或授权一次拿到 refresh_token" : "切号要一把活着的会话：粘一份 session token，或授权一次拿到 refresh_token"}
         onClick={() => void act("switcher", () => accounts.addToSwitchBook(account.id))}
       >
         {busy === "switcher" ? <Spinner /> : "加入"}
@@ -1328,7 +1330,7 @@ function MintApiKeyRow({ account, onChanged }: { account: Account; onChanged: ()
       ) : (
         <p className="sect-none">
           {urgent
-            ? "这个号只有一把 session token：没有 refresh、接不了验证码，access 一到期就再也拿不回来。趁它还活着铸一把 crsr_，之后查用量、进网关、走 CRSR 通道都不再依赖它。注意铸完也换不回切号能力——crsr_ 兑出来的 JWT 登不进 Cursor。"
+            ? "这个号只有一把 session token：没有 refresh、接不了验证码，access 一到期就再也拿不回来。趁它还活着铸一把 crsr_，之后查用量、进网关、走 CRSR 通道都不再依赖它。注意 crsr_ 兑出来的 JWT 登不进 Cursor——切号仍要靠那把 session token，它过期就切不了。"
             : "铸一把长期 crsr_ Key 当备份凭证。session 过期后它还能查基础用量、走 CRSR 通道。"}
         </p>
       )}

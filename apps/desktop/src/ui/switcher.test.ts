@@ -43,7 +43,6 @@ function profile(
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
     hasAuth: true,
-    refreshIsPlaceholder: false,
     isCurrent: false,
     ...overrides,
   };
@@ -103,22 +102,32 @@ describe("listAvailableSwitchAccounts", () => {
       [profile(enrolled.email)],
     );
 
-    // 活着的 session token 不再够格：写进 Cursor 要成对 token，没有 refresh 就只能拿
-    // access 去占那一格，Cursor 续期 401 就把号弄掉了。
+    // 活着的 session token 够格：同一把 JWT 写两格就是 Cursor 自己续期后的稳态。
+    // 没有任何凭证的、已失效的、已在池里的不列。
     expect(candidates.map((candidate) => candidate.email)).toEqual([
       available.email,
+      sessionLive.email,
     ]);
   });
 });
 
 describe("canAddToSwitchPool", () => {
-  it("refuses a session-only account even while its access is alive", () => {
+  it("admits a session-only account while its JWT is alive, and refuses it once expired", () => {
     expect(
       canAddToSwitchPool(
         account("live@example.com", {
           hasRefresh: false,
           hasAccess: true,
           accessExpiresAt: "2099-01-01T00:00:00Z",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      canAddToSwitchPool(
+        account("stale@example.com", {
+          hasRefresh: false,
+          hasAccess: true,
+          accessExpiresAt: "2020-01-01T00:00:00Z",
         }),
       ),
     ).toBe(false);

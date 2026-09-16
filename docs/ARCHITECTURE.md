@@ -208,8 +208,8 @@ Rust 侧只要一个 `reqwest`。
 - **一机一码是默认。** 本机机器码不随切号改动——同机换号把账号漂到多套指纹上会触发
   `too many computers`。「切换时同时切机器码」留作高级选项。真机的原始机器码在第一次动手前
   就存下来了，**永不覆盖**，随时可还原。
-- **只收有 refresh 的号。** 仅会话的号凑不出 Cursor 要的那对 token，写进去等于让它在下一次
-  续期时掉登录，而那批号掉了找不回来。判据是 `can_write_cursor_login()`，理由见 §5.1。
+- **收「有 refresh」或「会话 JWT 还活着」的号。** 仅会话的号把同一把 JWT 写进两格——这正是
+  Cursor 自己续期之后的盘上稳态，不是权宜。判据是 `can_write_cursor_login()`，来龙去脉见 §5.1。
 - **只由用户点击触发。** 进程内没有任何自动路径会调用切号。
 
 ### 4.2 Cursor 的本地状态
@@ -251,32 +251,44 @@ Rust 侧只要一个 `reqwest`。
 「已归档」视图里能取回。这是「先收起来」，不是删除。额度状态（用了多少）是另一维，
 和可用性各自筛，互不遮蔽。
 
-**三条判据，从宽到严。** 它们不是同义词，混用过一次就赔掉了一批号：
+**三条判据。** 它们不是同义词：
 
 | 判据 | 条件 | 谁在用 |
 |---|---|---|
 | `can_query_usage()` | refresh \| 活着的 access \| `crsr_` | 刷用量、凭证页 |
 | `has_usable_session()` | 非 dead 且（refresh \| 活着的 access） | 网关号池、Grok Bot 换额度 |
-| `can_write_cursor_login()` | 非 dead 且**有 refresh** | 切号本、写 Cursor 登录态 |
+| `can_write_cursor_login()` | 非 dead 且（refresh \| 活着的 access） | 切号本、写 Cursor 登录态 |
 
-最严的那条是被一个真实事故校正出来的。Cursor 的登录态要**成对** token（`accessToken` +
-`refreshToken`）并且会自己续期，仅会话的号凑不出这一对，早先的做法是把 access 复制一份去占
-refresh 那一格。Cursor 拿这个假 refresh 去续期必然 401，然后掉登录——对有密码的号这只是
-「重新粘一份」，但对 token 导入、没密码、接不了验证码的号，授权链整条走不通，掉了就再也拿不
-回来。切号那一步把一个还有几十天寿命的号当场变成废号。所以规矩是：**绝不拿 access 去占
-refresh 那一格**，仅会话的号切号入口直接置灰，界面说清原因和替代路径。网关不受影响，它走
-`has_usable_session()`——借一把会话发请求而已，不写任何登录态。
+后两条今天是同一个条件，仍然分成两个名字：它们回答的是两个问题（「能借一把会话发请求吗」和
+「能把登录态写进 Cursor 吗」），将来任一边收紧不该牵连另一边。
 
-**替代路径：趁 access 还活着铸一把 `crsr_`。** `DashboardService/CreateUserApiKey` 只认
-`Bearer access_token`，不要密码、不要验证码、不要重新登录，这是仅会话号唯一的保命出口
-（`AccountsService::mint_api_key`，默认 90 天）。铸完这个号的额度就不再挂在一个会死的凭证上：
-查用量、进网关、走 CRSR 通道都能接着用。边界必须说清——铸 key **换不回切号能力**，`crsr_`
-兑出来的是 `api_key_token` 而不是 `WorkosCursorSessionToken`，登不进 Cursor。
+**`can_write_cursor_login` 曾经更严，是一次被推翻的校正。** 0.5.1 把它收成「必须有 refresh」，
+理由是：Cursor 的登录态要成对 token 并且会自己续期，仅会话的号只能拿 access 去占
+`cursorAuth/refreshToken` 那一格，「Cursor 拿这个假 refresh 续期必然 401，然后掉登录」；当时确有
+一批 token 导入、没密码、接不了验证码的号在切号后掉了登录，找不回来。2026-09-16 对着 Cursor 3.19.13
+的 bundle 和真上游把这条链路核了一遍，前提不成立：
 
-**堵入口不够，还要认存量。** 规矩生效之前收录的档案还躺在切号本里，切过去照样杀号。指纹很好认：
-`accessToken` 和 `refreshToken` 两格一模一样（`AuthBundle::refresh_is_placeholder`）。切号本列表
-把这类档标成「无 refresh」并置灰，`switch_to` 里还有一道硬闸——**在碰 Cursor 任何状态之前**就拒绝，
-失败时 Cursor 的登录态一个字节都没动。
+- Cursor 自己续期成功后就是把新的 access **同时写进两格**（`storeAccessRefreshToken(c.access_token,
+  c.access_token)`）。本机现登着的号盘上两格一字不差。「两格相同」是 Cursor 的稳态，不是缺陷。
+- `POST api2.cursor.sh/oauth/token`（`grant_type=refresh_token`）的 `refresh_token` 参数接受会话 JWT
+  本身：实测回 200 + 新的 60 天 `type: session` JWT，**不 rotate**——半小时后拿同一把旧 JWT 再换一次
+  仍然 200，旧的照活到自己的 `exp`。不存在「续期把旧的废了、新的没接住」的窗口。
+- Cursor 在 token 剩余寿命 < 53 天（`Ylr = 1272h`，即签发满 7 天）时于每次 `getAccessToken()` 里主动
+  续期；续期失败只在服务端回 `shouldLogout: true` 时才登出，网络错误 / 非 200 只打日志、旧 token 照用。
+
+所以判据就是「**这把 JWT 此刻活着没**」。当年那批号掉登录，是导入进来的 token 在服务端**本来就已经
+废了**（源会话被登出、号在别处重登、或过了 60 天）——切号只是第一个去用它的动作。这类号不切也一样
+用不了；而只要 JWT 活着，同写两格就和 FlyCursor / cursor-free-vip 这些工具一直在做的事完全一样。
+切号本身**不做任何网络请求**：不探活、不续期，纯写盘；死 token 写进去顶多让 Cursor 显示掉登录，
+我们库里的那份原样还在。
+
+顺带撤掉的还有 `refresh_is_placeholder`（两格相同即拒切）那道闸——按上面第一条，它拦下的是所有被
+Cursor 续过一次的正常号。
+
+**`crsr_` 仍是仅会话号的备份凭证。** `DashboardService/CreateUserApiKey` 只认 `Bearer access_token`，
+不要密码、不要验证码（`AccountsService::mint_api_key`，默认 90 天）。session 过期后它还能查基础用量、
+走 CRSR 通道；但 `crsr_` 兑出来的是 `api_key_token` 不是 `WorkosCursorSessionToken`，**登不进 Cursor**，
+切号仍要靠那把会话 JWT。
 
 用量从各平台自己的接口拉。Cursor 这边是 dashboard 系列接口，四个桶（Bot / 总量 / Auto / API）
 加两个重置时间（Bot 周额与月账期），两个都显示。

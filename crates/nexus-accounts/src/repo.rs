@@ -633,13 +633,19 @@ mod tests {
         let emails = accounts.copy_selected(&both, "email", &none).unwrap();
         assert_eq!(emails, "a@example.com\nb@example.com");
 
-        let email_pw = accounts.copy_selected(&both, "email_password", &none).unwrap();
+        let email_pw = accounts
+            .copy_selected(&both, "email_password", &none)
+            .unwrap();
         assert_eq!(email_pw, "a@example.com----pwa\nb@example.com----pwb");
 
-        let email_rt = accounts.copy_selected(&both, "email_refresh", &none).unwrap();
+        let email_rt = accounts
+            .copy_selected(&both, "email_refresh", &none)
+            .unwrap();
         assert_eq!(email_rt, "a@example.com----rt-a\nb@example.com----rt-b");
 
-        let email_jwt = accounts.copy_selected(&both, "email_session", &none).unwrap();
+        let email_jwt = accounts
+            .copy_selected(&both, "email_session", &none)
+            .unwrap();
         assert_eq!(
             email_jwt,
             format!("a@example.com----{jwt}\nb@example.com----{jwt}")
@@ -691,7 +697,10 @@ mod tests {
             })
             .unwrap();
         let mut info = std::collections::HashMap::new();
-        info.insert(a.id.as_str().to_string(), "API 余 54% · 按需未开启".to_string());
+        info.insert(
+            a.id.as_str().to_string(),
+            "API 余 54% · 按需未开启".to_string(),
+        );
         // 空白说明当没有：这个号只有一行。
         info.insert(b.id.as_str().to_string(), "   ".to_string());
 
@@ -777,10 +786,7 @@ mod tests {
             .unwrap();
         assert_eq!(a.status, Status::Active);
         assert!(a.session_only() && a.can_query_usage() && a.has_usable_session());
-        assert!(
-            !a.can_write_cursor_login(),
-            "没有 refresh 就不写 Cursor 登录态"
-        );
+        assert!(a.can_write_cursor_login(), "JWT 活着就能切进 Cursor");
         assert_eq!(a.workos_user_id.as_deref(), Some("user_42"));
         assert!(a.access_expires_at.is_some());
         // 库里只有裸 JWT：前缀能从 JWT 算回来，存两份迟早对不上。

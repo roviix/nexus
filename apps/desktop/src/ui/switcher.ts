@@ -24,16 +24,16 @@ export const SWITCH_SORT_LABEL: Record<SwitchSort, string> = {
 export const DEFAULT_SWITCH_SORT: SwitchSort = "switched";
 
 /**
- * 能不能把这个号的登录态写进 Cursor。**必须有 refresh**，和 Rust 侧
- * `Account::can_write_cursor_login` 同口径。
+ * 能不能把这个号的登录态写进 Cursor：有 refresh，**或**手上的 access JWT 还活着。
+ * 和 Rust 侧 `Account::can_write_cursor_login` 同口径。
  *
- * 仅会话的号曾经也放行，代价是要拿 access 去占 `cursorAuth/refreshToken` 那一格——
- * Cursor 拿这个假 refresh 续期必然 401 然后掉登录，而那批号（没密码、接不了验证码）
- * 掉了就找不回来。它们该走 CRSR 通道 / 网关用额度，那两条都不写登录态。
+ * 仅会话的号把同一把 JWT 写进两格——这正是 Cursor 自己续期之后的盘上稳态，它的
+ * `/oauth/token` 接受会话 JWT 当 refresh_token（2026-09-16 实测）。0.5.1 那条「必须有
+ * refresh」的限制建立在被推翻的前提上，见 Rust 侧注释。
  */
-export function canAddToSwitchPool(account: Account): boolean {
+export function canAddToSwitchPool(account: Account, now = Date.now()): boolean {
   if (account.status === "dead") return false;
-  return account.hasRefresh;
+  return account.hasRefresh || hasLiveAccess(account, now);
 }
 
 /**

@@ -217,15 +217,21 @@ impl Account {
         self.status != Status::Dead && (self.has_refresh || self.has_live_access())
     }
 
-    /// 能不能把登录态写进本机 Cursor（加进切号本）。**必须有 refresh。**
+    /// 能不能把登录态写进本机 Cursor（加进切号本）：有 refresh，**或**手上的 access JWT 还活着。
     ///
-    /// 仅会话的号曾经也放行，代价是：Cursor 的登录态要成对 token，没有 refresh 就只能把
-    /// access 复制一份填进 `cursorAuth/refreshToken` 占位。Cursor 拿这个假 refresh 去续期
-    /// 必然 401，然后掉登录——而这批号（token 导入、没密码、接不了验证码）掉了就找不回来。
-    /// 与其让它死在一次切号上，不如一开始就不让进：这类号该走 CRSR 通道 / 网关用额度，
-    /// 那两条路都不需要写 Cursor 的登录态。
+    /// 0.5.1 曾把它收成「必须有 refresh」，理由是仅会话的号写进去要拿 access 占
+    /// `cursorAuth/refreshToken` 那一格，「Cursor 拿假 refresh 续期必然 401 掉登录」。
+    /// 2026-09-16 对着 Cursor 3.19.13 的 bundle 和真上游核了一遍，这个前提不成立：
+    /// - Cursor 自己续期成功后就是把新的 access **同时写进两格**
+    ///   （`storeAccessRefreshToken(c.access_token, c.access_token)`），盘上的稳态本来就是两格相同；
+    /// - `POST /oauth/token` 的 `refresh_token` 参数接受会话 JWT 本身，实测回 200 + 新的 60 天
+    ///   session JWT，不 rotate，旧的照活；
+    /// - 续期失败只在服务端回 `shouldLogout: true` 时才登出，网络错误 / 非 200 只打日志。
+    ///
+    /// 所以判据就是「这把 JWT 此刻活着没」。当年那批号掉登录，是导入进来的 token 在服务端
+    /// 已经废了（源会话被登出 / 别处重登 / 过 60 天），不切也一样用不了。
     pub fn can_write_cursor_login(&self) -> bool {
-        self.status != Status::Dead && self.has_refresh
+        self.status != Status::Dead && (self.has_refresh || self.has_live_access())
     }
 }
 
@@ -583,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_only_account_serves_requests_but_never_writes_the_cursor_login() {
+    fn a_session_only_account_switches_while_its_jwt_is_alive() {
         let mut a = Account {
             id: AccountId::from_raw("x"),
             email: "a@example.com".into(),
@@ -617,15 +623,15 @@ mod tests {
         assert!(a.session_only());
         assert!(a.can_query_usage(), "有效期内拿它查用量 / 进网关都行");
         assert!(a.has_usable_session(), "有效期内拿得出一把会话");
-        // 这是这批号的命门：写进 Cursor 就要拿 access 去占 refresh 那一格，
-        // Cursor 续期 401 就掉登录，而它们没密码、接不了码，掉了找不回来。
-        assert!(
-            !a.can_write_cursor_login(),
-            "没有 refresh 就绝不写 Cursor 登录态"
-        );
+        // 活着的会话 JWT 同写两格就是 Cursor 自己续期后的盘上稳态，切得进去。
+        assert!(a.can_write_cursor_login(), "JWT 活着就能写 Cursor 登录态");
         a.access_expires_at = Some("2020-01-01T00:00:00Z".into());
         assert!(!a.can_query_usage());
         assert!(!a.has_usable_session(), "过期之后连会话都拿不出来");
+        assert!(
+            !a.can_write_cursor_login(),
+            "过期的 JWT 写进去只是让 Cursor 显示掉登录"
+        );
         a.has_api_key = true;
         assert!(a.can_query_usage(), "session 过期后 crsr_ 还能查基础用量");
         assert!(!a.has_usable_session(), "crsr_ 兑出来的 JWT 当不了会话");
