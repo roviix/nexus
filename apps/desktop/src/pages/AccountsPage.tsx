@@ -43,6 +43,7 @@ import {
 } from "../accounts/views";
 
 import { COPY_FORMATS, copyInfoMap, loadCopyChoice, saveCopyChoice, type CopyChoice } from "../accounts/copy";
+import { looksLikeLookupPaste, matchLookup } from "../accounts/lookup";
 import {
   accountPlanGroup,
   applyAvailFilter,
@@ -66,6 +67,7 @@ import { Banner, Empty, ErrorNote, Icon, Picker } from "../ui/primitives";
 import { AddAccountModal } from "./accounts/AddAccountModal";
 import { AuthorizeModal } from "./accounts/AuthorizeModal";
 import { CopySelectedModal } from "./accounts/CopySelectedModal";
+import { LookupModal } from "./accounts/LookupModal";
 import { ChatGptAccounts } from "./accounts/ChatGptAccounts";
 import { GrokAccounts, KiroAccounts } from "./accounts/DeviceAccounts";
 
@@ -122,6 +124,10 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   const [exported, setExported] = useState<ExportOutcome | null>(null);
 
   const [query, setQuery] = useState("");
+  // 批量查找：`lookup` 是正在生效的邮箱清单（替代关键字搜索），`lookingUp` 是弹窗（带预填文本）。
+  const [lookup, setLookup] = useState<string[] | null>(null);
+  const [lookingUp, setLookingUp] = useState<{ text: string } | null>(null);
+  const [missingOpen, setMissingOpen] = useState(false);
   /**
    * 筛选 + 排序的当前组合。四个筛子各管一维（可用性 / 额度 / 所在池 / 档位），互不相干，可以同时下；
    * 整组落盘，下次进来还在原地。
@@ -268,9 +274,19 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  /** 这一页此刻在看的那一堆：没归档的（默认）或已归档的。两堆从不混在一列里。 */
-  const shelf = useMemo(() => list.filter((a) => Boolean(a.archivedAt) === archived), [list, archived]);
-  const searched = useMemo(() => shelf.filter((a) => matchesQuery(a, query)), [shelf, query]);
+  /**
+   * 这一页此刻在看的那一堆：没归档的（默认）或已归档的。两堆从不混在一列里 ——
+   * 除了批量查找：清单上的号在哪堆都得找出来，归档的在卡上另标一枚「已归档」。
+   */
+  const shelf = useMemo(
+    () => (lookup ? list : list.filter((a) => Boolean(a.archivedAt) === archived)),
+    [list, archived, lookup],
+  );
+  const lookupResult = useMemo(() => (lookup ? matchLookup(list, lookup) : null), [list, lookup]);
+  const searched = useMemo(
+    () => (lookupResult ? lookupResult.found : shelf.filter((a) => matchesQuery(a, query))),
+    [shelf, query, lookupResult],
+  );
   // 分布条数的是搜索之后、筛子之前的那一批：它是「当前这批号什么光景」的底数，
   // 拿筛完的结果去数，点一下筛子那条横条就只剩自己那一段了。
   const stats = useMemo(() => summarize(searched), [searched]);
@@ -328,20 +344,17 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
     ];
   }, [shelf, allTags]);
 
-  const shown = useMemo(
-    () =>
-      sortAccounts(
-        applyPlanFilter(applyQuotaFilter(applyAvailFilter(searched, avail), quota), plan)
-          .filter((a) => matchesPoolFilter(pools.membership(a.email), pool))
-          .filter((a) => {
-            if (!tag || tag === "all") return true;
-            if (tag === "_untagged") return !a.tags || a.tags.length === 0;
-            return a.tags?.includes(tag);
-          }),
-        sort,
-      ),
-    [searched, avail, quota, plan, pool, tag, sort, pools],
-  );
+  const shown = useMemo(() => {
+    const filtered = applyPlanFilter(applyQuotaFilter(applyAvailFilter(searched, avail), quota), plan)
+      .filter((a) => matchesPoolFilter(pools.membership(a.email), pool))
+      .filter((a) => {
+        if (!tag || tag === "all") return true;
+        if (tag === "_untagged") return !a.tags || a.tags.length === 0;
+        return a.tags?.includes(tag);
+      });
+    // 批量查找的结果按清单的顺序排，不套排序：对着自己手里那份一行行核对，顺序一乱就对不上。
+    return lookup ? filtered : sortAccounts(filtered, sort);
+  }, [searched, avail, quota, plan, pool, tag, sort, pools, lookup]);
   const activeView = useMemo(() => matchView(spec, savedViews), [spec, savedViews]);
   const openAccount = useMemo(() => list.find((a) => a.id === openId) ?? null, [list, openId]);
   const openView = useMemo(
@@ -357,10 +370,33 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   );
   // 归档的号不参与批量刷新：收起来就是不想再管它。
   const refreshable = useMemo(() => list.filter((a) => !a.archivedAt && canQueryUsage(a)).length, [list]);
-  const narrowed = query.trim() !== "" || !isDefaultView(spec);
+  const narrowed = query.trim() !== "" || lookup != null || !isDefaultView(spec);
 
   // 选中的号按列表顺序排：复制出来的顺序就是眼前看到的顺序。
   const selectedAccounts = useMemo(() => shown.filter((a) => selected.has(a.id)), [shown, selected]);
+
+  /** 按清单找号。找到的替代关键字搜索；要刷新就把库里有的、能查的那几个一起刷。 */
+  function runLookup(emails: string[], refresh: boolean) {
+    setLookingUp(null);
+    setQuery("");
+    setMissingOpen(false);
+    setLookup(emails);
+    if (refresh) {
+      const ids = matchLookup(list, emails)
+        .found.filter((a) => canQueryUsage(a))
+        .map((a) => a.id);
+      if (ids.length) void refreshIds(ids);
+    }
+  }
+  function clearLookup() {
+    setLookup(null);
+    setMissingOpen(false);
+  }
+  /** 把眼前这批查找结果全部选上，进多选：接着复制 / 归档 / 刷新都是一步。 */
+  function selectLookupResults() {
+    setSelecting(true);
+    setSelected(new Set(shown.map((a) => a.id)));
+  }
 
   async function copySelected(choice: CopyChoice) {
     if (!selectedAccounts.length) return;
@@ -425,8 +461,14 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   async function refreshSelected() {
     const ids = [...selected].filter((id) => shown.some((a) => a.id === id && canQueryUsage(a)));
     if (!ids.length) return;
-    setRefreshing(new Set(ids));
     exitSelecting();
+    await refreshIds(ids);
+  }
+
+  /** 刷一批号的用量。调用方负责挑出能查的那几个。 */
+  async function refreshIds(ids: string[]) {
+    if (!ids.length) return;
+    setRefreshing(new Set(ids));
     try {
       await accounts.refreshAll(ids);
     } catch (err) {
@@ -455,17 +497,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   }
 
   async function refreshAll() {
-    const ids = list.filter((a) => !a.archivedAt && canQueryUsage(a)).map((a) => a.id);
-    if (!ids.length) return;
-    setRefreshing(new Set(ids));
-    try {
-      await accounts.refreshAll(ids);
-    } catch (err) {
-      setError(err);
-    } finally {
-      setRefreshing(new Set());
-      await reload();
-    }
+    await refreshIds(list.filter((a) => !a.archivedAt && canQueryUsage(a)).map((a) => a.id));
   }
 
   /**
@@ -692,20 +724,55 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
             </div>
 
             <div className="acct-controls">
-              <label className="search">
-                <Icon name="search" size={14} />
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="搜索邮箱、备注、标签"
-                  spellCheck={false}
-                />
-                {query ? (
-                  <button type="button" className="search-clear" onClick={() => setQuery("")} aria-label="清空">
+              {lookup && lookupResult ? (
+                // 清单生效时搜索框让位给一枚标签：清单和关键字不叠加，一次只按一种方式找。
+                <div className="search is-lookup" role="status">
+                  <Icon name="clipboard" size={14} />
+                  <button
+                    type="button"
+                    className="search-lookup"
+                    onClick={() => setLookingUp({ text: lookup.join("\n") })}
+                    title="批量查找中 · 点击改清单"
+                  >
+                    清单 {lookup.length} · 找到 {lookupResult.found.length}
+                  </button>
+                  <button type="button" className="search-clear" onClick={clearLookup} aria-label="清除批量查找">
                     <Icon name="close" size={12} />
                   </button>
-                ) : null}
-              </label>
+                </div>
+              ) : (
+                <label className="search">
+                  <Icon name="search" size={14} />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onPaste={(e) => {
+                      // 粘进来的是一份清单（两个以上邮箱）就别当关键字搜了，直接转批量查找。
+                      const text = e.clipboardData.getData("text");
+                      if (looksLikeLookupPaste(text)) {
+                        e.preventDefault();
+                        setLookingUp({ text });
+                      }
+                    }}
+                    placeholder="搜索邮箱、备注、标签"
+                    spellCheck={false}
+                  />
+                  {query ? (
+                    <button type="button" className="search-clear" onClick={() => setQuery("")} aria-label="清空">
+                      <Icon name="close" size={12} />
+                    </button>
+                  ) : null}
+                </label>
+              )}
+              <button
+                type="button"
+                className={`btn btn-icon${lookup ? " is-active" : ""}`}
+                data-tip="批量查找：粘一份邮箱清单"
+                aria-label="批量查找"
+                onClick={() => setLookingUp({ text: lookup?.join("\n") ?? "" })}
+              >
+                <Icon name="clipboard" size={14} />
+              </button>
 
               <Picker<QuotaFilter>
                 icon="gauge"
@@ -785,6 +852,31 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
             </div>
           </div>
 
+          {lookup && lookupResult ? (
+            <LookupBar
+              total={lookup.length}
+              found={lookupResult.found.length}
+              shown={shown.length}
+              archived={lookupResult.archived.length}
+              missing={lookupResult.missing}
+              missingOpen={missingOpen}
+              masked={masked}
+              busy={refreshing.size > 0}
+              onToggleMissing={() => setMissingOpen((v) => !v)}
+              onCopyMissing={async () => {
+                try {
+                  await navigator.clipboard.writeText(lookupResult.missing.join("\n"));
+                  setNotice(`已复制 ${lookupResult.missing.length} 个未找到的邮箱。`);
+                } catch (err) {
+                  setError(err);
+                }
+              }}
+              onSelectAll={selecting ? undefined : selectLookupResults}
+              onRefresh={() => void refreshIds(shown.filter((a) => canQueryUsage(a)).map((a) => a.id))}
+              onClear={clearLookup}
+            />
+          ) : null}
+
           {selecting ? (
             <SelectBar
               count={selected.size}
@@ -802,7 +894,15 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
 
           {shown.length === 0 ? (
             <Empty
-              title={archived && !narrowed ? "没有归档的账号" : "没有匹配的账号"}
+              title={
+                lookup
+                  ? lookupResult?.found.length
+                    ? "找到的号都被筛子挡住了"
+                    : "清单上的号一个都不在库里"
+                  : archived && !narrowed
+                    ? "没有归档的账号"
+                    : "没有匹配的账号"
+              }
               action={
                 narrowed ? (
                   <button
@@ -810,6 +910,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                     className="btn btn-sm"
                     onClick={() => {
                       setQuery("");
+                      clearLookup();
                       setSpec({ avail: "all", quota: "all", pool: "any", plan: "all", tag: "all" });
                     }}
                   >
@@ -833,7 +934,13 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                     })}
                     highlighted={selecting ? picked : a.id === openId}
                     onOpen={selecting ? () => toggleSelect(a.id) : () => setOpenId(a.id)}
-                    badges={<PoolChips membership={pools.membership(a.email)} />}
+                    badges={
+                      <>
+                        {/* 批量查找把两堆混在一列里了，归档的那几个得标出来。 */}
+                        {lookup && a.archivedAt ? <span className="pill">已归档</span> : null}
+                        <PoolChips membership={pools.membership(a.email)} />
+                      </>
+                    }
                     actions={
                       selecting ? (
                         <span className={`acct-pick${picked ? " is-on" : ""}`} aria-hidden>
@@ -913,6 +1020,10 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
         />
       ) : null}
 
+      {lookingUp ? (
+        <LookupModal initialText={lookingUp.text} onClose={() => setLookingUp(null)} onLookup={runLookup} />
+      ) : null}
+
       {copying ? (
         <CopySelectedModal
           accounts={selectedAccounts}
@@ -924,6 +1035,108 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
         />
       ) : null}
     </>
+  );
+}
+
+/* ── 批量查找结果栏 ─────────────────────────────────────────────────────── */
+
+/**
+ * 清单生效时挂在列表上方：清单几个、找到几个、几个已归档、几个没找到。
+ * 没找到的能展开看、能整份复制 —— 那份名单往往要回去问人「这几个号是不是给错了」。
+ * 动作：全选这些（进多选，接着复制 / 归档一步到位）、刷新用量、清除。
+ */
+function LookupBar({
+  total,
+  found,
+  shown,
+  archived,
+  missing,
+  missingOpen,
+  masked,
+  busy,
+  onToggleMissing,
+  onCopyMissing,
+  onSelectAll,
+  onRefresh,
+  onClear,
+}: {
+  total: number;
+  found: number;
+  /** 找到之后又被筛子筛剩的数：和 found 不一样时提醒一句。 */
+  shown: number;
+  archived: number;
+  missing: string[];
+  missingOpen: boolean;
+  masked: boolean;
+  busy: boolean;
+  onToggleMissing: () => void;
+  onCopyMissing: () => void;
+  onSelectAll?: () => void;
+  onRefresh: () => void;
+  onClear: () => void;
+}) {
+  const allFound = missing.length === 0;
+  return (
+    <div className={`lookupbar${allFound ? " is-complete" : ""}`} role="region" aria-label="批量查找结果">
+      <div className="lookupbar-row">
+        <span className="lookupbar-n">
+          清单 <b className="num">{total}</b> 个 · 找到 <b className="num">{found}</b>
+          {archived > 0 ? (
+            <>
+              {" "}
+              · <span className="faint">{archived} 个已归档</span>
+            </>
+          ) : null}
+          {shown !== found ? (
+            <>
+              {" "}
+              · <span className="faint">筛子留下 {shown}</span>
+            </>
+          ) : null}
+        </span>
+        {missing.length > 0 ? (
+          <button type="button" className="lookupbar-missing" aria-expanded={missingOpen} onClick={onToggleMissing}>
+            <i className="status-dot is-logged_out" />
+            {missing.length} 个未找到
+            <i className={`lookupbar-caret${missingOpen ? " is-open" : ""}`} aria-hidden />
+          </button>
+        ) : (
+          <span className="lookupbar-ok">全部找到</span>
+        )}
+
+        <span className="grow" />
+
+        {onSelectAll && shown > 0 ? (
+          <button type="button" className="btn btn-sm" onClick={onSelectAll}>
+            <Icon name="check" size={13} />
+            全选这些
+          </button>
+        ) : null}
+        {shown > 0 ? (
+          <button type="button" className="btn btn-sm" disabled={busy} onClick={onRefresh}>
+            <Icon name="refresh" size={13} className={busy ? "is-spinning" : undefined} />
+            刷新用量
+          </button>
+        ) : null}
+        <button type="button" className="btn btn-sm btn-quiet" onClick={onClear} aria-label="清除批量查找">
+          <Icon name="close" size={12} />
+        </button>
+      </div>
+
+      {missingOpen && missing.length > 0 ? (
+        <div className="lookupbar-list">
+          <div className="lookupbar-emails mono">
+            {missing.map((m) => (
+              <span key={m}>{masked ? maskEmail(m) : m}</span>
+            ))}
+          </div>
+          <button type="button" className="btn btn-sm btn-quiet" onClick={onCopyMissing} title="把没找到的邮箱复制成一行一个">
+            <Icon name="copy" size={12} />
+            复制这 {missing.length} 个
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
