@@ -147,9 +147,9 @@ export function untilShort(endMs?: number | null, now = Date.now()): string {
 /**
  * 「3 天后重置」那一格。已到期是「已重置」，未知是「—」。
  *
- * **不到一天就报钟点。** 倒计时答的是「还要等多久」，那是扫列表时的问题；可一旦进了当天，
- * 倒计时只剩「3 小时」这种粗粒度，而人这时候想知道的已经变成「几点回来」了。
- * 所以 24 小时以内换成 `21:00 重置`，跨过零点的加一个「明天」。
+ * **三天以内报钟点。** 倒计时答的是「还要等多久」；进了三天窗口，人要的已经变成
+ * 「几点回来」—— 当天 `21:00`，跨零点 `明天 04:00`，再往后 `后天` 或 `9/18 16:00`。
+ * 三天以外仍用「N 天后」，那一档天数本身就够扫。
  *
  * **不上颜色。** 额度重置是好消息，越近越好 —— 染成琥珀会和仪表条抢「有颜色 = 要注意」
  * 那条规矩（§14.11）。要精确到年月日的，抽屉里有。
@@ -157,15 +157,27 @@ export function untilShort(endMs?: number | null, now = Date.now()): string {
 export function resetInShort(endMs?: number | null, now = Date.now()): string {
   if (endMs == null || !Number.isFinite(endMs)) return "—";
   if (endMs <= now) return "已重置";
-  if (endMs - now < DAY_MS) return `${clockShort(endMs, now)} 重置`;
+  if (endMs - now <= 3 * DAY_MS) return `${clockShort(endMs, now)} 重置`;
   return `${untilShort(endMs, now)}后重置`;
 }
 
-/** 24 小时以内的那个时刻。同一天只报钟点，跨过零点的才需要「明天」。 */
+/** 三天窗口里的那个时刻。同一天只报钟点，明天 / 后天点名，再远落到月日。 */
 function clockShort(ms: number, now: number): string {
   const d = new Date(ms);
   const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return new Date(now).getDate() === d.getDate() ? hhmm : `明天 ${hhmm}`;
+  const days = calendarDaysAhead(ms, now);
+  if (days <= 0) return hhmm;
+  if (days === 1) return `明天 ${hhmm}`;
+  if (days === 2) return `后天 ${hhmm}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
+}
+
+function calendarDaysAhead(ms: number, now: number): number {
+  const a = new Date(now);
+  const b = new Date(ms);
+  a.setHours(0, 0, 0, 0);
+  b.setHours(0, 0, 0, 0);
+  return Math.round((b.getTime() - a.getTime()) / DAY_MS);
 }
 
 /** 账期日期，`08/15` 这种短形。摆在一行里不能占太宽。 */

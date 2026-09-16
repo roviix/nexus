@@ -241,7 +241,7 @@ describe("worstMonthlyBucket", () => {
 
 describe("resetInShort", () => {
   it("phrases a countdown as a reset but leaves the sentinel strings alone", () => {
-    expect(resetInShort(NOW + 3 * DAY, NOW)).toBe("3 天后重置");
+    expect(resetInShort(NOW + 10 * DAY, NOW)).toBe("10 天后重置");
     expect(resetInShort(NOW - 1000, NOW)).toBe("已重置");
     expect(resetInShort(undefined, NOW)).toBe("—");
   });
@@ -259,5 +259,17 @@ describe("resetInShort", () => {
     midnight.setHours(23, 0, 0, 0);
     const now = midnight.getTime();
     expect(resetInShort(now + 5 * 3_600_000, now)).toBe("明天 04:00 重置");
+  });
+
+  it("uses a clock time for any reset inside three days", () => {
+    const noon = new Date(NOW);
+    noon.setHours(12, 0, 0, 0);
+    const now = noon.getTime();
+    expect(resetInShort(now + 2 * DAY, now)).toBe("后天 12:00 重置");
+    const inThree = new Date(now + 3 * DAY);
+    expect(resetInShort(now + 3 * DAY, now)).toBe(
+      `${inThree.getMonth() + 1}/${inThree.getDate()} 12:00 重置`,
+    );
+    expect(resetInShort(now + 3 * DAY + 3_600_000, now)).toBe("3 天后重置");
   });
 });

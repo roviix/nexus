@@ -220,7 +220,7 @@ updater 用的 `latest.json`，并发到 GitHub Releases。自动更新端点固
 |---|---|---|
 | `TAURI_UPDATER_PUBLIC_KEY` | Variable | updater 公钥（写进 `tauri.conf.json`） |
 | `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Secret | updater 私钥，**必需** |
-| `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | Secret | 可选；缺则 macOS 出未签名 Preview |
+| `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | Secret | 可选；缺则 macOS 出 ad-hoc 签名 Preview（App 管理能跨重启记住） |
 | `WINDOWS_CERTIFICATE_BASE64` / `WINDOWS_CERTIFICATE_PASSWORD` | Secret | 可选；缺则 Windows 出未签名 Preview |
 | `TAURI_UPDATER_ENDPOINT` | Variable | 可选；不填就用本仓库的 GitHub Releases |
 

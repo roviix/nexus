@@ -252,7 +252,7 @@ Required GitHub configuration:
 |---|---|---|
 | `TAURI_UPDATER_PUBLIC_KEY` | Variable | Updater public key (written into `tauri.conf.json`) |
 | `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Secret | Updater private key — **required** |
-| `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | Secret | Optional; without them macOS ships an unsigned Preview |
+| `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | Secret | Optional; without them macOS ships an ad-hoc-signed Preview (App Management survives restart) |
 | `WINDOWS_CERTIFICATE_BASE64` / `WINDOWS_CERTIFICATE_PASSWORD` | Secret | Optional; without them Windows ships an unsigned Preview |
 | `TAURI_UPDATER_ENDPOINT` | Variable | Optional; defaults to this repository's GitHub Releases |
 

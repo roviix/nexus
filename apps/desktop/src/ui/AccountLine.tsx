@@ -35,7 +35,7 @@ import {
   onDemandParts,
   pctText,
   resetInShort,
-  shortDate,
+  shortDateTime,
   type BucketView,
 } from "./usage";
 
@@ -251,7 +251,7 @@ function QuotaCell({
 /* ── 末行 ─────────────────────────────────────────────────────────────────── */
 
 /**
- * 两个重置的倒计时：`月额 17 天后重置 · Bot 2 天后重置`。
+ * 两个重置的倒计时：`月额 17 天后重置 · Bot 明天 16:00 重置`。
  *
  * 四个桶分属两套周期（Bot 按周、其余共用月账期），所以两个都要给。
  * **卡片上只给倒计时**，绝对时刻悬停可见或退进抽屉 —— 倒计时回答「还能等多久」，那是扫列表时的问题；
@@ -296,9 +296,8 @@ export function FootResets({
 }
 
 function ResetItem({ k, at }: { k?: string | null; at: number }) {
-  const dateStr = shortDate(at);
   return (
-    <span className="qf-i" title={`重置于 ${dateStr}`}>
+    <span className="qf-i" title={`重置于 ${shortDateTime(at)}`}>
       {k ? <span className="qf-k">{k}</span> : null}
       <span className="qf-in">{resetInShort(at)}</span>
     </span>

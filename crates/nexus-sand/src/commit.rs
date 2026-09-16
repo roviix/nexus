@@ -72,7 +72,9 @@ fn permission_hint() -> &'static str {
         "这份 Cursor 装在需要管理员权限的目录（如 Program Files）。\
          用管理员身份重开 Nexus，或把 Cursor 改装到用户目录（安装器默认的 %LOCALAPPDATA%\\Programs\\cursor）。"
     } else {
-        "当前用户改不动这个 Cursor 安装。检查它的属主与权限，或重新装到你自己的用户目录下。"
+        "macOS 的「App 管理」没放行 Nexus（不是 Cursor 装错位置）。打开 系统设置 → 隐私与安全性 → App 管理，\
+         打开 Nexus；列表里没有就到 Nexus 设置 → 权限 → 申请「修改 Cursor 安装」，弹窗点允许后再卸/装。\
+         换过安装包之后这项要重新开一次。"
     }
 }
 

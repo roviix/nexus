@@ -8,6 +8,16 @@
 
 ## [未发布]
 
+## [0.6.4] — 2026-09-16
+
+### 修复
+
+- **装 Sand / CRSR 不再「允许了、重启又没权限」。** GitHub 的 macOS 包以前整个 bundle 没签名，
+  系统的「App 管理」授权存不住。现在没配 Apple 证书时改为 ad-hoc 签名：允许一次，重启仍然有效
+  （换到新版本要再点一次允许）。本机 `build-dmg.sh` 打的证书签名包不受影响。
+- **卸补丁时报「改不动 Cursor 安装」其实是 App 管理没放行。** 换过签名的安装包后，设置里那条
+  「已允许」会撒谎。现在权限页会当场探一次能不能写；失败时直接说去系统设置打开 App 管理。
+
 ## [0.6.3] — 2026-09-16
 
 ### 修复
@@ -276,7 +286,8 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.6.3...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/roviix/nexus/releases/tag/v0.6.4
 [0.6.3]: https://github.com/roviix/nexus/releases/tag/v0.6.3
 [0.6.2]: https://github.com/roviix/nexus/releases/tag/v0.6.2
 [0.6.1]: https://github.com/roviix/nexus/releases/tag/v0.6.1

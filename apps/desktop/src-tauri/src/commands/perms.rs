@@ -172,7 +172,7 @@ fn cursor_app(state: &AppState, probe: bool) -> PermItem {
         return PermItem {
             id: "cursor_app",
             title: "修改 Cursor 安装",
-            used_by: "Sand 补丁",
+            used_by: "Sand / CRSR 补丁",
             status: PermStatus::NotApplicable,
             detail: Some("没找到 Cursor 的安装目录。".into()),
             can_request: false,
@@ -189,9 +189,25 @@ fn cursor_app(state: &AppState, probe: bool) -> PermItem {
             }
             (s, d)
         } else {
-            match recall(state, "cursor_app") {
-                Some(r) => (r.status, None),
-                None => (PermStatus::Unknown, Some("还没申请过。".into())),
+            // 换签名身份后，库里那条「已允许」会撒谎（这次重装后卸载失败就是这个）。
+            // 先做一次不弹窗的即时探针：能写就当真允许，EPERM 就当没放行。
+            let (live, _) = status_of(open_for_write(&product));
+            if live == PermStatus::Ok {
+                remember(state, "cursor_app", PermStatus::Ok);
+                (PermStatus::Ok, Some(product.display().to_string()))
+            } else if live == PermStatus::Denied {
+                (
+                    PermStatus::Denied,
+                    Some(
+                        "系统没有放行：在系统设置 → 隐私与安全性 → App 管理 里允许 Nexus。"
+                            .into(),
+                    ),
+                )
+            } else {
+                match recall(state, "cursor_app") {
+                    Some(r) => (r.status, None),
+                    None => (PermStatus::Unknown, Some("还没申请过。".into())),
+                }
             }
         }
     } else {
@@ -210,7 +226,7 @@ fn cursor_app(state: &AppState, probe: bool) -> PermItem {
     PermItem {
         id: "cursor_app",
         title: "修改 Cursor 安装",
-        used_by: "Sand 补丁",
+        used_by: "Sand / CRSR 补丁",
         status,
         detail,
         can_request: true,

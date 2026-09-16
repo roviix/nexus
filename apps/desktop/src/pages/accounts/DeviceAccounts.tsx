@@ -20,6 +20,7 @@ import type {
 } from "../../ipc/types";
 import { go, type Route } from "../../shell/nav";
 import { timeAgo, timeUntil } from "../../ui/format";
+import { resetInShort } from "../../ui/usage";
 import { Banner, CopyButton, Empty, ErrorNote, Gauge, Icon, Modal, Switch, Tag } from "../../ui/primitives";
 import { laneBadge } from "./chatgpt";
 
@@ -371,9 +372,9 @@ function AccountRow({
                 compact
                 note={
                   quota.periodEnd && quota.creditUsagePercent != null && quota.creditUsagePercent >= 99.5 ? (
-                    <span className="acct-problem">{timeUntil(Date.parse(quota.periodEnd))}后重置</span>
+                    <span className="acct-problem">{resetInShort(Date.parse(quota.periodEnd))}</span>
                   ) : quota.periodEnd ? (
-                    <span className="faint tiny">{timeUntil(Date.parse(quota.periodEnd))}后重置</span>
+                    <span className="faint tiny">{resetInShort(Date.parse(quota.periodEnd))}</span>
                   ) : undefined
                 }
               />

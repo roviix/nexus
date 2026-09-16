@@ -155,10 +155,18 @@ jobs:
           # GitHub Actions 把未配置的 Secret 注成空字符串。Tauri 只要见到
           # APPLE_CERTIFICATE 这个变量就会 `security import`，空值报
           # `SecKeychainItemImport: One or more parameters passed to a function were not valid`，
-          # 编译已经完成的 universal 包也打不出来。没配证书就清掉，出未签名包。
+          # 编译已经完成的 universal 包也打不出来。没配证书就清掉。
+          #
+          # 不能出「完全不签」的包：macOS「App 管理」（Sand / CRSR 改 Cursor.app）把授权绑在
+          # designated requirement 上。bundle 只有 linker-signed、没有 _CodeSignature 时，
+          # 系统算不出 requirement，弹窗点了允许也存不住，重启又没权限。
+          # `APPLE_SIGNING_IDENTITY=-` 是 ad-hoc：requirement 是这份字节的 cdhash，
+          # 跨重启能保住，换一版要再点一次允许。有 Apple 证书时仍走证书（跨版本稳定）。
           if [[ -z "${APPLE_CERTIFICATE:-}" ]]; then
-            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
-            echo "没有 Apple 证书，打未签名包。"
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD
+            export APPLE_SIGNING_IDENTITY="-"
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "没有 Apple 证书，ad-hoc 签名（App 管理能跨重启记住；换版本要再允许一次）。"
           fi
           if [[ -z "${APPLE_ID:-}" ]]; then
             unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
@@ -231,12 +239,16 @@ jobs:
           echo "binary: $bin"
           echo "architectures: $architectures"
           [[ "$architectures" == *arm64* && "$architectures" == *x86_64* ]]
-          if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-            codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          req="$(codesign -d -r- "$app" 2>&1 | sed -n 's/.*designated => //p')"
+          echo "designated requirement: $req"
+          test -n "$req"
+          if [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
             spctl --assess --type execute --verbose=2 "$app"
             xcrun stapler validate "$app"
           else
-            echo "::warning::没有配置 Apple 证书，这一版 macOS 包未签名。"
+            echo "::warning::没有 Apple 证书：ad-hoc 签名。Gatekeeper 首次要右键打开；App 管理允许一次即可跨重启。"
+            [[ "$req" == *cdhash* || "$req" == *identifier* ]]
           fi
 
       - name: 验证 Windows 产物
