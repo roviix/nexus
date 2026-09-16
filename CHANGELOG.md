@@ -8,6 +8,16 @@
 
 ## [未发布]
 
+## [0.6.2] — 2026-09-16
+
+### 修复
+
+- **本机构建也能校验应用内更新。** 更新器用的 minisign 公钥写进了 `tauri.conf.json`（公钥本来就该公开）。
+  以前只在 GitHub Actions 打包时注入，本机 `build-dmg.sh` 打出来的包 `pubkey` 是空的：界面能发现新版本，
+  点更新却过不了签名校验。从这一版起，本机装的包和 Release 装的包走同一把公钥。
+- 更新提示上的「已签名」改成「来源已校验」。它只表示更新器用 minisign 核对过包，不是 Apple / Windows
+  代码签名——GitHub 上的安装包目前仍未做那一层。
+
 ### 变更
 
 - **只有 session token 的号可以切号了。** 0.5.1 把它们挡在切号本外，理由是「Cursor 拿假 refresh 续期
@@ -245,7 +255,8 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.6.1...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/roviix/nexus/releases/tag/v0.6.2
 [0.6.1]: https://github.com/roviix/nexus/releases/tag/v0.6.1
 [0.6.0]: https://github.com/roviix/nexus/releases/tag/v0.6.0
 [0.5.1]: https://github.com/roviix/nexus/releases/tag/v0.5.1

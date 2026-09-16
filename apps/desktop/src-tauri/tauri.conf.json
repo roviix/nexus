@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Nexus",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "identifier": "com.roviix.nexus",
   "build": {
     "beforeDevCommand": "npm run dev:vite",
@@ -72,7 +72,7 @@
     },
     "updater": {
       "endpoints": ["https://github.com/roviix/nexus/releases/latest/download/latest.json"],
-      "pubkey": ""
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU0RTg3MDlFRTE3QzdDQjcKUldTM2ZIemhubkRvVk9JbkF0WWgwREs3VU5od1h0d3FoT3dPcndXdW1OdnRCS0JjM0Q0NStsVEwK"
     }
   }
 }

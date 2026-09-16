@@ -71,7 +71,7 @@ export function UpdateNotice() {
       <div className="update-copy">
         <div className="update-title-row">
           <strong>发现新版本 v{update.version}</strong>
-          <span className="tag tag-ok">已签名</span>
+          <span className="tag tag-ok">来源已校验</span>
         </div>
         {stage === "ready" ? (
           <p>{update.body?.trim() || "包含功能改进与稳定性修复。"}</p>
