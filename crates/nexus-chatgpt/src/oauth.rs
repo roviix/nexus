@@ -116,11 +116,11 @@ pub struct Pkce {
 impl Pkce {
     pub fn generate() -> Self {
         use base64::Engine;
-        use rand::RngCore;
+        use rand::Rng;
         use sha2::{Digest, Sha256};
 
         let mut raw = [0u8; 64];
-        rand::thread_rng().fill_bytes(&mut raw);
+        rand::rng().fill_bytes(&mut raw);
         let verifier: String = raw.iter().map(|b| format!("{b:02x}")).collect();
         let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(Sha256::digest(verifier.as_bytes()));
@@ -133,9 +133,9 @@ impl Pkce {
 
 /// 防 CSRF 的 state：32 字节随机 hex。
 pub fn new_state() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut raw = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut raw);
+    rand::rng().fill_bytes(&mut raw);
     raw.iter().map(|b| format!("{b:02x}")).collect()
 }
 

@@ -75,11 +75,11 @@ impl OauthSession {
     /// 生成 PKCE 对与 uuid，拼出登录地址。
     pub fn start() -> Self {
         use base64::Engine;
-        use rand::RngCore;
+        use rand::Rng;
         use sha2::{Digest, Sha256};
 
         let mut raw = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut raw);
+        rand::rng().fill_bytes(&mut raw);
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let verifier = b64.encode(raw);
         let challenge = b64.encode(Sha256::digest(verifier.as_bytes()));

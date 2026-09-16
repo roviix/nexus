@@ -467,8 +467,20 @@ impl ChatGptService {
     }
 
     /// 测试：把 token 端点和 chatgpt.com 都指到假上游。
+    ///
+    /// HTTP 客户端顺带关掉系统代理：假上游跑在 `127.0.0.1:随机端口`，而
+    /// `tauri-plugin-updater` 会把 reqwest 的 `system-proxy` feature 统一进来 ——
+    /// 不关的话，本机开着 Clash（`127.0.0.1:7897`）时请求会被代理劫持，假服务
+    /// 回 502，整组测试只在「单独跑这个 crate」时绿、一进 workspace / 桌面端就红。
     pub fn with_endpoints(mut self, token_url: &str, backend_url: &str) -> Self {
-        self.tokens = TokenClient::new(self.http.clone()).with_token_url(token_url);
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(30))
+            .no_proxy()
+            .build()
+            .expect("reqwest 客户端初始化（只在 TLS 后端缺失时失败）");
+        self.http = http.clone();
+        self.tokens = TokenClient::new(http).with_token_url(token_url);
         self.backend_url = backend_url.trim_end_matches('/').to_string();
         self
     }
@@ -1721,14 +1733,19 @@ mod tests {
                 })
             };
             // 模拟浏览器：先要 favicon，再回调。
+            // 关掉系统代理 —— 见 `with_endpoints`：本机 Clash 开着时，不关就会把
+            // `127.0.0.1:1455` 送进代理，回调永远到不了本机监听。
             tokio::time::sleep(Duration::from_millis(50)).await;
-            let _ = reqwest::get("http://127.0.0.1:1455/favicon.ico").await;
-            let res = reqwest::get(format!(
-                "http://127.0.0.1:1455/auth/callback?code=the-code&state={}",
-                handle.session_id
-            ))
-            .await
-            .unwrap();
+            let http = reqwest::Client::builder().no_proxy().build().unwrap();
+            let _ = http.get("http://127.0.0.1:1455/favicon.ico").send().await;
+            let res = http
+                .get(format!(
+                    "http://127.0.0.1:1455/auth/callback?code=the-code&state={}",
+                    handle.session_id
+                ))
+                .send()
+                .await
+                .unwrap();
             assert_eq!(res.status(), 200);
             let up = waiter.await.unwrap().unwrap();
             assert!(up.created);

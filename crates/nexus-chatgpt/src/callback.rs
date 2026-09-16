@@ -194,7 +194,12 @@ mod tests {
     use super::*;
 
     async fn get(port: u16, path: &str) -> (u16, String) {
-        let res = reqwest::Client::new()
+        // 关掉系统代理：`tauri-plugin-updater` 统一进来的 `system-proxy` 会把
+        // `127.0.0.1` 送进本机 Clash，假回调永远到不了。
+        let res = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
             .get(format!("http://127.0.0.1:{port}{path}"))
             .send()
             .await

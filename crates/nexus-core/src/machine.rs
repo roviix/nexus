@@ -83,9 +83,9 @@ fn new_sqm_id() -> String {
 }
 
 fn random_hex_64() -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     bytes.iter().fold(String::with_capacity(64), |mut acc, b| {
         use std::fmt::Write;
         let _ = write!(acc, "{b:02x}");
