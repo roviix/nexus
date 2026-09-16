@@ -199,8 +199,7 @@ fn cursor_app(state: &AppState, probe: bool) -> PermItem {
                 (
                     PermStatus::Denied,
                     Some(
-                        "系统没有放行：在系统设置 → 隐私与安全性 → App 管理 里允许 Nexus。"
-                            .into(),
+                        "系统没有放行：在系统设置 → 隐私与安全性 → App 管理 里允许 Nexus。".into(),
                     ),
                 )
             } else {
