@@ -653,6 +653,26 @@ mod tests {
     }
 
     #[test]
+    fn copy_selected_session_is_the_cookie_shape_not_the_bare_jwt() {
+        // 库里只存裸 JWT，复制出去必须拼回 `user_xxx::<jwt>` —— 裸 JWT 贴到别处登不进 cursor.com。
+        let (accounts, _) = setup();
+        let far = (time::OffsetDateTime::now_utc() + time::Duration::hours(3)).unix_timestamp();
+        let jwt = jwt_expiring_at(far);
+        let a = accounts
+            .upsert(NewAccount {
+                email: "s@example.com".into(),
+                access_token: Some(format!("user_42%3A%3A{jwt}")),
+                ..Default::default()
+            })
+            .unwrap();
+        let none = std::collections::HashMap::new();
+        let text = accounts
+            .copy_selected(std::slice::from_ref(&a.id), "email_session", &none)
+            .unwrap();
+        assert_eq!(text, format!("s@example.com----user_42::{jwt}"));
+    }
+
+    #[test]
     fn copy_selected_puts_the_info_line_under_the_credential_line() {
         // 说明另起一行、不进 `----` 拼接：第一行始终是脚本能切开的那一行。
         let (accounts, _) = setup();

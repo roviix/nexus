@@ -6,7 +6,7 @@
  */
 
 import type { Account, AccountUsage } from "../ipc/types";
-import { creditPoints, onDemandParts, shortDate } from "../ui/usage";
+import { creditPoints, onDemandParts } from "../ui/usage";
 
 export type CopyFormat = "email" | "email_password" | "email_refresh" | "email_session" | "json";
 
@@ -14,7 +14,7 @@ export const COPY_FORMATS: Array<{ id: CopyFormat; label: string; sample: string
   { id: "email", label: "仅邮箱", sample: "a@example.com" },
   { id: "email_password", label: "邮箱----密码", sample: "a@example.com----P@ssw0rd" },
   { id: "email_refresh", label: "邮箱----Refresh Token", sample: "a@example.com----eyJhbGci…" },
-  { id: "email_session", label: "邮箱----Session Token", sample: "a@example.com----eyJhbGci…" },
+  { id: "email_session", label: "邮箱----Session Token", sample: "a@example.com----user_01ABC…::eyJhbGci…" },
   { id: "json", label: "结构化 JSON", sample: '{ "accounts": [ … ] }' },
 ];
 
@@ -108,11 +108,21 @@ function extraText(usage: AccountUsage, extra: CopyExtra): string {
     }
     case "resets": {
       const items: string[] = [];
-      if (usage.cycleEnd != null && Number.isFinite(usage.cycleEnd)) items.push(`月额 ${shortDate(usage.cycleEnd)} 重置`);
-      if (usage.bot?.resetAt != null && Number.isFinite(usage.bot.resetAt)) items.push(`Bot ${shortDate(usage.bot.resetAt)} 重置`);
+      if (usage.cycleEnd != null && Number.isFinite(usage.cycleEnd)) items.push(`月额 ${dateMinute(usage.cycleEnd)} 重置`);
+      if (usage.bot?.resetAt != null && Number.isFinite(usage.bot.resetAt)) items.push(`Bot ${dateMinute(usage.bot.resetAt)} 重置`);
       return items.length ? items.join(" · ") : "重置时间未知";
     }
   }
+}
+
+/**
+ * 重置时刻到分钟，`09/30 20:00`，本地时区。卡片上写「17 天后」够了，复制出去的那行是给别人对表的：
+ * 月额几点重置决定这个号今晚还能不能用，只给日期不够。
+ */
+export function dateMinute(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** API 桶没单独计量时退到总额度，两个都没有才说未知。 */

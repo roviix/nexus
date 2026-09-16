@@ -1070,7 +1070,7 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
           : format === "email_refresh"
             ? "----rt_fake_token_here"
             : format === "email_session"
-              ? "----session_token_here"
+              ? "----user_01MOCKUSER::eyJhbGciOiJIUzI1NiJ9.session_token_here.sig"
               : "";
       // 与 Rust 侧同一规则：说明另起一行；带了说明账号之间空一行。
       const annotated = hit.some((a) => info[a.id]?.trim());

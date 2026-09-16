@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AccountUsage } from "../ipc/types";
-import { copyInfoLine, copyInfoMap, loadCopyChoice, normalizeChoice, saveCopyChoice } from "./copy";
+import { copyInfoLine, copyInfoMap, dateMinute, loadCopyChoice, normalizeChoice, saveCopyChoice } from "./copy";
+
+// 本地时区构造，断言里的钟点才不随跑测试的机器变。
+const CYCLE_END = new Date(2026, 8, 30, 20, 5).getTime();
+const BOT_RESET = new Date(2026, 8, 18, 9, 30).getTime();
 
 function usage(over: Partial<AccountUsage> = {}): AccountUsage {
   return {
@@ -11,11 +15,18 @@ function usage(over: Partial<AccountUsage> = {}): AccountUsage {
     onDemandUsedCents: 120,
     onDemandLimitCents: 2000,
     creditGrantRemainingCents: 10000,
-    cycleEnd: Date.UTC(2026, 8, 30, 12),
-    bot: { resetAt: Date.UTC(2026, 8, 18, 12) },
+    cycleEnd: CYCLE_END,
+    bot: { resetAt: BOT_RESET },
     ...over,
   } as AccountUsage;
 }
+
+describe("dateMinute", () => {
+  it("月/日 时:分，各两位，本地时区", () => {
+    expect(dateMinute(new Date(2026, 0, 5, 7, 3).getTime())).toBe("01/05 07:03");
+    expect(dateMinute(CYCLE_END)).toBe("09/30 20:05");
+  });
+});
 
 describe("copyInfoLine", () => {
   it("没选附加项就是空串，Rust 侧当没有", () => {
@@ -24,7 +35,7 @@ describe("copyInfoLine", () => {
 
   it("按固定顺序拼四段，中间用点隔开", () => {
     const line = copyInfoLine({ usage: usage() }, ["resets", "api", "credits", "on_demand"]);
-    expect(line).toBe("API 余 54% · 按需 $1.20 / $20 · 积分 100 · 月额 09/30 重置 · Bot 09/18 重置");
+    expect(line).toBe("API 余 54% · 按需 $1.20 / $20 · 积分 100 · 月额 09/30 20:05 重置 · Bot 09/18 09:30 重置");
   });
 
   it("只选一项就只有一段", () => {

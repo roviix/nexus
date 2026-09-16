@@ -129,10 +129,10 @@ impl Accounts {
         }
 
         let paired = match format {
-            "email" => None,
-            "email_password" => Some(AccountSecret::CursorPassword),
-            "email_refresh" => Some(AccountSecret::Refresh),
-            "email_session" => Some(AccountSecret::Access),
+            "email" => Paired::Nothing,
+            "email_password" => Paired::Secret(AccountSecret::CursorPassword),
+            "email_refresh" => Paired::Secret(AccountSecret::Refresh),
+            "email_session" => Paired::Session,
             _ => return Err(nexus_core::AppError::invalid("不认识的复制格式。")),
         };
 
@@ -140,10 +140,15 @@ impl Accounts {
         let mut annotated = false;
         for id in ids {
             let Ok(account) = self.get(id) else { continue };
+            let tail = match paired {
+                Paired::Nothing => None,
+                Paired::Secret(kind) => Some(secret(id, kind)?.unwrap_or_default()),
+                Paired::Session => Some(self.session_token_string(&account)?.unwrap_or_default()),
+            };
             let mut line = account.email;
-            if let Some(kind) = paired {
+            if let Some(tail) = tail {
                 line.push_str("----");
-                line.push_str(&secret(id, kind)?.unwrap_or_default());
+                line.push_str(&tail);
             }
             if let Some(extra) = info_for(id) {
                 annotated = true;
@@ -155,6 +160,35 @@ impl Accounts {
         // 带了说明每个号就是两行，中间空一行才看得出哪行归哪个号；不带就还是一行一个。
         Ok(blocks.join(if annotated { "\n\n" } else { "\n" }))
     }
+
+    /// 这个号的**会话 token**：`user_xxx::<access jwt>`，即 `WorkosCursorSessionToken` cookie 的值。
+    ///
+    /// 「复制 Session」给出去的必须是这个形状 —— 裸 access JWT 贴到别处登不进 cursor.com，
+    /// 收的人只会以为号坏了。user_id 优先用库里记的，没有就从 JWT 的 `sub` 里算；两处都没有时
+    /// 退成裸 JWT（总比一个空串强）。不去换新的：这里是同步读库，续期由调用方在之前做。
+    fn session_token_string(&self, account: &crate::model::Account) -> Result<Option<String>> {
+        let Some(access) = self.secret(&account.id, AccountSecret::Access)? else {
+            return Ok(None);
+        };
+        let jwt = access.expose();
+        let user_id = account
+            .workos_user_id
+            .clone()
+            .or_else(|| crate::token::extract_user_id(jwt));
+        Ok(Some(match user_id {
+            Some(u) => format!("{u}::{jwt}"),
+            None => jwt.to_string(),
+        }))
+    }
+}
+
+/// 文本格式里 `----` 后面跟的是什么。
+#[derive(Clone, Copy)]
+enum Paired {
+    Nothing,
+    Secret(AccountSecret),
+    /// `user_xxx::<jwt>`，不是某一格凭证，是拼出来的。
+    Session,
 }
 
 #[cfg(test)]

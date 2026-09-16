@@ -53,9 +53,11 @@ export function CopySelectedModal({
     const tail =
       format === "email_password"
         ? "----••••••••"
-        : format === "email_refresh" || format === "email_session"
+        : format === "email_refresh"
           ? "----eyJhbGci…"
-          : "";
+          : format === "email_session"
+            ? "----user_01ABC…::eyJhbGci…"
+            : "";
     return info ? `${email}${tail}\n${info}` : `${email}${tail}`;
   }, [sample, masked, format, chosenExtras]);
 

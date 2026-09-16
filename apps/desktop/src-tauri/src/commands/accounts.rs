@@ -148,14 +148,29 @@ pub fn accounts_import_dump(
 
 /// 多选账号按格式复制。格式支持：email / email_password / email_refresh / email_session / json。
 /// `info` 按账号 id 附一行说明（界面排好的用量 / 按需 / 积分 / 重置），另起一行跟在凭证后面。
+///
+/// 复制 Session 时先把每个号的会话过一遍 `session()`：手上那把还活着就原样用，过期了、又有
+/// refresh 的换一把新的落库 —— 给出去的 `user_xxx::<jwt>` 才是能登的。换不出来的（仅会话且已过期）
+/// 不拦整批，照库里现有的给；与查看单个号的会话 token 一样，记一条活动日志。
 #[tauri::command(async)]
-pub fn accounts_copy_selected(
+pub async fn accounts_copy_selected(
     state: State<'_, AppState>,
     ids: Vec<String>,
     format: String,
     info: Option<HashMap<String, String>>,
 ) -> Result<String> {
     let ids: Vec<AccountId> = ids.into_iter().map(AccountId::from_raw).collect();
+    if format == "email_session" {
+        for id in &ids {
+            let _ = state.accounts.session(id).await;
+        }
+        activity::warn(
+            &state.db,
+            "accounts",
+            None,
+            format!("已批量复制 {} 个账号的会话 token（user_id::access）", ids.len()),
+        );
+    }
     state
         .accounts
         .repo
