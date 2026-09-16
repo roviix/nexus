@@ -326,6 +326,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2640,7 +2646,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 name = "nexus-accounts"
 version = "0.6.4"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "nexus-core",
  "nexus-store",
  "rand 0.8.8",
@@ -2660,7 +2666,7 @@ name = "nexus-chatgpt"
 version = "0.6.4"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "nexus-core",
  "nexus-store",
  "rand 0.8.8",
@@ -2706,7 +2712,7 @@ dependencies = [
 name = "nexus-crsr"
 version = "0.6.4"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "nexus-accounts",
  "nexus-core",
  "nexus-cursor",
@@ -2771,7 +2777,7 @@ name = "nexus-gateway"
 version = "0.6.4"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures-util",
  "nexus-accounts",
  "nexus-chatgpt",
@@ -2802,7 +2808,7 @@ name = "nexus-grok"
 version = "0.6.4"
 dependencies = [
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "nexus-core",
  "nexus-store",
  "reqwest 0.12.28",
@@ -2822,7 +2828,7 @@ name = "nexus-grokbot"
 version = "0.6.4"
 dependencies = [
  "aes",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cbc",
  "nexus-core",
  "pbkdf2",
@@ -2842,7 +2848,7 @@ dependencies = [
 name = "nexus-kiro"
 version = "0.6.4"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "nexus-core",
  "nexus-store",
  "reqwest 0.12.28",
@@ -2860,7 +2866,7 @@ dependencies = [
 name = "nexus-playground"
 version = "0.6.4"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "nexus-core",
  "nexus-gateway",
  "nexus-store",
@@ -2878,7 +2884,7 @@ dependencies = [
 name = "nexus-sand"
 version = "0.6.4"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "nexus-core",
  "nexus-cursor",
  "nexus-grokbot",
