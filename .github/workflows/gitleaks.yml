@@ -24,7 +24,7 @@ jobs:
     name: 扫描泄漏的凭证
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # 扫全部历史，不只是这一次改动：凭证一旦进过历史，后来删掉也还在。
           fetch-depth: 0
