@@ -8,6 +8,8 @@
 
 ## [未发布]
 
+## [0.6.1] — 2026-09-16
+
 ### 新增
 
 - **批量查找。** 搜索框旁多了一个按钮：粘一份邮箱清单（一行一个、逗号隔开、`邮箱----密码` 那种
@@ -231,7 +233,8 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.6.0...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/roviix/nexus/releases/tag/v0.6.1
 [0.6.0]: https://github.com/roviix/nexus/releases/tag/v0.6.0
 [0.5.1]: https://github.com/roviix/nexus/releases/tag/v0.5.1
 [0.5.0]: https://github.com/roviix/nexus/releases/tag/v0.5.0

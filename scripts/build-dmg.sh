@@ -44,7 +44,7 @@ mkdir -p "$target_dir"
 target_vol=$(cd "$target_dir" && pwd -P)
 avail_kb=$(df -k "$target_vol" | awk 'NR==2 {print $4}')
 if [ "$avail_kb" -lt $((4 * 1024 * 1024)) ]; then
-  echo "构建盘（$target_vol）只剩 $((avail_kb / 1024 / 1024)) GB，release 构建可能中途失败；先清 target/debug 或把 CARGO_TARGET_DIR 指到空盘再来。" >&2
+  echo "构建盘（${target_vol}）只剩 $((avail_kb / 1024 / 1024)) GB，release 构建可能中途失败；先清 target/debug 或把 CARGO_TARGET_DIR 指到空盘再来。" >&2
   exit 3
 fi
 

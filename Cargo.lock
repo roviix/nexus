@@ -2604,7 +2604,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexus-accounts"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "nexus-core",
@@ -2623,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-chatgpt"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connect"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "nexus-core",
  "serde",
@@ -2657,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "rand 0.8.8",
  "serde",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-crsr"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "nexus-accounts",
@@ -2689,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cursor"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "nexus-core",
  "rusqlite",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-desktop"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "log",
  "nexus-accounts",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-gateway"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2765,7 +2765,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-grok"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -2785,7 +2785,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-grokbot"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-kiro"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "nexus-core",
@@ -2824,7 +2824,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-playground"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "nexus-core",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-sand"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "nexus-core",
@@ -2860,7 +2860,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-store"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "nexus-core",
  "rusqlite",
@@ -2874,7 +2874,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-switcher"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "nexus-core",
  "nexus-cursor",
