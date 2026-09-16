@@ -329,7 +329,7 @@ async fn spawn_with_models(ready: bool, extra_models: Vec<String>) -> Harness {
 }
 
 fn http() -> reqwest::Client {
-    reqwest::Client::new()
+    reqwest::Client::builder().no_proxy().build().unwrap()
 }
 
 fn sse_events(text: &str) -> Vec<(String, Value)> {

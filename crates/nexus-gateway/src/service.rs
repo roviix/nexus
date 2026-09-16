@@ -859,7 +859,7 @@ mod tests {
 
         // 真的在监听：healthz 通，且没带口令的请求被 401。
         let base = info.base_url.clone();
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
         assert_eq!(
             http.get(format!("{base}/healthz"))
                 .send()

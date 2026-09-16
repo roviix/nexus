@@ -1367,8 +1367,11 @@ mod tests {
         assert_eq!(s.recent[0].status, 402);
     }
 
+    /// 测试客户端一律绕开代理。被测服务器就在 `127.0.0.1` 上，而 `--workspace` 下
+    /// reqwest 的功能会被 tauri 那边的依赖并进来（含系统代理探测）——开着 Clash 这类
+    /// 全局代理的机器上，请求会被绕去 `127.0.0.1:7897` 再回 502，整片 server 测试连着挂。
     fn http() -> reqwest::Client {
-        reqwest::Client::new()
+        reqwest::Client::builder().no_proxy().build().unwrap()
     }
 
     #[tokio::test]
