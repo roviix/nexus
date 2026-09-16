@@ -8,6 +8,8 @@
 
 ## [未发布]
 
+## [0.6.3] — 2026-09-16
+
 ### 修复
 
 - **修一个会毁号的回归。** 上一版放开切号时用「JWT 活着就能切」当判据，但只有 `type=session` 的桌面
@@ -17,10 +19,10 @@
 
 ### 新增
 
-- **web-only 号也能一键切号,不用碰 crsr。** 切号时后台自动用这把还活着的网站会话走一次 Cursor 官方
-  `loginDeepControl`,换出真正的桌面 session + refresh(**无需密码、无需验证码,也不会顶掉原会话**——
-  已真机验证),号顺带从「仅会话(到期就废)」升级成长期号,之后可一直切、可续期。账号抽屉里这类号的
-  「切号」直接可点,首次切会多花几秒做转换。
+- **web-only 号也能一键切号,不用碰 crsr。** 账号里点「切号」直接切进去：后台若发现是网站 web token，
+  会先用这把还活着的会话走一次 Cursor 官方 `loginDeepControl`，换出真正的桌面 session + refresh
+  （无需密码、无需验证码，也不会顶掉原会话），号顺带从「仅会话(到期就废)」升级成长期号。用户多等
+  几秒即可，没有第二步、没有切号池中转。
 
 ### 迁移
 
@@ -274,7 +276,8 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.6.2...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/roviix/nexus/releases/tag/v0.6.3
 [0.6.2]: https://github.com/roviix/nexus/releases/tag/v0.6.2
 [0.6.1]: https://github.com/roviix/nexus/releases/tag/v0.6.1
 [0.6.0]: https://github.com/roviix/nexus/releases/tag/v0.6.0
