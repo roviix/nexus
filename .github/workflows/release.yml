@@ -36,7 +36,7 @@ jobs:
       version: ${{ steps.version.outputs.value }}
       tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 解析并核对版本
         id: version
@@ -89,7 +89,7 @@ jobs:
       WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -284,7 +284,7 @@ jobs:
       INPUT_RELEASE_NOTES: ${{ inputs.release_notes }}
       SIGNED: ${{ secrets.APPLE_SIGNING_IDENTITY != '' && secrets.WINDOWS_CERTIFICATE_BASE64 != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v4
         with:
