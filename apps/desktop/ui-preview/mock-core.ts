@@ -325,16 +325,25 @@ const OVERVIEW: Overview = {
   machineIdOwner: EMPTY ? null : "arvid.pfeffer@outlook.com",
   hasOriginalMachine: true,
   cursorRunning: true,
-  // 两把必需的键都要在，否则 `isWritable` 判成键名漂移，整页降级只读 —— 预览里看到的
-  // 就永远是那条琥珀横幅加一列灰按钮。
+  // `writable` 要给 true，否则整页降级只读 —— 预览里看到的就永远是那条琥珀横幅加一列灰按钮。
   check: NO_CURSOR
-    ? { dbPresent: false, tablePresent: false, presentKeys: [], missingKeys: [], cursorVersion: null }
+    ? {
+        dbPresent: false,
+        tablePresent: false,
+        presentKeys: [],
+        missingKeys: [],
+        cursorVersion: null,
+        writable: false,
+        blockedReason: "没找到 Cursor 的登录态库，切号功能不可用。",
+      }
     : {
         dbPresent: true,
         tablePresent: true,
         presentKeys: ["cursorAuth/accessToken", "cursorAuth/refreshToken", "cursorAuth/cachedEmail"],
         missingKeys: [],
         cursorVersion: "3.19.13",
+        writable: true,
+        blockedReason: null,
       },
 };
 
@@ -833,6 +842,7 @@ const APP: AppStatus = {
   cursor: OVERVIEW.check,
   cursorUserDir: "/Users/me/Library/Application Support/Cursor/User",
   cursorAppDir: NO_CURSOR ? null : "/Applications/Cursor.app",
+  cursorAppDirSetting: "",
   cursorVersion: NO_CURSOR ? null : "3.19.13",
   switchMachineIds: false,
   backupKeep: 10,
@@ -935,7 +945,13 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       // 真命令回的是改完之后的整份状态，设置页拿它直接换掉手上的那份。
       const patch = (args ?? {}) as Partial<AppStatus>;
       Object.assign(APP, Object.fromEntries(Object.entries(patch).filter(([, val]) => val !== undefined)));
-      if ("cursorAppDir" in patch) APP.cursorAppDir = patch.cursorAppDir || null;
+      if ("cursorAppDir" in patch) {
+        // 真命令存的是原文，生效与否要看那个目录里有没有 Cursor。预览里没有文件系统，
+        // 就拿路径里带没带 cursor 当那一步判定 —— 够用来看两种状态各长什么样。
+        const raw = (patch.cursorAppDir ?? "").trim();
+        APP.cursorAppDirSetting = raw;
+        APP.cursorAppDir = raw ? (/cursor/i.test(raw) ? raw : null) : NO_CURSOR ? null : "/Applications/Cursor.app";
+      }
       return v({ ...APP });
     }
     case "switcher_restore_machine":

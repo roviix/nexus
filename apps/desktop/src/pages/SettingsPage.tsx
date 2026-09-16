@@ -74,10 +74,9 @@ export function SettingsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     );
   }
 
-  const writable =
-    status.cursor.dbPresent &&
-    status.cursor.tablePresent &&
-    ["cursorAuth/accessToken", "cursorAuth/refreshToken"].every((k) => status.cursor.presentKeys.includes(k));
+  // Rust 算好的（`SchemaCheck::writable`）。这里曾经自己拼一遍，还漏了「没人登着就该放行」
+  // 那一支 —— 于是一台刚装好、还没登录的 Cursor 一进设置页就顶着「格式与预期不符」。
+  const writable = status.cursor.writable;
 
   return (
     <div className="set-page">
@@ -93,7 +92,7 @@ export function SettingsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
           <Banner
             tone="warn"
             title={status.cursor.dbPresent ? "Cursor 的登录态格式与预期不符，切号已降级为只读" : "没找到 Cursor，切号已降级为只读"}
-            hint={status.cursor.dbPresent ? `缺 ${status.cursor.missingKeys.join("、")}` : undefined}
+            hint={status.cursor.blockedReason ?? undefined}
             action={
               tab !== "advanced" ? (
                 <button type="button" className="btn btn-sm" onClick={() => goTab("advanced")}>
@@ -277,16 +276,25 @@ function AdvancedTab({ status, busy, onSave }: { status: AppStatus; busy: boolea
           />
           {/* 安装目录和数据目录是两件事：前者放程序本体（启动 Cursor、Sand 补丁要它），
               后者放登录态（切号读写它）。Windows 上 Cursor 可以装在任意盘符，探测更容易
-              落空，所以它要能单独指定。 */}
+              落空，所以它要能单独指定。
+
+              输入框里回填的是**用户填过的原文**而不是生效的那个：填错了也得留在那儿，
+              否则一保存就被抹掉，用户连改都无从改起。填了没生效就照实说是哪种情况。 */}
           <PathOpt
             icon="box"
             title="Cursor 安装目录"
             desc="程序本体，启动 Cursor 与 Sand 补丁要它"
-            saved={status.cursorAppDir ?? ""}
+            saved={status.cursorAppDirSetting || status.cursorAppDir || ""}
             placeholder="留空则自动探测"
             busy={busy}
             restart
-            state={status.cursorAppDir ? undefined : <Health tone="warn">未检测到</Health>}
+            state={
+              status.cursorAppDir ? undefined : status.cursorAppDirSetting.trim() ? (
+                <Health tone="warn">这个目录里没有 Cursor</Health>
+              ) : (
+                <Health tone="warn">未检测到</Health>
+              )
+            }
             onSave={(v) => onSave({ cursorAppDir: v })}
           />
         </div>

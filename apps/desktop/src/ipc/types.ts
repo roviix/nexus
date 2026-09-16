@@ -49,14 +49,25 @@ export interface SchemaCheck {
   presentKeys: string[];
   missingKeys: string[];
   cursorVersion?: string | null;
+  /**
+   * 能不能写 Cursor 的登录态。**Rust 算好的，界面照读。**
+   *
+   * 别在这边重新拼一遍判据 —— 拼过两遍，两遍不一样：一台刚装好还没登录的 Cursor
+   * 在设置页顶着「格式与预期不符」的横幅，切号页却是好的。判据只有 `SchemaCheck::writable` 一处。
+   */
+  writable: boolean;
+  /** 不能写时给用户的那句话；能写时是 null。 */
+  blockedReason?: string | null;
 }
 
 export interface AppStatus {
   version: string;
   cursor: SchemaCheck;
   cursorUserDir: string;
-  /** Cursor 的安装目录。探不到就是 null —— 只影响启动 Cursor 和 Sand。 */
+  /** **生效的**安装目录。探不到、或者填的那个里面没有 Cursor，都是 null。 */
   cursorAppDir?: string | null;
+  /** 用户填的安装目录原文。填了却没生效 = 那个目录里没有 Cursor。 */
+  cursorAppDirSetting: string;
   cursorVersion?: string | null;
   switchMachineIds: boolean;
   backupKeep: number;

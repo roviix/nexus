@@ -40,6 +40,19 @@ pub const AUTH_KEYS: [&str; 10] = [
 /// 没有这两个就切不进去 —— 其余键缺了只是显示不全。
 pub const REQUIRED_KEYS: [&str; 2] = ["cursorAuth/accessToken", "cursorAuth/refreshToken"];
 
+/// 「此刻真的登着号」只能由这几把键回答：它们是登出时确实会被清掉的那些。
+///
+/// 这一条是 Windows 上踩出来的。`cursorAuth/*` 不是一起生灭的：用户登出之后，
+/// `stripeMembershipType` / `cachedSignUpType` / `onboardingDate` 会**留在库里**，
+/// 而 token、邮箱、userId、scopedProfile 被清掉。于是「库里还有 auth 键」被当成了
+/// 「登着号」，再一看必需的 token 不在 —— 判成键名漂移，切号降级只读。用户手里是一台
+/// 刚装好、还没登录的 Cursor，最该往里写的时候反倒被拦住了。
+pub const IDENTITY_KEYS: [&str; 3] = [
+    "cursorAuth/cachedEmail",
+    "cursorAuth/cachedUserId",
+    "cursorAuth/cachedScopedProfile",
+];
+
 /// 热切之后要**补写**的那几个键：账号在界面上「叫什么、什么档」的缓存。
 ///
 /// 热切走的是 Cursor 自己的 `cursor://cursorAuth?route=login` 深链。读 3.19.7 的
@@ -169,8 +182,15 @@ pub struct AuthSummary {
 }
 
 /// 启动自检的结果（§5.2「键名漂移是唯一真实风险」）。
+///
+/// 出口形状见 [`SchemaCheckWire`]：序列化时会**额外带上** `writable` 与 `blockedReason`。
+/// 界面不该自己拼「能不能写」那套判据 —— 它拼过，而且和这边拼得不一样。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(
+    rename_all = "camelCase",
+    into = "SchemaCheckWire",
+    from = "SchemaCheckWire"
+)]
 pub struct SchemaCheck {
     /// 库在不在。
     pub db_present: bool,
@@ -184,21 +204,75 @@ pub struct SchemaCheck {
     pub cursor_version: Option<String>,
 }
 
+/// `SchemaCheck` 在 IPC 上的形状：探测到的事实，加上由它们算出来的结论。
+///
+/// 结论只算一次、只在 Rust 这边算。以前界面自己拼一遍：SwitcherPage 拼对了，
+/// SettingsPage 漏掉了「没人登着就该放行」那一支，于是一台干净的 Cursor 一进设置页
+/// 就顶着「格式与预期不符」的横幅。判据放在两处就一定会分叉，所以这里只留一处。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaCheckWire {
+    pub db_present: bool,
+    pub table_present: bool,
+    pub present_keys: Vec<String>,
+    pub missing_keys: Vec<String>,
+    pub cursor_version: Option<String>,
+    /// [`SchemaCheck::writable`] 的结果。
+    pub writable: bool,
+    /// [`SchemaCheck::explain`] 的结果：不通过时给用户的那句话，通过时是 `None`。
+    pub blocked_reason: Option<String>,
+}
+
+impl From<SchemaCheck> for SchemaCheckWire {
+    fn from(c: SchemaCheck) -> Self {
+        let writable = c.writable();
+        let blocked_reason = c.explain();
+        Self {
+            db_present: c.db_present,
+            table_present: c.table_present,
+            present_keys: c.present_keys,
+            missing_keys: c.missing_keys,
+            cursor_version: c.cursor_version,
+            writable,
+            blocked_reason,
+        }
+    }
+}
+
+impl From<SchemaCheckWire> for SchemaCheck {
+    /// 回来的路上把结论丢掉：它是算出来的，不是事实，留着就会有人去改它。
+    fn from(w: SchemaCheckWire) -> Self {
+        Self {
+            db_present: w.db_present,
+            table_present: w.table_present,
+            present_keys: w.present_keys,
+            missing_keys: w.missing_keys,
+            cursor_version: w.cursor_version,
+        }
+    }
+}
+
 impl SchemaCheck {
     /// Cursor 现在登着号吗。
+    ///
+    /// 只看身份键（[`IDENTITY_KEYS`]）。「库里有 auth 键」是个不能用的判据 ——
+    /// 登出会留下几把非身份键，那不叫登着号。
     pub fn logged_in(&self) -> bool {
-        !self.present_keys.is_empty()
+        self.present_keys
+            .iter()
+            .any(|k| IDENTITY_KEYS.contains(&k.as_str()))
     }
 
     /// 能不能安全地写。
     ///
-    /// 关键的区分：**「一个 auth 键都没有」和「有几个但缺了必需的」是两回事。**
-    ///   - 一个都没有 = Cursor 从没登录过（新装的机器，或用户登出了）。往里写正是
-    ///     我们要做的事，不该拦 —— 拦了的话「买号 → 切入」在干净机器上根本走不通（§2.4）。
-    ///   - 有几个、却缺了必需的 = 键名可能变了。这才是该降级只读的情形（§11）。
+    /// 关键的区分：**「没人登着」和「有人登着但必需的键不见了」是两回事。**
+    ///   - 没人登着 = Cursor 从没登录过，或用户登出了（库里可能还剩几把非身份键）。
+    ///     往里写正是我们要做的事，不该拦 —— 拦了的话「买号 → 切入」在干净机器上
+    ///     根本走不通（§2.4）。
+    ///   - 有人登着、却缺了必需的 token = 键名可能变了。这才是该降级只读的情形（§11）。
     ///
-    /// 漏网之鱼是「Cursor 把十个键全改了名」：那时 `present_keys` 也是空的，我们会照旧
-    /// 写老键名。写进去是无害的（Cursor 忽略不认识的键），用户会看到它依然未登录
+    /// 漏网之鱼是「Cursor 把十个键全改了名」：那时身份键也读不到，我们会照旧写老键名。
+    /// 写进去是无害的（Cursor 忽略不认识的键），用户会看到它依然未登录
     /// ——比一上来就把功能锁死好。
     pub fn writable(&self) -> bool {
         if !self.db_present || !self.table_present {
@@ -213,6 +287,9 @@ impl SchemaCheck {
     }
 
     /// 不通过时给用户的一句话。
+    ///
+    /// 只点名**必需的**那几把缺了的键。十把键全列出来是一屏键名，用户读完仍然不知道
+    /// 该干什么；真正卡住切号的只有 token 那两把。
     pub fn explain(&self) -> Option<String> {
         if self.writable() {
             return None;
@@ -223,10 +300,15 @@ impl SchemaCheck {
         if !self.table_present {
             return Some("Cursor 的登录态库里没有 ItemTable，结构与预期不符。".to_string());
         }
+        let missing: Vec<&str> = REQUIRED_KEYS
+            .iter()
+            .copied()
+            .filter(|k| !self.present_keys.iter().any(|p| p == k))
+            .collect();
         Some(format!(
-            "Cursor 的登录态键名与预期不符（缺 {}）。它可能升级后改了存储结构；\
+            "Cursor 登着号，却读不到 {}。它可能升级后改了存储结构；\
              切号已降级为只读，避免写坏你的登录态。",
-            self.missing_keys.join("、")
+            missing.join("、")
         ))
     }
 }
@@ -675,6 +757,45 @@ mod tests {
         assert!(!check.logged_in());
         assert!(check.writable(), "没登录不等于结构不对，不该拦着不让写");
         assert!(check.explain().is_none());
+    }
+
+    /// Windows 实测：用户登出后库里还剩 `stripeMembershipType` / `cachedSignUpType` /
+    /// `onboardingDate`，token 和邮箱都已被清。这是「没人登着」，不是键名漂移 ——
+    /// 它曾经把切号禁成只读，而那台机器恰恰正等着我们往里写。
+    #[test]
+    fn leftovers_from_a_logout_are_not_mistaken_for_a_login() {
+        let (_dir, db) = fixture();
+        let mut leftovers = AuthBundle::new();
+        leftovers.insert("cursorAuth/stripeMembershipType", "pro");
+        leftovers.insert("cursorAuth/cachedSignUpType", "google");
+        leftovers.insert("cursorAuth/onboardingDate", "2026-08-01");
+        db.write_auth(&leftovers, false).unwrap();
+
+        let check = db.check(None);
+        assert!(!check.present_keys.is_empty(), "残留键确实在库里");
+        assert!(!check.logged_in(), "残留的非身份键不算登着号");
+        assert!(check.writable(), "没人登着就该放行，这正是要写进去的时候");
+        assert!(check.explain().is_none());
+    }
+
+    /// 结论只在 Rust 这边算一次，序列化时一起交给界面。
+    #[test]
+    fn the_wire_shape_carries_the_verdict_so_the_ui_never_re_derives_it() {
+        let (_dir, db) = fixture();
+        let mut partial = AuthBundle::new();
+        partial.insert("cursorAuth/cachedEmail", "a@example.com");
+        db.write_auth(&partial, false).unwrap();
+
+        let json = serde_json::to_value(db.check(None)).unwrap();
+        assert_eq!(json["writable"], serde_json::json!(false));
+        let reason = json["blockedReason"].as_str().unwrap();
+        assert!(reason.contains("降级为只读"));
+        // 只点名卡住切号的那两把，不是把十把键全倒出来。
+        assert!(reason.contains("cursorAuth/accessToken"));
+        assert!(
+            !reason.contains("onboardingDate"),
+            "别把不相干的键也列上：{reason}"
+        );
     }
 
     #[test]

@@ -54,10 +54,18 @@ impl CursorPaths {
     /// 数据目录和安装目录是两件事：Windows 上前者恒在 `%APPDATA%\Cursor`，后者却可能
     /// 被装到任意盘符。探不到安装目录只影响「启动 Cursor」和 Sand，不影响读写登录态，
     /// 所以这里是可选覆盖而不是必填项。空字符串 = 回到自动探测。
+    ///
+    /// **填错了不算填了。** 以前这里照单全收，于是随手写个盘符也能让界面上那枚
+    /// 「未检测到」熄灭 —— 用户以为指对了，启动 Cursor 和 Sand 到用的时候才失败，
+    /// 而且失败的地方离设置页很远。现在只认里面真有 Cursor 的目录，
+    /// 填错就退回自动探测的结果（通常是 `None`），界面照旧说没找到。
     pub fn with_app_override(mut self, app: Option<&str>) -> Self {
         let explicit = app.map(str::trim).filter(|s| !s.is_empty());
         if let Some(dir) = explicit {
-            self.app = Some(PathBuf::from(dir));
+            let dir = PathBuf::from(dir);
+            if is_cursor_install(&dir) {
+                self.app = Some(dir);
+            }
         }
         self
     }
@@ -91,13 +99,32 @@ impl CursorPaths {
     /// bundle 里的 `product.json`。读版本用它；权限预检也拿它当「能不能改 Cursor 本体」的探针——
     /// 每个版本都有、又不是被 Sand 改写的那几个文件。
     pub fn product_json(&self) -> Option<PathBuf> {
-        let app = self.app.as_ref()?;
-        let candidates = [
-            app.join("Contents/Resources/app/product.json"), // macOS bundle
-            app.join("resources/app/product.json"),          // Windows / Linux 安装目录
-        ];
-        candidates.into_iter().find(|p| p.is_file())
+        product_json_in(self.app.as_ref()?)
     }
+}
+
+/// `product.json` 在这个安装目录里的位置。macOS 是 bundle 布局，Windows / Linux 是安装目录布局。
+fn product_json_in(app: &Path) -> Option<PathBuf> {
+    [
+        app.join("Contents/Resources/app/product.json"), // macOS bundle
+        app.join("resources/app/product.json"),          // Windows / Linux 安装目录
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+}
+
+/// 这个目录里是不是一个 Cursor 安装。
+///
+/// 两个标志物任一命中就算：`product.json`（版本号和 Sand 补丁读它）或平台的可执行本体
+/// （Windows 的 `Cursor.exe`、macOS bundle 里的 `Contents/MacOS`）。两个都找是因为
+/// 它们各自对应一件事 —— 打补丁要前者，启动要后者，便携版少一个也还有用。
+///
+/// **不能只看目录存不存在。** 卸载后 `%LOCALAPPDATA%\Programs\cursor` 常留一个空壳，
+/// 那时「探到了」比「没探到」更坏：界面说一切正常，启动 Cursor 却静静地失败。
+pub fn is_cursor_install(dir: &Path) -> bool {
+    product_json_in(dir).is_some()
+        || dir.join("Cursor.exe").is_file()
+        || dir.join("Contents/MacOS").is_dir()
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -129,6 +156,8 @@ fn default_user_dir() -> Result<PathBuf> {
 /// 默认装到 `%LOCALAPPDATA%\Programs\cursor`（per-user，不需要管理员），机器级安装是
 /// 少数派；而 macOS 上 `/Applications` 才是常态。先命中常见的那个，少走一次 stat。
 fn find_app() -> Option<PathBuf> {
+    // 排障用的后门，照单全收（只要路径在）：设置页那一格要挡住填错的，这里不挡 ——
+    // 会去设这个环境变量的人正是想强行指一个不合常规布局的目录。
     if let Some(explicit) = std::env::var_os("CURSOR_APP_PATH") {
         let p = PathBuf::from(explicit);
         return p.exists().then_some(p);
@@ -162,7 +191,7 @@ fn find_app() -> Option<PathBuf> {
         candidates.push(PathBuf::from("/usr/share/cursor"));
         candidates.push(PathBuf::from("/opt/cursor"));
     }
-    candidates.into_iter().find(|p| p.exists())
+    candidates.into_iter().find(|p| is_cursor_install(p))
 }
 
 #[cfg(test)]
@@ -204,10 +233,58 @@ mod tests {
         assert!(p.version().is_none());
     }
 
+    /// 造一个 Windows 布局的安装目录：`Cursor.exe` + `resources/app/product.json`。
+    fn windows_install(root: &Path, version: &str) -> PathBuf {
+        let app = root.join("cursor");
+        let res = app.join("resources/app");
+        std::fs::create_dir_all(&res).unwrap();
+        std::fs::write(
+            res.join("product.json"),
+            format!(r#"{{"version":"{version}"}}"#),
+        )
+        .unwrap();
+        std::fs::write(app.join("Cursor.exe"), b"MZ").unwrap();
+        app
+    }
+
     #[test]
     fn an_explicit_app_override_wins_over_detection() {
-        let p = CursorPaths::from_user_dir("/tmp/fake-cursor").with_app_override(Some("/opt/mine"));
-        assert_eq!(p.app.as_deref(), Some(Path::new("/opt/mine")));
+        let dir = tempfile::tempdir().unwrap();
+        let app = windows_install(dir.path(), "3.19.13");
+        let p = CursorPaths::from_user_dir("/tmp/fake-cursor")
+            .with_app_override(Some(app.to_str().unwrap()));
+        assert_eq!(p.app.as_deref(), Some(app.as_path()));
+    }
+
+    /// Windows 实测：用户把装在别处的 Cursor 填进设置里，填错一级也照单全收，
+    /// 界面上那枚「未检测到」就熄了 —— 直到启动 Cursor 或打 Sand 补丁时才失败。
+    #[test]
+    fn an_app_override_that_holds_no_cursor_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("not-cursor");
+        std::fs::create_dir_all(&empty).unwrap();
+        let detected = CursorPaths::from_user_dir("/tmp/fake-cursor").app;
+        for bad in [empty.to_str().unwrap(), "/tmp/definitely-not-here-9f3a"] {
+            let p = CursorPaths::from_user_dir("/tmp/fake-cursor").with_app_override(Some(bad));
+            assert_eq!(p.app, detected, "目录里没有 Cursor，不该当成指对了：{bad}");
+        }
+    }
+
+    #[test]
+    fn an_install_is_recognised_by_product_json_or_the_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(is_cursor_install(&windows_install(dir.path(), "3.19.13")));
+
+        // 只有可执行本体的便携版也算：启动得了，只是打不了补丁。
+        let portable = dir.path().join("portable");
+        std::fs::create_dir_all(&portable).unwrap();
+        std::fs::write(portable.join("Cursor.exe"), b"MZ").unwrap();
+        assert!(is_cursor_install(&portable));
+
+        // 卸载后留下的空壳不算 —— 这正是「只看目录在不在」会误判的那一种。
+        let shell = dir.path().join("leftover");
+        std::fs::create_dir_all(shell.join("resources")).unwrap();
+        assert!(!is_cursor_install(&shell));
     }
 
     #[test]

@@ -15,7 +15,10 @@ pub mod state_db;
 pub use app::{CursorControl, QuitOutcome, SystemCursor};
 pub use locate::CursorPaths;
 pub use machine::MachineIds;
-pub use state_db::{AuthBundle, AuthSummary, SchemaCheck, StateDb, AUTH_KEYS, REQUIRED_KEYS};
+pub use state_db::{
+    AuthBundle, AuthSummary, SchemaCheck, SchemaCheckWire, StateDb, AUTH_KEYS, IDENTITY_KEYS,
+    REQUIRED_KEYS,
+};
 
 use nexus_core::Result;
 

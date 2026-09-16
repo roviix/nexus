@@ -161,7 +161,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
   );
   const currentOutsidePool =
     overview?.current?.email && !current ? overview.current.email : null;
-  const readOnly = overview ? !isWritable(overview) : false;
+  const readOnly = overview ? !overview.check.writable : false;
 
   /** 从账号抽屉过来：池内账号直接确认，池外账号打开显式加入弹窗。 */
   const wanted = route.email?.toLowerCase();
@@ -307,7 +307,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
         <div style={{ marginBottom: 14 }}>
           <Banner
             tone="warn"
-            title={explain(overview) ?? "Cursor 状态库不可写，切号已降级为只读。"}
+            title={overview.check.blockedReason ?? "Cursor 状态库不可写，切号已降级为只读。"}
           />
         </div>
       ) : null}
@@ -444,30 +444,6 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
       ) : null}
     </div>
   );
-}
-
-/**
- * 能不能写 —— 必须和 Rust 侧 `SchemaCheck::writable` 逐条一致，否则界面会禁掉一个
- * 其实做得了的操作（或者反过来）。
- *
- * 要点：一个 auth 键都没有 = Cursor 没登录过，那正是该写的时候；有几个却缺了必需的
- * 才是键名漂移。
- */
-function isWritable(o: Overview): boolean {
-  const c = o.check;
-  if (!c.dbPresent || !c.tablePresent) return false;
-  if (c.presentKeys.length === 0) return true;
-  return ["cursorAuth/accessToken", "cursorAuth/refreshToken"].every((k) =>
-    c.presentKeys.includes(k),
-  );
-}
-
-function explain(o: Overview): string | null {
-  const c = o.check;
-  if (!c.dbPresent) return "没找到 Cursor 的登录态库，切号功能不可用。";
-  if (!c.tablePresent) return "Cursor 的登录态库结构与预期不符。";
-  if (!isWritable(o)) return "Cursor 的登录态键名与预期不符，它可能升级后改了存储结构。";
-  return null;
 }
 
 /**
