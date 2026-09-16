@@ -5504,6 +5504,11 @@ h2 {
   grid-area: body;
 }
 
+.opt-body > .input {
+  flex: 1;
+  min-width: 0;
+}
+
 /* 「保存」只在改过之后出现。位子一直留着，出现时不推挤输入框。 */
 .opt-save.is-idle {
   visibility: hidden;

@@ -20,7 +20,7 @@ use nexus_accounts::usage::AccountUsage;
 use nexus_accounts::AccountsService;
 use nexus_core::{AccountId, ErrorCode};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,7 +137,7 @@ impl LoginReader for nexus_cursor::Cursor {
 }
 
 pub struct CursorLoginSource {
-    reader: Arc<dyn LoginReader>,
+    reader: RwLock<Arc<dyn LoginReader>>,
     /// 登录态库是本地 SQLite，读一次不贵但也不该每个请求都读；IDE 刷了 token 我们要能跟上，
     /// 所以缓存很短。
     cache: Mutex<Option<(Instant, Option<CursorLogin>)>>,
@@ -147,10 +147,16 @@ pub struct CursorLoginSource {
 impl CursorLoginSource {
     pub fn new(reader: Arc<dyn LoginReader>) -> Self {
         Self {
-            reader,
+            reader: RwLock::new(reader),
             cache: Mutex::new(None),
             ttl: Duration::from_secs(30),
         }
+    }
+
+    /// 设置页换了 Cursor 目录之后立刻换读者，并清掉缓存——不然最多 30 秒还在读旧库。
+    pub fn retarget(&self, reader: Arc<dyn LoginReader>) {
+        *self.reader.write().expect("login reader") = reader;
+        *self.cache.lock().expect("login cache") = None;
     }
 
     #[cfg(test)]
@@ -166,7 +172,7 @@ impl CursorLoginSource {
                 return login.clone();
             }
         }
-        let fresh = self.reader.read();
+        let fresh = self.reader.read().expect("login reader").read();
         *cache = Some((Instant::now(), fresh.clone()));
         fresh
     }
@@ -572,6 +578,18 @@ mod tests {
     fn cursor_login_source_is_empty_when_nobody_is_logged_in() {
         let src = CursorLoginSource::new(Arc::new(FakeReader(Mutex::new(None))));
         assert!(src.candidates().is_empty());
+    }
+
+    #[test]
+    fn cursor_login_source_retarget_drops_the_cache() {
+        let first = Arc::new(FakeReader(Mutex::new(Some(login(9_999_999_999)))));
+        let src = CursorLoginSource::new(first);
+        assert_eq!(src.candidates()[0].label, "Me@Example.com");
+        src.retarget(Arc::new(FakeReader(Mutex::new(Some(CursorLogin {
+            email: "new@example.com".into(),
+            ..login(9_999_999_999)
+        })))));
+        assert_eq!(src.candidates()[0].label, "new@example.com");
     }
 
     #[test]

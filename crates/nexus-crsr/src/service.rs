@@ -30,8 +30,8 @@ const SCOPE: &str = "crsr";
 pub struct CrsrService {
     db: Arc<Db>,
     data_dir: PathBuf,
-    paths: CursorPaths,
-    control: Arc<dyn CursorControl>,
+    paths: Mutex<CursorPaths>,
+    control: Mutex<Arc<dyn CursorControl>>,
     accounts: Arc<AccountsService>,
     http: reqwest::Client,
     busy: Mutex<()>,
@@ -83,8 +83,8 @@ impl CrsrService {
         Self {
             db,
             data_dir: data_dir.into(),
-            paths,
-            control,
+            paths: Mutex::new(paths),
+            control: Mutex::new(control),
             accounts,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(20))
@@ -94,10 +94,26 @@ impl CrsrService {
         }
     }
 
+    fn paths(&self) -> CursorPaths {
+        self.paths.lock().expect("paths").clone()
+    }
+
+    fn control(&self) -> Arc<dyn CursorControl> {
+        self.control.lock().expect("control").clone()
+    }
+
+    /// 设置页改了 Cursor 目录之后立刻换上。CRSR 操作正在跑时拒绝。
+    pub fn retarget(&self, paths: CursorPaths, control: Arc<dyn CursorControl>) -> Result<()> {
+        let _guard = self.acquire()?;
+        *self.paths.lock().expect("paths") = paths;
+        *self.control.lock().expect("control") = control;
+        Ok(())
+    }
+
     // ------------------------------------------------------------------ 只读
 
     pub fn status(&self) -> Result<CrsrStatus> {
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         let contents = read_targets(&layout)?;
         let agg = inspect(&layout, &contents);
         let backups = Backups::for_app(&self.data_dir, SCOPE, &layout.app_root)
@@ -121,12 +137,12 @@ impl CrsrService {
     }
 
     pub fn backups(&self) -> Result<Vec<SandBackup>> {
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         Backups::for_app(&self.data_dir, SCOPE, &layout.app_root).list()
     }
 
     pub fn remove_backup(&self, id: &str) -> Result<()> {
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         Backups::for_app(&self.data_dir, SCOPE, &layout.app_root).remove(id)
     }
 
@@ -163,7 +179,7 @@ impl CrsrService {
             SandStep::Preflight,
             "检查 Cursor 版本与锚点",
         ));
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         if !layout.version_supported() {
             return Err(AppError::new(
                 ErrorCode::SandUnsupportedVersion,
@@ -192,7 +208,7 @@ impl CrsrService {
             if agg.complete {
                 let relaunched = if relaunch {
                     progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-                    let _ = self.control.quit(QUIT_TIMEOUT);
+                    let _ = self.control().quit(QUIT_TIMEOUT);
                     self.maybe_launch(true, progress)
                 } else {
                     false
@@ -225,7 +241,7 @@ impl CrsrService {
 
         let backups = Backups::for_app(&self.data_dir, SCOPE, &layout.app_root);
         progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-        self.control.quit(QUIT_TIMEOUT)?;
+        self.control().quit(QUIT_TIMEOUT)?;
 
         progress(SandProgress::new(
             SandStep::Write,
@@ -279,7 +295,7 @@ impl CrsrService {
     ) -> Result<CrsrOutcome> {
         let _guard = self.acquire()?;
         progress(SandProgress::new(SandStep::Preflight, "检查已安装的标记"));
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         let contents = read_targets(&layout)?;
         let agg = inspect(&layout, &contents);
         if !agg.installed {
@@ -307,7 +323,7 @@ impl CrsrService {
 
         let backups = Backups::for_app(&self.data_dir, SCOPE, &layout.app_root);
         progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-        self.control.quit(QUIT_TIMEOUT)?;
+        self.control().quit(QUIT_TIMEOUT)?;
         progress(SandProgress::new(
             SandStep::Write,
             format!("备份并还原 {} 个文件", plan.len()),
@@ -354,7 +370,7 @@ impl CrsrService {
     ) -> Result<CrsrOutcome> {
         let _guard = self.acquire()?;
         progress(SandProgress::new(SandStep::Preflight, "读取备份"));
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         let backups = Backups::for_app(&self.data_dir, SCOPE, &layout.app_root);
         let manifest = backups.manifest(id)?;
         let mut plan = Vec::with_capacity(manifest.files.len());
@@ -382,7 +398,7 @@ impl CrsrService {
         }
         ensure_writable(&plan.iter().map(|f| f.path.clone()).collect::<Vec<_>>())?;
         progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-        self.control.quit(QUIT_TIMEOUT)?;
+        self.control().quit(QUIT_TIMEOUT)?;
         progress(SandProgress::new(
             SandStep::Write,
             format!("还原 {} 个文件", plan.len()),
@@ -427,7 +443,7 @@ impl CrsrService {
             return false;
         }
         progress(SandProgress::new(SandStep::Launch, "正在启动 Cursor"));
-        match self.control.launch() {
+        match self.control().launch() {
             Ok(()) => true,
             Err(err) => {
                 activity::warn(&self.db, SCOPE, None, format!("启动 Cursor 失败：{err}"));

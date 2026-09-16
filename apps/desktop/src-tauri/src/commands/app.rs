@@ -1,11 +1,11 @@
 //! 应用级命令：自检、设置、活动日志。
 
 use crate::state::AppState;
-use nexus_core::Result;
-use nexus_cursor::SchemaCheck;
+use nexus_core::{AppError, ErrorCode, Result};
+use nexus_cursor::{is_cursor_install, normalize_app_dir, Cursor, SchemaCheck};
 use nexus_store::{activity, settings};
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// 启动后第一屏要知道的一切。
 #[derive(Debug, Serialize)]
@@ -58,6 +58,9 @@ pub fn app_activity(
 }
 
 /// 设置页能改的东西。每一项都能单独改，`None` = 不动。
+///
+/// 改 Cursor 目录会立刻换上：切号、Sand、CRSR、网关一起指到新路径，不用重启客户端。
+/// 切号或补丁正在跑时会拒绝，目录也不会落库。
 #[tauri::command(async)]
 pub fn app_update_settings(
     state: State<'_, AppState>,
@@ -72,16 +75,69 @@ pub fn app_update_settings(
     if let Some(v) = backup_keep {
         settings::set(&state.db, settings::BACKUP_KEEP, &v.clamp(1, 200))?;
     }
-    if let Some(v) = cursor_user_dir {
-        // 改 Cursor 目录要重启才生效：`Cursor` 是在启动时装配好的，热替换它会让
-        // 正在跑的切号看到半新半旧的路径。宁可让用户重开一次。
-        settings::set_raw(&state.db, settings::CURSOR_USER_DIR, v.trim())?;
-        activity::info(&state.db, "app", None, "已修改 Cursor 数据目录，重启后生效");
-    }
-    if let Some(v) = cursor_app_dir {
-        // 同上：`Cursor` 是启动时装配的，安装目录也要重启才换得干净。
-        settings::set_raw(&state.db, settings::CURSOR_APP_DIR, v.trim())?;
-        activity::info(&state.db, "app", None, "已修改 Cursor 安装目录，重启后生效");
+    if cursor_user_dir.is_some() || cursor_app_dir.is_some() {
+        let mut user = settings::get_raw(&state.db, settings::CURSOR_USER_DIR)?.unwrap_or_default();
+        let mut app = settings::get_raw(&state.db, settings::CURSOR_APP_DIR)?.unwrap_or_default();
+        if let Some(v) = cursor_user_dir {
+            user = persist_user_dir(&v);
+        }
+        if let Some(v) = cursor_app_dir {
+            app = persist_app_dir(&v);
+        }
+        let cursor = AppState::assemble_cursor(
+            if user.is_empty() {
+                None
+            } else {
+                Some(user.as_str())
+            },
+            if app.is_empty() {
+                None
+            } else {
+                Some(app.as_str())
+            },
+        )?;
+        state.retarget_cursor(cursor)?;
+        settings::set_raw(&state.db, settings::CURSOR_USER_DIR, &user)?;
+        settings::set_raw(&state.db, settings::CURSOR_APP_DIR, &app)?;
+        activity::info(&state.db, "app", None, "已更新 Cursor 目录");
     }
     app_status(state)
+}
+
+/// 系统文件夹选择器。必须在主线程上弹，否则 macOS 上对话框出不来。
+#[tauri::command]
+pub async fn app_pick_dir(app: AppHandle) -> Result<Option<String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let picked = rfd::FileDialog::new()
+            .set_title("选择目录")
+            .pick_folder()
+            .map(|p| p.display().to_string());
+        let _ = tx.send(picked);
+    })
+    .map_err(|err| AppError::new(ErrorCode::Internal, format!("打不开文件夹选择器：{err}")))?;
+    rx.await
+        .map_err(|_| AppError::new(ErrorCode::Internal, "文件夹选择器没有返回。"))
+}
+
+fn persist_user_dir(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        String::new()
+    } else {
+        Cursor::at(t).paths.user_dir.display().to_string()
+    }
+}
+
+fn persist_app_dir(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let norm = normalize_app_dir(t);
+    if is_cursor_install(&norm) {
+        norm.display().to_string()
+    } else {
+        t.to_string()
+    }
 }

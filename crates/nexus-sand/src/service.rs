@@ -54,8 +54,8 @@ const SCOPE: &str = "sand";
 pub struct SandService {
     db: Arc<Db>,
     data_dir: PathBuf,
-    paths: CursorPaths,
-    control: Arc<dyn CursorControl>,
+    paths: Mutex<CursorPaths>,
+    control: Mutex<Arc<dyn CursorControl>>,
     /// Grok Bot 桥：Box Relay 描述符 / 直连凭证都由它准备。与网关共享同一个实例
     /// （解过的钥匙串口令缓存在里面，别让两边各弹一次授权）。
     grokbot: Arc<GrokBotService>,
@@ -84,11 +84,27 @@ impl SandService {
         Self {
             db,
             data_dir: data_dir.into(),
-            paths,
-            control,
+            paths: Mutex::new(paths),
+            control: Mutex::new(control),
             grokbot,
             busy: Mutex::new(()),
         }
+    }
+
+    fn paths(&self) -> CursorPaths {
+        self.paths.lock().expect("paths").clone()
+    }
+
+    fn control(&self) -> Arc<dyn CursorControl> {
+        self.control.lock().expect("control").clone()
+    }
+
+    /// 设置页改了 Cursor 目录之后立刻换上。Sand 操作正在跑时拒绝。
+    pub fn retarget(&self, paths: CursorPaths, control: Arc<dyn CursorControl>) -> Result<()> {
+        let _guard = self.acquire()?;
+        *self.paths.lock().expect("paths") = paths;
+        *self.control.lock().expect("control") = control;
+        Ok(())
     }
 
     pub fn grokbot(&self) -> &Arc<GrokBotService> {
@@ -98,7 +114,7 @@ impl SandService {
     // ------------------------------------------------------------------ 只读
 
     pub fn status(&self) -> Result<SandStatus> {
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         let contents = read_targets(&layout)?;
         let inference_endpoint = installed_endpoint(&contents);
         let grokbot_auth = installed_grokbot_auth(&contents);
@@ -169,12 +185,12 @@ impl SandService {
     }
 
     pub fn backups(&self) -> Result<Vec<SandBackup>> {
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         Backups::new(&self.data_dir, &layout.app_root).list()
     }
 
     pub fn remove_backup(&self, id: &str) -> Result<()> {
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         Backups::new(&self.data_dir, &layout.app_root).remove(id)
     }
 
@@ -221,7 +237,7 @@ impl SandService {
             SandStep::Preflight,
             "检查 Cursor 版本与锚点",
         ));
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         if !layout.version_supported() {
             return Err(AppError::new(
                 ErrorCode::SandUnsupportedVersion,
@@ -295,7 +311,7 @@ impl SandService {
                 // 不重启的话，界面「盘上：开」和 Agent 实际发出去的模型会对不上。
                 let relaunched = if options.relaunch {
                     progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-                    let _ = self.control.quit(QUIT_TIMEOUT);
+                    let _ = self.control().quit(QUIT_TIMEOUT);
                     self.maybe_launch(true, progress)
                 } else {
                     false
@@ -345,7 +361,7 @@ impl SandService {
 
         let backups = Backups::new(&self.data_dir, &layout.app_root);
         progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-        self.control.quit(QUIT_TIMEOUT)?;
+        self.control().quit(QUIT_TIMEOUT)?;
 
         progress(SandProgress::new(
             SandStep::Write,
@@ -404,7 +420,7 @@ impl SandService {
     ) -> Result<SandOutcome> {
         let _guard = self.acquire()?;
         progress(SandProgress::new(SandStep::Preflight, "检查已安装的标记"));
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         let contents = read_targets(&layout)?;
         // 端点 URL / Grok 鉴权形态是规则文本的一部分：卸载要用装的时候那一个才反向得了。
         let grokbot_auth = installed_grokbot_auth(&contents);
@@ -443,7 +459,7 @@ impl SandService {
 
         let backups = Backups::new(&self.data_dir, &layout.app_root);
         progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-        self.control.quit(QUIT_TIMEOUT)?;
+        self.control().quit(QUIT_TIMEOUT)?;
         progress(SandProgress::new(
             SandStep::Write,
             format!("备份并还原 {} 个文件", plan.len()),
@@ -495,7 +511,7 @@ impl SandService {
     ) -> Result<SandOutcome> {
         let _guard = self.acquire()?;
         progress(SandProgress::new(SandStep::Preflight, "读取备份"));
-        let layout = SandLayout::resolve(&self.paths)?;
+        let layout = SandLayout::resolve(&self.paths())?;
         let backups = Backups::new(&self.data_dir, &layout.app_root);
         let manifest = backups.manifest(id)?;
         let mut plan = Vec::with_capacity(manifest.files.len());
@@ -524,7 +540,7 @@ impl SandService {
         }
         ensure_writable(&plan.iter().map(|f| f.path.clone()).collect::<Vec<_>>())?;
         progress(SandProgress::new(SandStep::QuitCursor, "正在退出 Cursor"));
-        self.control.quit(QUIT_TIMEOUT)?;
+        self.control().quit(QUIT_TIMEOUT)?;
         progress(SandProgress::new(
             SandStep::Write,
             format!("还原 {} 个文件", plan.len()),
@@ -569,7 +585,7 @@ impl SandService {
             return false;
         }
         progress(SandProgress::new(SandStep::Launch, "正在启动 Cursor"));
-        match self.control.launch() {
+        match self.control().launch() {
             Ok(()) => true,
             Err(err) => {
                 activity::warn(&self.db, SCOPE, None, format!("启动 Cursor 失败：{err}"));

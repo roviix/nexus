@@ -157,6 +157,7 @@ pub fn run() {
             commands::app::app_status,
             commands::app::app_activity,
             commands::app::app_update_settings,
+            commands::app::app_pick_dir,
             // 切号
             commands::switcher::switcher_overview,
             commands::switcher::switcher_list,

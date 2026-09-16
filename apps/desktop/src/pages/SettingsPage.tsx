@@ -122,7 +122,7 @@ export function SettingsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
 
       {tab === "general" ? <GeneralTab status={status} busy={busy} onSave={save} onError={setError} onReload={reload} /> : null}
       {tab === "permissions" ? <PermissionsTab perms={perms} pendingCount={pending.length} /> : null}
-      {tab === "advanced" ? <AdvancedTab status={status} busy={busy} onSave={save} /> : null}
+      {tab === "advanced" ? <AdvancedTab status={status} busy={busy} onSave={save} onError={setError} /> : null}
       {tab === "log" ? <LogTab /> : null}
       {tab === "about" ? <AboutTab status={status} writable={writable} /> : null}
     </div>
@@ -260,7 +260,17 @@ function PermissionsTab({ perms, pendingCount }: { perms: ReturnType<typeof useP
 
 /* ── 高级 ───────────────────────────────────────────────────────────────── */
 
-function AdvancedTab({ status, busy, onSave }: { status: AppStatus; busy: boolean; onSave: (p: SettingsPatch) => Promise<boolean> }) {
+function AdvancedTab({
+  status,
+  busy,
+  onSave,
+  onError,
+}: {
+  status: AppStatus;
+  busy: boolean;
+  onSave: (p: SettingsPatch) => Promise<boolean>;
+  onError: (err: unknown) => void;
+}) {
   return (
     <>
       <Sect icon="folder" title="路径">
@@ -271,8 +281,16 @@ function AdvancedTab({ status, busy, onSave }: { status: AppStatus; busy: boolea
             desc="登录态所在，切号读写它"
             saved={status.cursorUserDir}
             busy={busy}
-            restart
+            folder
+            state={
+              status.cursor.writable ? (
+                <Health tone="ok">已找到</Health>
+              ) : (
+                <Health tone="warn">{status.cursor.blockedReason ?? "未找到"}</Health>
+              )
+            }
             onSave={(v) => onSave({ cursorUserDir: v })}
+            onError={onError}
           />
           {/* 安装目录和数据目录是两件事：前者放程序本体（启动 Cursor、Sand 补丁要它），
               后者放登录态（切号读写它）。Windows 上 Cursor 可以装在任意盘符，探测更容易
@@ -287,15 +305,18 @@ function AdvancedTab({ status, busy, onSave }: { status: AppStatus; busy: boolea
             saved={status.cursorAppDirSetting || status.cursorAppDir || ""}
             placeholder="留空则自动探测"
             busy={busy}
-            restart
+            folder
             state={
-              status.cursorAppDir ? undefined : status.cursorAppDirSetting.trim() ? (
+              status.cursorAppDir ? (
+                <Health tone="ok">{status.cursorVersion ? `已找到 · ${status.cursorVersion}` : "已找到"}</Health>
+              ) : status.cursorAppDirSetting.trim() ? (
                 <Health tone="warn">这个目录里没有 Cursor</Health>
               ) : (
                 <Health tone="warn">未检测到</Health>
               )
             }
             onSave={(v) => onSave({ cursorAppDir: v })}
+            onError={onError}
           />
         </div>
       </Sect>
@@ -306,8 +327,8 @@ function AdvancedTab({ status, busy, onSave }: { status: AppStatus; busy: boolea
 }
 
 /**
- * 一条路径设置：标题一行，输入框铺在下面一整行。「保存」只在改过之后露出来。
- * 保存成功后在标题右边留一个「重启后生效」，直到真的重启 —— 而不是常驻一句小字。
+ * 一条路径设置：标题一行，输入框铺在下面一整行。
+ * 文件夹那两格带浏览 / 重新探测；保存立刻生效，不用重启客户端。
  */
 function PathOpt({
   icon,
@@ -316,9 +337,10 @@ function PathOpt({
   saved,
   placeholder,
   busy,
-  restart,
+  folder,
   state,
   onSave,
+  onError,
 }: {
   icon: string;
   title: string;
@@ -326,23 +348,37 @@ function PathOpt({
   saved: string;
   placeholder?: string;
   busy: boolean;
-  /** 改了要重启应用才生效。 */
-  restart?: boolean;
-  /** 标题右边的状态词（比如「未检测到」）。 */
+  folder?: boolean;
   state?: ReactNode;
   onSave: (value: string) => Promise<boolean>;
+  onError?: (err: unknown) => void;
 }) {
   const [value, setValue] = useState(saved);
-  const [touched, setTouched] = useState(false);
-  // 别处（还原备份、重新探测）改了值，输入框跟上；正在编辑的不打断。
+  const [applied, setApplied] = useState(false);
   useEffect(() => {
     setValue(saved);
   }, [saved]);
   const dirty = value !== saved;
 
-  async function commit() {
-    if (!dirty || busy) return;
-    if (await onSave(value.trim())) setTouched(true);
+  async function commit(next = value.trim()) {
+    if (busy) return false;
+    if (await onSave(next)) {
+      setApplied(true);
+      return true;
+    }
+    return false;
+  }
+
+  async function browse() {
+    if (busy) return;
+    try {
+      const dir = await app.pickDir();
+      if (!dir) return;
+      setValue(dir);
+      await commit(dir);
+    } catch (err) {
+      onError?.(err);
+    }
   }
 
   function onKey(e: KeyboardEvent<HTMLInputElement>) {
@@ -363,9 +399,28 @@ function PathOpt({
             value={value}
             placeholder={placeholder}
             spellCheck={false}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setApplied(false);
+            }}
             onKeyDown={onKey}
           />
+          {folder ? (
+            <span className="opt-acts">
+              <button type="button" className="btn btn-sm btn-icon btn-soft" aria-label="浏览" disabled={busy} onClick={() => void browse()}>
+                <Icon name="folder" size={13} />
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-icon btn-soft"
+                aria-label="重新探测"
+                disabled={busy}
+                onClick={() => void commit("")}
+              >
+                <Icon name="refresh" size={13} />
+              </button>
+            </span>
+          ) : null}
           <button
             type="button"
             className={`btn btn-sm btn-icon btn-soft opt-save${dirty ? "" : " is-idle"}`}
@@ -379,7 +434,7 @@ function PathOpt({
       }
     >
       {state}
-      {touched && restart && !dirty ? <Tag tone="warn">重启后生效</Tag> : null}
+      {applied && !dirty ? <Tag tone="ok">已生效</Tag> : null}
     </Opt>
   );
 }

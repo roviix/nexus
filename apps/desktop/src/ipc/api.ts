@@ -101,6 +101,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 export const app = {
   status: () => call<AppStatus>("app_status"),
   activity: (limit?: number) => call<ActivityEntry[]>("app_activity", { limit }),
+  pickDir: () => call<string | null>("app_pick_dir"),
   updateSettings: (patch: {
     switchMachineIds?: boolean;
     backupKeep?: number;

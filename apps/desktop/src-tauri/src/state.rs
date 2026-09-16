@@ -8,7 +8,7 @@ use crate::commands::sand_remote::RemoteSandHub;
 use nexus_accounts::{AccountsService, OauthSession};
 use nexus_chatgpt::ChatGptService;
 use nexus_crsr::CrsrService;
-use nexus_cursor::Cursor;
+use nexus_cursor::{Cursor, CursorControl};
 use nexus_gateway::GatewayService;
 use nexus_grok::GrokService;
 use nexus_grokbot::GrokBotService;
@@ -144,6 +144,38 @@ impl AppState {
             oauth: Mutex::new(HashMap::new()),
             db,
         })
+    }
+
+    /// 按设置里的两行目录装配一份 `Cursor`。空数据目录 = 平台默认探测。
+    pub fn assemble_cursor(
+        user_dir: Option<&str>,
+        app_dir: Option<&str>,
+    ) -> nexus_core::Result<Cursor> {
+        let cursor = match user_dir.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(dir) => Cursor::at(dir),
+            None => Cursor::detect()?,
+        };
+        Ok(cursor.with_app_override(app_dir))
+    }
+
+    /// 设置页改了目录之后立刻换上：切号 / Sand / CRSR / 网关一起指到新路径，不用重启客户端。
+    ///
+    /// 切号或补丁正在跑时拒绝——路径换一半会把备份写到新库、写入写到旧库。
+    pub fn retarget_cursor(&self, cursor: Cursor) -> nexus_core::Result<()> {
+        if self.switcher.is_busy() {
+            return Err(nexus_core::AppError::new(
+                nexus_core::ErrorCode::Busy,
+                "切号正在进行，等它结束再改 Cursor 目录。",
+            )
+            .with_hint("改目录会换掉登录态库的路径，不能和切号叠在一起。"));
+        }
+        let paths = cursor.paths.clone();
+        let control: Arc<dyn CursorControl> = Arc::new(cursor.control());
+        self.sand.retarget(paths.clone(), control.clone())?;
+        self.crsr.retarget(paths, control)?;
+        self.switcher.retarget(cursor.clone())?;
+        self.gateway.retarget_cursor(cursor);
+        Ok(())
     }
 }
 

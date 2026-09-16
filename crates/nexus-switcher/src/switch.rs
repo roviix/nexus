@@ -27,7 +27,7 @@ use nexus_core::{now_iso, AppError, BackupId, ErrorCode, MachineProfile, Profile
 use nexus_cursor::{AuthBundle, Cursor, CursorControl};
 use nexus_store::{activity, settings, Db, SecretStore};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 /// 单飞闸的守卫。析构即放闸。
@@ -54,10 +54,10 @@ pub fn ignore_progress(_: SwitchProgress) {}
 
 pub struct Switcher {
     db: Arc<Db>,
-    cursor: Cursor,
+    cursor: RwLock<Cursor>,
     /// 进程控制注入进来而不是现构造：切号编排是这个应用里最不能出错、又最难手工回归的
     /// 一段，它必须能在不真的关掉用户编辑器的前提下被测到。
-    control: Arc<dyn CursorControl>,
+    control: RwLock<Arc<dyn CursorControl>>,
     secrets: Arc<dyn SecretStore>,
     /// 单飞闸。两个切号同时跑会把 A 的 token 和 B 的机器码配到一起。
     running: AtomicBool,
@@ -83,9 +83,39 @@ impl Switcher {
             secrets,
             running: AtomicBool::new(false),
             db,
-            cursor,
-            control,
+            cursor: RwLock::new(cursor),
+            control: RwLock::new(control),
         }
+    }
+
+    fn cur(&self) -> Cursor {
+        self.cursor.read().expect("cursor").clone()
+    }
+
+    fn ctl(&self) -> Arc<dyn CursorControl> {
+        self.control.read().expect("control").clone()
+    }
+
+    /// 切号正在跑。设置页改目录前先看它，避免一半服务换了路径、一半还在切号。
+    pub fn is_busy(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    /// 设置页改了数据目录 / 安装目录之后立刻换上新路径。
+    ///
+    /// 切号正在跑时拒绝：否则备份读的是旧库、写入写到新库，两个号的状态会搅在一起。
+    /// 没在切的时候换是安全的——`Cursor` 只是路径，每次操作现开现关，没有长连接要交接。
+    pub fn retarget(&self, cursor: Cursor) -> Result<()> {
+        if self.running.load(Ordering::SeqCst) {
+            return Err(
+                AppError::new(ErrorCode::Busy, "切号正在进行，等它结束再改 Cursor 目录。")
+                    .with_hint("改目录会换掉登录态库的路径，不能和切号叠在一起。"),
+            );
+        }
+        let control = Arc::new(cursor.control()) as Arc<dyn CursorControl>;
+        *self.cursor.write().expect("cursor") = cursor;
+        *self.control.write().expect("control") = control;
+        Ok(())
     }
 
     /// 拿下单飞闸。守卫析构时自动放开，所以中途 `?` 提前返回也不会把闸卡死。
@@ -114,20 +144,21 @@ impl Switcher {
     }
 
     /// 本机 Cursor 的路径与自检口。设置页和状态页要读它。
-    pub fn cursor(&self) -> &Cursor {
-        &self.cursor
+    pub fn cursor(&self) -> Cursor {
+        self.cur()
     }
 
     /// 切号页顶部那一栏。任何一项读失败都降级成「未知」而不是让整页打不开。
     pub fn overview(&self) -> Result<Overview> {
-        let check = self.cursor.check();
-        let current = self.cursor.state.current_account().unwrap_or(None);
-        let ids = self.cursor.machine.read();
+        let cursor = self.cur();
+        let check = cursor.check();
+        let current = cursor.state.current_account().unwrap_or(None);
+        let ids = cursor.machine.read();
         Ok(Overview {
             machine_id_owner: self.book.owner_of_machine(&ids.machine_id).unwrap_or(None),
             machine_id_short: ids.short(),
             has_original_machine: self.original_machine()?.is_some(),
-            cursor_running: self.control.is_running().unwrap_or(false),
+            cursor_running: self.ctl().is_running().unwrap_or(false),
             current,
             check,
         })
@@ -136,7 +167,7 @@ impl Switcher {
     /// 带上「谁是当前登录」的切号本列表。
     pub fn list(&self) -> Result<Vec<crate::model::SwitchProfile>> {
         let current = self
-            .cursor
+            .cur()
             .state
             .current_account()
             .unwrap_or(None)
@@ -149,7 +180,7 @@ impl Switcher {
     /// 这是最自然的入口：你现在登着的号先存起来，以后随时切回来。机器码用**当前**这套
     /// ——它就是这个号一直在用的设备指纹，不新造。
     pub fn capture_current(&self, note: Option<&str>) -> Result<crate::model::SwitchProfile> {
-        let auth = self.cursor.state.read_auth()?;
+        let auth = self.cur().state.read_auth()?;
         if auth.email().is_none() {
             return Err(
                 AppError::new(ErrorCode::ProfileIncomplete, "Cursor 当前没有登录账号。")
@@ -158,7 +189,7 @@ impl Switcher {
         }
         // 第一次动手之前，把这台真机的原始机器码存下来。
         self.ensure_original_saved()?;
-        let ids = self.cursor.machine.read();
+        let ids = self.cur().machine.read();
         let ids = (!ids.is_empty()).then_some(ids);
 
         let profile = self.book.upsert(&auth, note, ids)?;
@@ -173,7 +204,7 @@ impl Switcher {
 
     /// 手动存一份当前登录态的备份。
     pub fn backup_now(&self) -> Result<Option<AuthBackup>> {
-        let auth = self.cursor.state.read_auth()?;
+        let auth = self.cur().state.read_auth()?;
         self.backups
             .create(&auth, BackupReason::Manual, self.keep())
     }
@@ -204,7 +235,7 @@ impl Switcher {
             )
             .with_hint("到「我的账号」里给它重新授权，再加入切号本。"));
         }
-        let check = self.cursor.check();
+        let check = self.cur().check();
         if !check.writable() {
             return Err(AppError::new(
                 ErrorCode::CursorSchemaDrift,
@@ -222,7 +253,7 @@ impl Switcher {
         // 「登录态改了没有」决定失败时该跟用户怎么说。
         let mut wrote_auth = false;
 
-        let running = self.control.is_running().unwrap_or(false);
+        let running = self.ctl().is_running().unwrap_or(false);
         let hot = options.use_hot(running);
 
         let outcome = if hot {
@@ -308,7 +339,7 @@ impl Switcher {
             .ok_or_else(|| AppError::new(ErrorCode::ProfileIncomplete, "缺 refreshToken。"))?;
 
         // 1) 备份当前登录态（只读，Cursor 在跑也安全）。
-        let current = self.cursor.state.read_auth()?;
+        let current = self.cur().state.read_auth()?;
         match self
             .backups
             .create(&current, BackupReason::PreSwitch, self.keep())?
@@ -324,7 +355,7 @@ impl Switcher {
         }
 
         // 2) deep link。Cursor 自己 storeAccessRefreshToken —— 写盘 + 刷内存。
-        self.control
+        self.ctl()
             .inject_login(access, refresh)
             .map_err(at("hot-login"))?;
         progress(SwitchProgress::HotLoginSent);
@@ -338,7 +369,7 @@ impl Switcher {
         // 4) 补写展示键。深链只换 token 和订阅档，`cachedEmail` / `cachedScopedProfile` 留着上一个
         //    号的值，而 Cursor 读这些是「缓存里有就不再问服务端」——不补，菜单里的名字就一直是旧号。
         //    这一步失败不算切换失败：token 已经是新号了，只是名字可能要等下次登出登录才对。
-        match self.cursor.state.write_display_keys(target) {
+        match self.cur().state.write_display_keys(target) {
             Ok((written, removed)) => {
                 progress(SwitchProgress::HotProfileWritten { written, removed });
             }
@@ -382,7 +413,7 @@ impl Switcher {
         }
 
         // 1) 备份当前登录态。
-        let current = self.cursor.state.read_auth()?;
+        let current = self.cur().state.read_auth()?;
         match self
             .backups
             .create(&current, BackupReason::PreSwitch, self.keep())?
@@ -398,7 +429,7 @@ impl Switcher {
         }
 
         // 2) 退出 Cursor，等进程真的消失。
-        let quit = self.control.quit(QUIT_TIMEOUT).map_err(at("quit"))?;
+        let quit = self.ctl().quit(QUIT_TIMEOUT).map_err(at("quit"))?;
         progress(SwitchProgress::CursorQuit {
             was_running: quit.was_running,
             forced: quit.forced,
@@ -406,7 +437,7 @@ impl Switcher {
 
         // 3) 写登录态。清旧 + 写新在同一事务里。
         let written = self
-            .cursor
+            .cur()
             .state
             .write_auth(target, true)
             .map_err(at("write-auth"))?;
@@ -416,7 +447,7 @@ impl Switcher {
         // 4) 机器码。
         let mut machine_switched = false;
         if options.switch_machine_ids && !machine_ids.is_empty() {
-            self.cursor
+            self.cur()
                 .machine
                 .write(machine_ids)
                 .map_err(at("write-machine"))?;
@@ -433,7 +464,7 @@ impl Switcher {
         // 5) 启动。起不来不算切号失败 —— 登录态已经是对的了，手动打开即可。
         let mut relaunched = false;
         if options.relaunch {
-            match self.control.launch() {
+            match self.ctl().launch() {
                 Ok(()) => {
                     relaunched = true;
                     progress(SwitchProgress::CursorLaunched);
@@ -466,7 +497,7 @@ impl Switcher {
     fn wait_for_access_token(&self, expected: &str) -> Result<()> {
         let deadline = Instant::now() + HOT_CONFIRM_TIMEOUT;
         loop {
-            match self.cursor.state.read_auth() {
+            match self.cur().state.read_auth() {
                 Ok(auth) if auth.access_token() == Some(expected) => return Ok(()),
                 Ok(_) | Err(_) => {}
             }
@@ -504,7 +535,7 @@ impl Switcher {
         // 读不到当前登录态就**停下**，不要 `unwrap_or_default()` 蒙混过去：那会把一次
         // 真实的读失败伪装成「本来就没登录」，于是跳过安全备份，然后照样覆盖掉它。
         // 这里和 `switch_to` 必须对称。
-        let before = self.cursor.state.read_auth()?;
+        let before = self.cur().state.read_auth()?;
         let safety = self
             .backups
             .create(&before, BackupReason::PreRestore, self.keep())?;
@@ -516,21 +547,21 @@ impl Switcher {
             None => progress(SwitchProgress::BackupSkipped),
         }
 
-        let quit = self.control.quit(QUIT_TIMEOUT).map_err(at("quit"))?;
+        let quit = self.ctl().quit(QUIT_TIMEOUT).map_err(at("quit"))?;
         progress(SwitchProgress::CursorQuit {
             was_running: quit.was_running,
             forced: quit.forced,
         });
 
         let written = self
-            .cursor
+            .cur()
             .state
             .write_auth(&bundle, true)
             .map_err(at("write-auth"))?;
         progress(SwitchProgress::AuthWritten { keys: written });
 
         let mut relaunched = false;
-        if relaunch && self.control.launch().is_ok() {
+        if relaunch && self.ctl().launch().is_ok() {
             relaunched = true;
             progress(SwitchProgress::CursorLaunched);
         }
@@ -558,10 +589,10 @@ impl Switcher {
             )
             .with_hint("原始值在第一次切号或收录时才会记下来。")
         })?;
-        self.control.quit(QUIT_TIMEOUT).map_err(at("quit"))?;
-        self.cursor.machine.write(&original)?;
+        self.ctl().quit(QUIT_TIMEOUT).map_err(at("quit"))?;
+        self.cur().machine.write(&original)?;
         if relaunch {
-            let _ = self.control.launch();
+            let _ = self.ctl().launch();
         }
         activity::info(&self.db, "switcher", None, "已还原本机原始机器码");
         Ok(original)
@@ -572,7 +603,7 @@ impl Switcher {
         if let Some(existing) = self.original_machine()? {
             return Ok(Some(existing));
         }
-        let current = self.cursor.machine.read();
+        let current = self.cur().machine.read();
         if current.is_empty() {
             // 读不到就别存一份空的占住 singleton 位 —— 那会让真正的原始值永远存不进来。
             return Ok(None);
@@ -1099,7 +1130,7 @@ mod tests {
         h.login_as("a@example.com");
 
         // 让写机器码失败：把 storage.json 弄成读得到但读不懂。
-        std::fs::write(&h.switcher.cursor.paths.storage_json, "{坏掉的 JSON").unwrap();
+        std::fs::write(&h.switcher.cursor().paths.storage_json, "{坏掉的 JSON").unwrap();
 
         let err = h
             .switcher
@@ -1327,7 +1358,7 @@ mod tests {
 
         // 之后机器码被切成别的。
         h.switcher
-            .cursor
+            .cursor()
             .machine
             .write(&MachineProfile::generate())
             .unwrap();
@@ -1346,14 +1377,17 @@ mod tests {
         h.login_as("a@example.com");
         h.switcher.ensure_original_saved().unwrap();
         h.switcher
-            .cursor
+            .cursor()
             .machine
             .write(&MachineProfile::generate())
             .unwrap();
 
         let back = h.switcher.restore_original_machine(false).unwrap();
         assert_eq!(back.machine_id, "real-machine");
-        assert_eq!(h.switcher.cursor.machine.read().machine_id, "real-machine");
+        assert_eq!(
+            h.switcher.cursor().machine.read().machine_id,
+            "real-machine"
+        );
     }
 
     #[test]
@@ -1468,5 +1502,17 @@ mod tests {
             !text.contains("rt-a@example.com"),
             "日志里不能出现 token：{text}"
         );
+    }
+
+    #[test]
+    fn retarget_swaps_the_cursor_paths_immediately() {
+        let h = Harness::new();
+        let old = h.switcher.cursor().paths.user_dir.clone();
+        let other = old.parent().unwrap().join("Other");
+        std::fs::create_dir_all(other.join("User/globalStorage")).unwrap();
+        std::fs::write(other.join("User/globalStorage/state.vscdb"), b"").unwrap();
+        h.switcher.retarget(Cursor::at(&other)).unwrap();
+        assert_eq!(h.switcher.cursor().paths.user_dir, other);
+        assert_ne!(h.switcher.cursor().paths.user_dir, old);
     }
 }

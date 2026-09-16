@@ -840,7 +840,7 @@ const LOCAL_MODELS: LocalModel[] = [
 const APP: AppStatus = {
   version: "0.1.0",
   cursor: OVERVIEW.check,
-  cursorUserDir: "/Users/me/Library/Application Support/Cursor/User",
+  cursorUserDir: "/Users/me/Library/Application Support/Cursor",
   cursorAppDir: NO_CURSOR ? null : "/Applications/Cursor.app",
   cursorAppDirSetting: "",
   cursorVersion: NO_CURSOR ? null : "3.19.13",
@@ -943,17 +943,30 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       return v(ACTIVITY);
     case "app_update_settings": {
       // 真命令回的是改完之后的整份状态，设置页拿它直接换掉手上的那份。
-      const patch = (args ?? {}) as Partial<AppStatus>;
+      const patch = (args ?? {}) as Partial<AppStatus> & { cursorUserDir?: string; cursorAppDir?: string };
       Object.assign(APP, Object.fromEntries(Object.entries(patch).filter(([, val]) => val !== undefined)));
+      if ("cursorUserDir" in patch) {
+        const raw = (patch.cursorUserDir ?? "").trim().replace(/\/User\/?$/, "");
+        APP.cursorUserDir = raw || "/Users/me/Library/Application Support/Cursor";
+        APP.cursor = {
+          ...APP.cursor,
+          dbPresent: true,
+          writable: true,
+          blockedReason: null,
+        };
+      }
       if ("cursorAppDir" in patch) {
         // 真命令存的是原文，生效与否要看那个目录里有没有 Cursor。预览里没有文件系统，
         // 就拿路径里带没带 cursor 当那一步判定 —— 够用来看两种状态各长什么样。
         const raw = (patch.cursorAppDir ?? "").trim();
         APP.cursorAppDirSetting = raw;
         APP.cursorAppDir = raw ? (/cursor/i.test(raw) ? raw : null) : NO_CURSOR ? null : "/Applications/Cursor.app";
+        APP.cursorVersion = APP.cursorAppDir ? "3.19.13" : null;
       }
       return v({ ...APP });
     }
+    case "app_pick_dir":
+      return v("/Users/me/Library/Application Support/Cursor" as T);
     case "switcher_restore_machine":
       return delay("3f9a…c1e2" as T, 500);
 

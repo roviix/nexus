@@ -10,7 +10,7 @@
 use crate::channel::{self, Capability, ChannelId, ChannelRegistry};
 use crate::inference::StreamConfig;
 use crate::lane::{
-    CursorLoginSource, LaneSnapshot, RelayLane, Roster, Source, StoredAccountsSource,
+    CursorLoginSource, LaneSnapshot, LoginReader, RelayLane, Roster, Source, StoredAccountsSource,
     SubscriptionAccounts,
 };
 use crate::ledger::{Ledger, UsageSummary};
@@ -21,7 +21,6 @@ use crate::upstream::CursorUpstream;
 use nexus_accounts::AccountsService;
 use nexus_chatgpt::ChatGptService;
 use nexus_core::{AppError, ErrorCode, Result, Secret};
-use nexus_cursor::Cursor;
 use nexus_grok::GrokService;
 use nexus_kiro::KiroService;
 use nexus_store::keys::SecretRef;
@@ -145,6 +144,8 @@ pub struct GatewayService {
     kiro: Arc<KiroService>,
     /// 哪些号进接力队。跨启停都是同一份，落库。
     roster: Arc<Roster>,
+    /// Cursor 正登着的号。设置页改目录时换读者，接力队还是这一份。
+    cursor_login: Arc<CursorLoginSource>,
     /// Cursor 通道的接力队。接力状态（当前号、冷却）跨启停保留。
     lane: Arc<RelayLane>,
     /// 每条订阅通道自己的接力队，和 Cursor 的互不混。跨启停保留。顺序就是选路顺序。
@@ -162,7 +163,7 @@ impl GatewayService {
     pub fn new(
         db: Arc<Db>,
         secrets: Arc<dyn SecretStore>,
-        cursor: Arc<Cursor>,
+        cursor: Arc<nexus_cursor::Cursor>,
         accounts: Arc<AccountsService>,
         chatgpt: Arc<ChatGptService>,
     ) -> Self {
@@ -175,7 +176,7 @@ impl GatewayService {
     pub fn with_services(
         db: Arc<Db>,
         secrets: Arc<dyn SecretStore>,
-        cursor: Arc<Cursor>,
+        cursor: Arc<nexus_cursor::Cursor>,
         accounts: Arc<AccountsService>,
         chatgpt: Arc<ChatGptService>,
         grok: Arc<GrokService>,
@@ -183,7 +184,7 @@ impl GatewayService {
     ) -> Self {
         let settings = read_settings(&db);
         let roster = Arc::new(Roster::load(db.clone()));
-        let lane = build_lane(cursor.clone(), accounts.clone(), roster.clone());
+        let (cursor_login, lane) = build_lane(cursor, accounts.clone(), roster.clone());
         // 顺序只影响状态快照怎么排；裸名不再按「谁拥有」选路。
         let channel_lanes: Vec<(ChannelId, Arc<RelayLane>)> = vec![
             (
@@ -223,6 +224,7 @@ impl GatewayService {
             grok,
             kiro,
             roster,
+            cursor_login,
             lane: Arc::new(lane),
             channel_lanes,
             running: Mutex::new(None),
@@ -416,6 +418,11 @@ impl GatewayService {
         self.roster.remove(email)?;
         self.lane().forget(email);
         self.status()
+    }
+
+    /// 设置页改了 Cursor 目录之后立刻换读者。网关不用重启：下一请求读新库。
+    pub fn retarget_cursor(&self, cursor: nexus_cursor::Cursor) {
+        self.cursor_login.retarget(Arc::new(cursor));
     }
 
     pub fn settings(&self) -> GatewaySettings {
@@ -690,21 +697,23 @@ fn read_settings(db: &Db) -> GatewaySettings {
 }
 
 fn build_lane(
-    cursor: Arc<Cursor>,
+    cursor: Arc<dyn LoginReader>,
     accounts: Arc<AccountsService>,
     roster: Arc<Roster>,
-) -> RelayLane {
+) -> (Arc<CursorLoginSource>, RelayLane) {
     // 顺序就是接力顺序：Cursor 正登着的号先（真机码），再托管号。
+    let cursor_login = Arc::new(CursorLoginSource::new(cursor));
     let sources: Vec<Arc<dyn Source>> = vec![
-        Arc::new(CursorLoginSource::new(cursor)),
+        cursor_login.clone(),
         Arc::new(StoredAccountsSource::new(accounts, CLIENT_TYPE)),
     ];
-    RelayLane::new(sources, roster)
+    (cursor_login, RelayLane::new(sources, roster))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_cursor::Cursor;
     use nexus_store::MemorySecrets;
 
     struct Parts {

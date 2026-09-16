@@ -35,7 +35,7 @@ impl CursorPaths {
 
     /// 用户手工指定目录时走这条。
     pub fn from_user_dir(user_dir: impl Into<PathBuf>) -> Self {
-        let user_dir = user_dir.into();
+        let user_dir = normalize_user_dir(user_dir.into());
         let state_db = match std::env::var_os("CURSOR_STATE_DB") {
             Some(p) => PathBuf::from(p),
             None => user_dir.join("User/globalStorage/state.vscdb"),
@@ -62,7 +62,7 @@ impl CursorPaths {
     pub fn with_app_override(mut self, app: Option<&str>) -> Self {
         let explicit = app.map(str::trim).filter(|s| !s.is_empty());
         if let Some(dir) = explicit {
-            let dir = PathBuf::from(dir);
+            let dir = normalize_app_dir(dir);
             if is_cursor_install(&dir) {
                 self.app = Some(dir);
             }
@@ -125,6 +125,57 @@ pub fn is_cursor_install(dir: &Path) -> bool {
     product_json_in(dir).is_some()
         || dir.join("Cursor.exe").is_file()
         || dir.join("Contents/MacOS").is_dir()
+}
+
+/// 把用户填的安装路径收成真正的安装目录。
+///
+/// Windows 上常见两种填法：指到 `Cursor.exe` 本身，或指到它底下某一层（`resources`、
+/// `D:\cursor\_`）。这两种目录本身都过不了 [`is_cursor_install`]，但往上走一两级就是。
+/// 收进来再判，比让人自己猜该填哪一层完整。
+pub fn normalize_app_dir(raw: impl AsRef<Path>) -> PathBuf {
+    let p = raw.as_ref().to_path_buf();
+    let start = if p.is_file() {
+        p.parent().map(Path::to_path_buf).unwrap_or(p)
+    } else {
+        p
+    };
+    let mut cur = start.clone();
+    for _ in 0..5 {
+        if is_cursor_install(&cur) {
+            return cur;
+        }
+        match cur.parent() {
+            Some(parent) if parent != cur.as_path() => cur = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    start
+}
+
+/// 把用户填的数据目录收成 Cursor 用户目录（里面有 `User/globalStorage/state.vscdb` 的那一层）。
+///
+/// 设置页的文件夹选择器很容易点进 `User` 或 `globalStorage`。那两层都有文件，看起来像对的，
+/// 但切号读写的是再往上一层。能认出就收上去，认不出原样留下——假路径（测试）不能被「纠正」。
+pub fn normalize_user_dir(raw: impl AsRef<Path>) -> PathBuf {
+    let p = raw.as_ref().to_path_buf();
+    if looks_like_user_dir(&p) {
+        return p;
+    }
+    if looks_like_user_dir(p.parent().unwrap_or(&p)) {
+        return p.parent().unwrap().to_path_buf();
+    }
+    if p.join("state.vscdb").is_file() {
+        if let Some(root) = p.parent().and_then(|u| u.parent()) {
+            if looks_like_user_dir(root) {
+                return root.to_path_buf();
+            }
+        }
+    }
+    p
+}
+
+fn looks_like_user_dir(dir: &Path) -> bool {
+    dir.join("User/globalStorage/state.vscdb").is_file()
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -319,5 +370,31 @@ mod tests {
         let mut p = CursorPaths::from_user_dir(dir.path());
         p.app = Some(app);
         assert_eq!(p.version().as_deref(), Some("3.18.9"));
+    }
+
+    #[test]
+    fn normalize_app_dir_walks_up_from_an_inner_folder_or_the_exe() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = windows_install(dir.path(), "3.19.13");
+        assert_eq!(normalize_app_dir(app.join("Cursor.exe")), app);
+        assert_eq!(normalize_app_dir(app.join("resources")), app);
+        assert_eq!(normalize_app_dir(&app), app);
+        // 对不上的路径原样留下，别「纠正」成某个碰巧存在的祖先。
+        let elsewhere = dir.path().join("other");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        assert_eq!(normalize_app_dir(&elsewhere), elsewhere);
+    }
+
+    #[test]
+    fn normalize_user_dir_walks_up_from_user_or_globalstorage() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Cursor");
+        let db = root.join("User/globalStorage/state.vscdb");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        std::fs::write(&db, b"").unwrap();
+        assert_eq!(normalize_user_dir(&root), root);
+        assert_eq!(normalize_user_dir(root.join("User")), root);
+        assert_eq!(normalize_user_dir(root.join("User/globalStorage")), root);
+        assert_eq!(CursorPaths::from_user_dir(root.join("User")).user_dir, root);
     }
 }
