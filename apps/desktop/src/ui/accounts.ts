@@ -101,6 +101,41 @@ export function applyPlanFilter(list: Account[], filter: PlanFilter): Account[] 
   return list.filter((a) => accountPlanGroup(a) === filter);
 }
 
+/* ── 五个筛子一起下 ───────────────────────────────────────────────────────── */
+
+/**
+ * 列表上此刻生效的一整组筛子。五维互不相干，同时下。
+ *
+ * 「所在池」和「分组」给的是判定函数而不是枚举值：前者要查切号池 / 网关的名单（在 `usePools`
+ * 里，不该拖进这个纯模块），后者的候选是用户自己起的标签名。
+ */
+export interface AccountFacets {
+  avail: AvailFilter;
+  quota: QuotaFilter;
+  plan: PlanFilter;
+  inPool: (a: Account) => boolean;
+  hasTag: (a: Account) => boolean;
+}
+
+export type FacetDim = "avail" | "quota" | "plan" | "pool" | "tag";
+
+/**
+ * 下筛子。`except` 指定的那一维**跳过**，这是各个筛子上的计数要的形状。
+ *
+ * 计数必须是「点下去会剩几个」，否则筛了一轮之后顶上那排数字还是筛之前的底数，
+ * 和眼前的列表对不上 —— 数字一旦对不上就再也没人信它。而自己那一维要跳过：
+ * 把它也算上，选中一档后其余各档就全成 0，想换一档得先清筛，兜一圈。
+ */
+export function applyFacets(list: Account[], f: AccountFacets, except?: FacetDim): Account[] {
+  let out = list;
+  if (except !== "avail") out = applyAvailFilter(out, f.avail);
+  if (except !== "quota") out = applyQuotaFilter(out, f.quota);
+  if (except !== "plan") out = applyPlanFilter(out, f.plan);
+  if (except !== "pool") out = out.filter(f.inPool);
+  if (except !== "tag") out = out.filter(f.hasTag);
+  return out;
+}
+
 /* ── 凭证 ─────────────────────────────────────────────────────────────────── */
 
 /** 手上那把 access 还没过期（留 60 秒余量，与 Rust 侧 `session_expired` 同口径）。 */

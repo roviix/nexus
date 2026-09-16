@@ -6,10 +6,10 @@
  * 地址是 `#accounts` / `#accounts/chatgpt` / `#accounts/grok` / `#accounts/kiro`。
  *
  * Cursor 那一页签：一列账号卡负责「扫」，右侧抽屉负责「看」。几十个号的时候，用户进来通常带着一个
- * 具体问题 ——「哪个还能用」「哪个快重置了」「哪些掉了登录」—— 所以顶上是一条按**可用性**分段的
- * 分布条（图例就是筛子），工具栏左边是视图芯片（一组存好的筛子），右边是搜索、额度 / 所在池 / 档位
- * 三个筛子和排序，而不是一排统计数字。筛选 / 排序的组合会记住，也能起名存成视图
- * （`accounts/views.ts`），常问的问题一键就回到那一组筛子。
+ * 具体问题 ——「哪个还能用」「哪个快重置了」「哪些掉了登录」—— 所以工具栏左边是一排按**可用性**
+ * 分档的胶囊（每一枚既是计数也是筛子），右边是搜索和额度 / 档位 / 所在池 / 分组四个筛子加排序。
+ * 数字不单独摆一排：它们长在各自的筛子上，数的都是「点下去会剩几个」（见 `applyFacets`）。
+ * 筛选 / 排序的组合会记住，也能起名存成视图（`accounts/views.ts`），常问的问题一键就回到那一组筛子。
  *
  * 归档：多选几个号「归档」，它们就从这一页消失（也不再参与批量刷新、不进网关候选），
  * 只在「已归档」视图里能看到、能取回。凭证一个字节不动。
@@ -46,9 +46,9 @@ import { COPY_FORMATS, copyInfoMap, loadCopyChoice, saveCopyChoice, type CopyCho
 import { looksLikeLookupPaste, matchLookup } from "../accounts/lookup";
 import {
   accountPlanGroup,
-  applyAvailFilter,
-  applyPlanFilter,
-  applyQuotaFilter,
+  applyFacets,
+  AVAIL_LABEL,
+  AVAIL_ORDER,
   canQueryUsage,
   isPaidPlan,
   matchesQuery,
@@ -59,6 +59,7 @@ import {
   SORT_LABEL,
   sortAccounts,
   summarize,
+  type AccountFacets,
   type AccountSort,
   type PlanFilter,
   type QuotaFilter,
@@ -287,40 +288,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
     () => (lookupResult ? lookupResult.found : shelf.filter((a) => matchesQuery(a, query))),
     [shelf, query, lookupResult],
   );
-  // 分布条数的是搜索之后、筛子之前的那一批：它是「当前这批号什么光景」的底数，
-  // 拿筛完的结果去数，点一下筛子那条横条就只剩自己那一段了。
-  const stats = useMemo(() => summarize(searched), [searched]);
-  /**
-   * 档位下拉的选项与计数。数的是**全量**而不是搜索/筛选后的那批：选项跟着筛子结果走的话，
-   * 选中那一档、别的档就从这个下拉里消失了，想换一档得先清筛 —— 兜了一圈。
-   * 选中的那档即使此刻一个号都没有也留着，否则按钮上会突然改口叫「档位」。
-   */
-  const planOptions = useMemo(() => {
-    const counts = new Map<PlanFilter, number>();
-    let paid = 0;
-    for (const a of shelf) {
-      const g = accountPlanGroup(a);
-      counts.set(g, (counts.get(g) ?? 0) + 1);
-      if (isPaidPlan(g)) paid += 1;
-    }
-    const groups = PLAN_FILTER_ORDER.filter((g) => counts.has(g) || g === plan);
-    return [
-      { id: "all" as PlanFilter, label: PLAN_FILTER_LABEL.all, meta: shelf.length },
-      { id: "paid" as PlanFilter, label: PLAN_FILTER_LABEL.paid, meta: paid },
-      ...groups.map((g) => ({ id: g as PlanFilter, label: PLAN_FILTER_LABEL[g], meta: counts.get(g) ?? 0 })),
-    ];
-  }, [shelf, plan]);
-  const quotaOptions = useMemo(() => {
-    const all = summarize(shelf);
-    return [
-      { id: "all" as QuotaFilter, label: "额度：全部", meta: shelf.length },
-      ...QUOTA_ORDER.filter((q) => all.quota[q] > 0 || q === quota).map((q) => ({
-        id: q as QuotaFilter,
-        label: QUOTA_LABEL[q],
-        meta: all.quota[q],
-      })),
-    ];
-  }, [shelf, quota]);
   const allTags = useMemo(() => {
     const set = new Set<string>();
     for (const a of list) {
@@ -331,30 +298,95 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
     return Array.from(set).sort();
   }, [list]);
 
-  const tagOptions = useMemo(() => {
-    const untagged = shelf.filter((a) => !a.tags || a.tags.length === 0).length;
+  /**
+   * 五个筛子拢成一组。「所在池」要查两份名单、「分组」的候选是用户自己起的标签名，
+   * 所以这两维给的是判定函数（`ui/accounts.ts` 的 `AccountFacets`）。
+   */
+  const facets = useMemo<AccountFacets>(
+    () => ({
+      avail,
+      quota,
+      plan,
+      inPool: (a) => matchesPoolFilter(pools.membership(a.email), pool),
+      hasTag: (a) => {
+        if (!tag || tag === "all") return true;
+        if (tag === "_untagged") return !a.tags || a.tags.length === 0;
+        return a.tags?.includes(tag) ?? false;
+      },
+    }),
+    [avail, quota, plan, pool, tag, pools],
+  );
+
+  const shown = useMemo(() => {
+    const filtered = applyFacets(searched, facets);
+    // 批量查找的结果按清单的顺序排，不套排序：对着自己手里那份一行行核对，顺序一乱就对不上。
+    return lookup ? filtered : sortAccounts(filtered, sort);
+  }, [searched, facets, sort, lookup]);
+
+  /*
+   * 每个筛子上的数都是「点下去会剩几个」：其余几维照旧下上，自己那一维跳过
+   * （`applyFacets` 的 except）。这排数字以前数的是搜索之后、筛子之前的底数，
+   * 于是下了额度或档位的筛子之后，顶上写着 40 个、眼前只剩 6 张卡 —— 对不上的数字没人信。
+   * 自己那一维跳过是为了还能换档：把它也算上，选中一档后别的档全成 0，想换得先清筛。
+   */
+  const stats = useMemo(() => summarize(applyFacets(searched, facets, "avail")), [searched, facets]);
+  /** 档位下拉。选中的那档即使此刻一个号都没有也留着，否则按钮上会突然改口叫「档位」。 */
+  const planOptions = useMemo(() => {
+    const candidates = applyFacets(searched, facets, "plan");
+    const counts = new Map<PlanFilter, number>();
+    let paid = 0;
+    for (const a of candidates) {
+      const g = accountPlanGroup(a);
+      counts.set(g, (counts.get(g) ?? 0) + 1);
+      if (isPaidPlan(g)) paid += 1;
+    }
+    const groups = PLAN_FILTER_ORDER.filter((g) => counts.has(g) || g === plan);
     return [
-      { id: "all", label: "全部", meta: shelf.length },
+      { id: "all" as PlanFilter, label: PLAN_FILTER_LABEL.all, meta: candidates.length },
+      { id: "paid" as PlanFilter, label: PLAN_FILTER_LABEL.paid, meta: paid },
+      ...groups.map((g) => ({ id: g as PlanFilter, label: PLAN_FILTER_LABEL[g], meta: counts.get(g) ?? 0 })),
+    ];
+  }, [searched, facets, plan]);
+  const quotaOptions = useMemo(() => {
+    const s = summarize(applyFacets(searched, facets, "quota"));
+    return [
+      { id: "all" as QuotaFilter, label: "额度：全部", meta: s.total },
+      ...QUOTA_ORDER.filter((q) => s.quota[q] > 0 || q === quota).map((q) => ({
+        id: q as QuotaFilter,
+        label: QUOTA_LABEL[q],
+        meta: s.quota[q],
+      })),
+    ];
+  }, [searched, facets, quota]);
+  const poolOptions = useMemo(() => {
+    const candidates = applyFacets(searched, facets, "pool");
+    return POOL_FILTERS.map((p) => ({
+      id: p,
+      label: POOL_FILTER_LABEL[p],
+      meta: candidates.filter((a) => matchesPoolFilter(pools.membership(a.email), p)).length,
+    }));
+  }, [searched, facets, pools]);
+  const tagOptions = useMemo(() => {
+    const candidates = applyFacets(searched, facets, "tag");
+    return [
+      { id: "all", label: "全部", meta: candidates.length },
       ...allTags.map((t) => ({
         id: t,
         label: t,
-        meta: shelf.filter((a) => a.tags?.includes(t)).length,
+        meta: candidates.filter((a) => a.tags?.includes(t)).length,
       })),
-      { id: "_untagged", label: "未分组", meta: untagged },
+      { id: "_untagged", label: "未分组", meta: candidates.filter((a) => !a.tags || a.tags.length === 0).length },
     ];
-  }, [shelf, allTags]);
-
-  const shown = useMemo(() => {
-    const filtered = applyPlanFilter(applyQuotaFilter(applyAvailFilter(searched, avail), quota), plan)
-      .filter((a) => matchesPoolFilter(pools.membership(a.email), pool))
-      .filter((a) => {
-        if (!tag || tag === "all") return true;
-        if (tag === "_untagged") return !a.tags || a.tags.length === 0;
-        return a.tags?.includes(tag);
-      });
-    // 批量查找的结果按清单的顺序排，不套排序：对着自己手里那份一行行核对，顺序一乱就对不上。
-    return lookup ? filtered : sortAccounts(filtered, sort);
-  }, [searched, avail, quota, plan, pool, tag, sort, pools, lookup]);
+  }, [searched, facets, allTags]);
+  /**
+   * 「已归档」那一枚上的数：点下去会看到几个。归档的号是另一堆（`shelf` 二选一），
+   * 所以单独数一次；点它会把可用性复位成「全部」，这里也就跳过那一维。
+   */
+  const archivedCount = useMemo(() => {
+    if (lookupResult) return lookupResult.archived.length;
+    const box = list.filter((a) => Boolean(a.archivedAt) && matchesQuery(a, query));
+    return applyFacets(box, facets, "avail").length;
+  }, [list, query, facets, lookupResult]);
   const activeView = useMemo(() => matchView(spec, savedViews), [spec, savedViews]);
   const openAccount = useMemo(() => list.find((a) => a.id === openId) ?? null, [list, openId]);
   const openView = useMemo(
@@ -665,51 +697,21 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                 <span className="pill-n">{stats.total}</span>
               </button>
 
-              <button
-                type="button"
-                className={`status-pill is-avail${avail === "long_lived" && !archived ? " is-active" : ""}`}
-                onClick={() => setSpec({ avail: "long_lived", archived: false })}
-              >
-                <i className="status-dot is-long_lived" />
-                <span>可用</span>
-                <span className="pill-n">{stats.by.long_lived}</span>
-              </button>
-
-              {stats.by.session > 0 ? (
+              {/* 一档一枚，顺序照 AVAIL_ORDER（从好到坏）。空的那一档不占位 ——
+                  但「可用」和正筛着的那一档留着：前者是这排的主角，后者一消失就把自己的
+                  筛子也带走了，用户会以为号丢了。 */}
+              {AVAIL_ORDER.filter((k) => stats.by[k] > 0 || k === "long_lived" || avail === k).map((k) => (
                 <button
+                  key={k}
                   type="button"
-                  className={`status-pill is-session${avail === "session" && !archived ? " is-active" : ""}`}
-                  onClick={() => setSpec({ avail: "session", archived: false })}
+                  className={`status-pill${avail === k && !archived ? " is-active" : ""}`}
+                  onClick={() => setSpec({ avail: k, archived: false })}
                 >
-                  <i className="status-dot is-session" />
-                  <span>仅会话</span>
-                  <span className="pill-n">{stats.by.session}</span>
+                  <i className={`status-dot is-${k}`} />
+                  <span>{AVAIL_LABEL[k]}</span>
+                  <span className="pill-n">{stats.by[k]}</span>
                 </button>
-              ) : null}
-
-              {stats.by.logged_out > 0 ? (
-                <button
-                  type="button"
-                  className={`status-pill is-logged_out${avail === "logged_out" && !archived ? " is-active" : ""}`}
-                  onClick={() => setSpec({ avail: "logged_out", archived: false })}
-                >
-                  <i className="status-dot is-logged_out" />
-                  <span>掉登录</span>
-                  <span className="pill-n">{stats.by.logged_out}</span>
-                </button>
-              ) : null}
-
-              {stats.by.dead > 0 ? (
-                <button
-                  type="button"
-                  className={`status-pill is-dead${avail === "dead" && !archived ? " is-active" : ""}`}
-                  onClick={() => setSpec({ avail: "dead", archived: false })}
-                >
-                  <i className="status-dot is-dead" />
-                  <span>已失效</span>
-                  <span className="pill-n">{stats.by.dead}</span>
-                </button>
-              ) : null}
+              ))}
 
               <div className="status-pill-sep" aria-hidden />
 
@@ -720,6 +722,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
               >
                 <Icon name="archive" size={12} />
                 <span>已归档</span>
+                {archivedCount > 0 ? <span className="pill-n">{archivedCount}</span> : null}
               </button>
             </div>
 
@@ -792,7 +795,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                 icon="layers"
                 label="所在池"
                 value={pool}
-                options={POOL_FILTERS.map((p) => ({ id: p, label: POOL_FILTER_LABEL[p] }))}
+                options={poolOptions}
                 onChange={(p) => setSpec({ pool: p })}
               />
               {allTags.length > 0 ? (

@@ -59,7 +59,13 @@ export function OverviewPage({ onGo }: { onGo: (r: Route) => void }) {
   }, [reload]);
 
   const s = snap ?? EMPTY;
-  const summary = useMemo(() => summarize(s.accounts), [s.accounts]);
+  /**
+   * 「账号池」那一格数的是没归档的号。归档的既不参与批量刷新也不进网关候选，算进来这一格
+   * 就比账号页默认看到的那一列多出几个 —— 点过去发现数不对，这一格就白摆了。
+   * `byEmail` 仍照全量建：Cursor 此刻登着的那个号归了档，也得认出来。
+   */
+  const live = useMemo(() => s.accounts.filter((a) => !a.archivedAt), [s.accounts]);
+  const summary = useMemo(() => summarize(live), [live]);
   const byEmail = useMemo(() => new Map(s.accounts.map((a) => [a.email.toLowerCase(), a])), [s.accounts]);
 
   const current = s.overview?.current ?? null;
@@ -81,7 +87,7 @@ export function OverviewPage({ onGo }: { onGo: (r: Route) => void }) {
     [current, currentAccount, s.overview?.machineIdOwner],
   );
   const cursorMissing = s.app != null && !s.app.cursor.dbPresent;
-  const needsLogin = s.accounts.filter((a) => a.status === "needs_login").length;
+  const needsLogin = live.filter((a) => a.status === "needs_login").length;
 
   /** 标题栏那枚刷新键：账本、网关、用量三处一起拉，转到都回来为止。 */
   async function refreshAll() {

@@ -2484,6 +2484,8 @@ h2 {
 }
 .status-dot.is-long_lived { background: var(--accent); }
 .status-dot.is-session { background: var(--info); }
+/* 只有 crsr_ 钥匙的号：查得到逐条花费、查不到额度百分比，算不上「可用」也没坏 —— 用灰的。 */
+.status-dot.is-api_key { background: var(--color-muted); }
 .status-dot.is-logged_out { background: var(--warn); }
 .status-dot.is-dead { background: var(--bad); }
 

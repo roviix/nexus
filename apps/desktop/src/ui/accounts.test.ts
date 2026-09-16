@@ -3,12 +3,14 @@ import type { Account } from "../ipc/types";
 import {
   accountPlanGroup,
   applyAvailFilter,
+  applyFacets,
   applyPlanFilter,
   applyQuotaFilter,
   matchesQuery,
   quotaState,
   sortAccounts,
   summarize,
+  type AccountFacets,
 } from "./accounts";
 import { resetInShort, worstMonthlyBucket } from "./usage";
 
@@ -100,6 +102,55 @@ describe("applyPlanFilter", () => {
     expect(applyPlanFilter(list, "free").map((a) => a.id)).toEqual([free.id]);
     expect(applyPlanFilter(list, "unknown").map((a) => a.id)).toEqual([neverChecked.id]);
     expect(applyPlanFilter(list, "all")).toHaveLength(3);
+  });
+});
+
+describe("applyFacets", () => {
+  const all = () => true;
+  const facets = (over: Partial<AccountFacets> = {}): AccountFacets => ({
+    avail: "all",
+    quota: "all",
+    plan: "all",
+    inPool: all,
+    hasTag: all,
+    ...over,
+  });
+
+  const ultraOk = acct({ usage: usage({ plan: "ultra", totalPercentUsed: 10 }) });
+  const ultraFull = acct({ usage: usage({ plan: "ultra", totalPercentUsed: 100 }) });
+  const freeOk = acct({ usage: usage({ plan: "free", totalPercentUsed: 10 }) });
+  const deadUltra = acct({ availability: "dead", usage: usage({ plan: "ultra", totalPercentUsed: 10 }) });
+  const list = [ultraOk, ultraFull, freeOk, deadUltra];
+
+  it("下了几维就一起收窄", () => {
+    const f = facets({ plan: "ultra", quota: "ok" });
+    expect(applyFacets(list, f).map((a) => a.id)).toEqual([ultraOk.id, deadUltra.id]);
+    expect(applyFacets(list, facets({ plan: "ultra", quota: "ok", avail: "long_lived" }))).toHaveLength(1);
+  });
+
+  it("计数跟着别的筛子走 —— 这是「数字和眼前的列表对不上」的根治", () => {
+    // 筛了 Ultra 之后，可用性那排数的只能是 Ultra 里的那几个。
+    const f = facets({ plan: "ultra" });
+    const s = summarize(applyFacets(list, f, "avail"));
+    expect(s.total).toBe(3);
+    expect(s.by.long_lived).toBe(2);
+    expect(s.by.dead).toBe(1);
+  });
+
+  it("自己那一维跳过，否则选中一档之后换不了档", () => {
+    // 正筛着 Ultra，档位下拉里 Free 仍要显示它自己的 1；算上自己那一维就是 0，点不动。
+    const f = facets({ plan: "ultra" });
+    const candidates = applyFacets(list, f, "plan");
+    expect(applyPlanFilter(candidates, "free")).toHaveLength(1);
+    expect(applyPlanFilter(applyFacets(list, f), "free")).toHaveLength(0);
+  });
+
+  it("函数那两维（所在池 / 分组）同样参与收窄与计数", () => {
+    const pooled = new Set([ultraOk.id, freeOk.id]);
+    const f = facets({ inPool: (a) => pooled.has(a.id) });
+    expect(applyFacets(list, f).map((a) => a.id)).toEqual([ultraOk.id, freeOk.id]);
+    // 池筛着的时候，额度那一维数的是池里那两个。
+    expect(summarize(applyFacets(list, f, "quota")).quota).toEqual({ ok: 2, warn: 0, full: 0, unknown: 0 });
   });
 });
 
