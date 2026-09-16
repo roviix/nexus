@@ -12,6 +12,7 @@ use nexus_store::activity;
 use nexus_store::keys::AccountSecret;
 use nexus_switcher::SwitchProfile;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -146,14 +147,19 @@ pub fn accounts_import_dump(
 }
 
 /// 多选账号按格式复制。格式支持：email / email_password / email_refresh / email_session / json。
+/// `info` 按账号 id 附一行说明（界面排好的用量 / 按需 / 积分 / 重置），另起一行跟在凭证后面。
 #[tauri::command(async)]
 pub fn accounts_copy_selected(
     state: State<'_, AppState>,
     ids: Vec<String>,
     format: String,
+    info: Option<HashMap<String, String>>,
 ) -> Result<String> {
     let ids: Vec<AccountId> = ids.into_iter().map(AccountId::from_raw).collect();
-    state.accounts.repo.copy_selected(&ids, &format)
+    state
+        .accounts
+        .repo
+        .copy_selected(&ids, &format, &info.unwrap_or_default())
 }
 
 #[derive(Debug, Serialize)]

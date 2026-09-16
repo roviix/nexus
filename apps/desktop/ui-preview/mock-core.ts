@@ -1058,12 +1058,24 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     case "accounts_copy_selected": {
       const ids = new Set((args?.ids as string[]) ?? []);
       const format = String(args?.format ?? "email");
+      const info = (args?.info as Record<string, string> | undefined) ?? {};
       const hit = ACCOUNTS.filter((a) => ids.has(a.id));
-      if (format === "email_password") return delay(hit.map((a) => `${a.email}----password123`).join("\n") as T, 200);
-      if (format === "email_refresh") return delay(hit.map((a) => `${a.email}----rt_fake_token_here`).join("\n") as T, 200);
-      if (format === "email_session") return delay(hit.map((a) => `${a.email}----session_token_here`).join("\n") as T, 200);
-      if (format === "json") return delay(JSON.stringify(hit, null, 2) as T, 200);
-      return delay(hit.map((a) => a.email).join("\n") as T, 200);
+      if (format === "json") {
+        const entries = hit.map((a) => ({ email: a.email, ...(info[a.id]?.trim() ? { info: info[a.id] } : {}) }));
+        return delay(JSON.stringify({ format: "nexus-accounts/1", accounts: entries }, null, 2) as T, 200);
+      }
+      const tail =
+        format === "email_password"
+          ? "----password123"
+          : format === "email_refresh"
+            ? "----rt_fake_token_here"
+            : format === "email_session"
+              ? "----session_token_here"
+              : "";
+      // 与 Rust 侧同一规则：说明另起一行；带了说明账号之间空一行。
+      const annotated = hit.some((a) => info[a.id]?.trim());
+      const blocks = hit.map((a) => `${a.email}${tail}${info[a.id]?.trim() ? `\n${info[a.id]}` : ""}`);
+      return delay(blocks.join(annotated ? "\n\n" : "\n") as T, 200);
     }
     case "accounts_add_to_switch_book":
       return delay(storeProfile(String(args?.id ?? "")) as T, 900);

@@ -2781,6 +2781,156 @@ h2 {
   color: var(--color-ink);
 }
 
+/* ── 多选复制弹窗 ────────────────────────────────────────────────────────── */
+
+.copy-sect + .copy-sect {
+  margin-top: 16px;
+}
+
+.copy-sect-k {
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-muted);
+}
+
+/* 单选列表：一行一个格式，左边一枚圆点，右边标题 + 一行等宽的样例。
+   用整行当按钮而不是原生 radio：点哪都选中，样例也不用挤在 label 里。 */
+.choice-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.choice {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.choice + .choice {
+  border-top: 1px solid var(--line-soft);
+}
+
+.choice:hover {
+  background: var(--wash-1);
+}
+
+.choice.is-on {
+  background: var(--accent-soft);
+}
+
+.choice-dot {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--color-canvas);
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.choice.is-on .choice-dot {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 3.5px var(--accent);
+}
+
+.choice-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.choice-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
+.choice-sample {
+  font-size: 11px;
+  color: var(--color-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.choice.is-on .choice-sample {
+  color: var(--color-muted);
+}
+
+/* 预览：一到两行，等宽，可换行。只是给人看形状的，不是拿来选中复制的。 */
+.copy-preview {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--color-canvas);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--color-ink-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 140px;
+  overflow: auto;
+}
+
+/* 可开关的小胶囊：多选里的附带说明、导入时的分组、接入页的语言。
+   开着的用主色描边填底，关着的只有一圈细线 —— 一排扫过去，亮的就是选了的。 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-ink-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.chip:hover {
+  color: var(--color-ink);
+  border-color: var(--line-strong);
+  background: var(--wash-2);
+}
+
+.chip.is-on,
+.chip[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
 /* 卡片右下角的勾选框。选中态填主色，和卡片的高亮边框一起说「这张被选了」。 */
 .acct-pick {
   display: inline-grid;

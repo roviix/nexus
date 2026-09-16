@@ -11,9 +11,10 @@
 //! 内容是明文凭证。这里只负责生成文本；落到哪、权限收多紧、怎么跟用户说，是调用方的事。
 
 use crate::repo::Accounts;
-use nexus_core::{now_iso, Result};
+use nexus_core::{now_iso, AccountId, Result};
 use nexus_store::keys::AccountSecret;
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// 文件头里的格式标记。`parse_dump` 不认识它，会忽略；写给打开文件的人看。
 pub const FORMAT: &str = "nexus-accounts/1";
@@ -35,6 +36,9 @@ struct Entry {
     user_api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    /// 只在「多选复制」里出现：界面排好的一行用量说明。整库导出不带 —— 那是派生量。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    info: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +73,7 @@ impl Accounts {
                 recovery_email: secret(AccountSecret::RecoveryEmail)?,
                 user_api_key: secret(AccountSecret::ApiKey)?,
                 note: account.note.clone(),
+                info: None,
             });
         }
         let count = entries.len();
@@ -81,85 +86,74 @@ impl Accounts {
     }
 
     /// 多选账号按指定格式复制。
-    pub fn copy_selected(&self, ids: &[nexus_core::AccountId], format: &str) -> Result<String> {
-        match format {
-            "email" => {
-                let mut lines = Vec::new();
-                for id in ids {
-                    if let Ok(acc) = self.get(id) {
-                        lines.push(acc.email);
-                    }
-                }
-                Ok(lines.join("\n"))
+    ///
+    /// `info` 是界面按账号 id 附的一行说明（API 余量、按需、积分、重置时间这类）。文本格式里
+    /// 它跟在凭证行后面**另起一行**，不进 `----` 拼接 —— 那一行是给脚本吃的，多一段就解析不了；
+    /// JSON 格式里落进 `info` 字段。文案与日期由界面按本地时区排好，这里只负责拼。
+    pub fn copy_selected(
+        &self,
+        ids: &[AccountId],
+        format: &str,
+        info: &HashMap<String, String>,
+    ) -> Result<String> {
+        let secret = |id: &AccountId, kind| -> Result<Option<String>> {
+            Ok(self.secret(id, kind)?.map(|s| s.expose().to_string()))
+        };
+        let info_for = |id: &AccountId| -> Option<String> {
+            info.get(id.as_str())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+
+        if format == "json" {
+            let mut entries = Vec::new();
+            for id in ids {
+                let Ok(account) = self.get(id) else { continue };
+                entries.push(Entry {
+                    email: account.email.clone(),
+                    refresh_token: secret(id, AccountSecret::Refresh)?,
+                    cursor_password: secret(id, AccountSecret::CursorPassword)?,
+                    email_password: secret(id, AccountSecret::EmailPassword)?,
+                    recovery_email: secret(id, AccountSecret::RecoveryEmail)?,
+                    user_api_key: secret(id, AccountSecret::ApiKey)?,
+                    note: account.note.clone(),
+                    info: info_for(id),
+                });
             }
-            "email_password" => {
-                let mut lines = Vec::new();
-                for id in ids {
-                    if let Ok(acc) = self.get(id) {
-                        let pw = self
-                            .secret(id, AccountSecret::CursorPassword)?
-                            .map(|s| s.expose().to_string())
-                            .unwrap_or_default();
-                        lines.push(format!("{}----{}", acc.email, pw));
-                    }
-                }
-                Ok(lines.join("\n"))
-            }
-            "email_refresh" => {
-                let mut lines = Vec::new();
-                for id in ids {
-                    if let Ok(acc) = self.get(id) {
-                        let rt = self
-                            .secret(id, AccountSecret::Refresh)?
-                            .map(|s| s.expose().to_string())
-                            .unwrap_or_default();
-                        lines.push(format!("{}----{}", acc.email, rt));
-                    }
-                }
-                Ok(lines.join("\n"))
-            }
-            "email_session" => {
-                let mut lines = Vec::new();
-                for id in ids {
-                    if let Ok(acc) = self.get(id) {
-                        let access = self
-                            .secret(id, AccountSecret::Access)?
-                            .map(|s| s.expose().to_string())
-                            .unwrap_or_default();
-                        lines.push(format!("{}----{}", acc.email, access));
-                    }
-                }
-                Ok(lines.join("\n"))
-            }
-            "json" => {
-                let mut entries = Vec::new();
-                for id in ids {
-                    if let Ok(account) = self.get(id) {
-                        let secret = |kind| -> Result<Option<String>> {
-                            Ok(self
-                                .secret(&account.id, kind)?
-                                .map(|s| s.expose().to_string()))
-                        };
-                        entries.push(Entry {
-                            email: account.email.clone(),
-                            refresh_token: secret(AccountSecret::Refresh)?,
-                            cursor_password: secret(AccountSecret::CursorPassword)?,
-                            email_password: secret(AccountSecret::EmailPassword)?,
-                            recovery_email: secret(AccountSecret::RecoveryEmail)?,
-                            user_api_key: secret(AccountSecret::ApiKey)?,
-                            note: account.note.clone(),
-                        });
-                    }
-                }
-                let json = serde_json::to_string_pretty(&Dump {
-                    format: FORMAT,
-                    exported_at: now_iso(),
-                    accounts: entries,
-                })?;
-                Ok(json)
-            }
-            _ => Err(nexus_core::AppError::invalid("不认识的复制格式。")),
+            return Ok(serde_json::to_string_pretty(&Dump {
+                format: FORMAT,
+                exported_at: now_iso(),
+                accounts: entries,
+            })?);
         }
+
+        let paired = match format {
+            "email" => None,
+            "email_password" => Some(AccountSecret::CursorPassword),
+            "email_refresh" => Some(AccountSecret::Refresh),
+            "email_session" => Some(AccountSecret::Access),
+            _ => return Err(nexus_core::AppError::invalid("不认识的复制格式。")),
+        };
+
+        let mut blocks = Vec::new();
+        let mut annotated = false;
+        for id in ids {
+            let Ok(account) = self.get(id) else { continue };
+            let mut line = account.email;
+            if let Some(kind) = paired {
+                line.push_str("----");
+                line.push_str(&secret(id, kind)?.unwrap_or_default());
+            }
+            if let Some(extra) = info_for(id) {
+                annotated = true;
+                line.push('\n');
+                line.push_str(&extra);
+            }
+            blocks.push(line);
+        }
+        // 带了说明每个号就是两行，中间空一行才看得出哪行归哪个号；不带就还是一行一个。
+        Ok(blocks.join(if annotated { "\n\n" } else { "\n" }))
     }
 }
 

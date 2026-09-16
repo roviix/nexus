@@ -392,7 +392,7 @@ export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
                   </div>
                   <div className="row" style={{ gap: 4 }}>
                     {(Object.keys(LANG_LABEL) as Lang[]).map((l) => (
-                      <button key={l} type="button" className="pool-chip" aria-pressed={lang === l} onClick={() => setLang(l)}>
+                      <button key={l} type="button" className="chip" aria-pressed={lang === l} onClick={() => setLang(l)}>
                         {LANG_LABEL[l]}
                       </button>
                     ))}

@@ -627,33 +627,68 @@ mod tests {
             })
             .unwrap();
 
-        let emails = accounts
-            .copy_selected(&[a.id.clone(), b.id.clone()], "email")
-            .unwrap();
+        let none = std::collections::HashMap::new();
+        let both = [a.id.clone(), b.id.clone()];
+
+        let emails = accounts.copy_selected(&both, "email", &none).unwrap();
         assert_eq!(emails, "a@example.com\nb@example.com");
 
-        let email_pw = accounts
-            .copy_selected(&[a.id.clone(), b.id.clone()], "email_password")
-            .unwrap();
+        let email_pw = accounts.copy_selected(&both, "email_password", &none).unwrap();
         assert_eq!(email_pw, "a@example.com----pwa\nb@example.com----pwb");
 
-        let email_rt = accounts
-            .copy_selected(&[a.id.clone(), b.id.clone()], "email_refresh")
-            .unwrap();
+        let email_rt = accounts.copy_selected(&both, "email_refresh", &none).unwrap();
         assert_eq!(email_rt, "a@example.com----rt-a\nb@example.com----rt-b");
 
-        let email_jwt = accounts
-            .copy_selected(&[a.id.clone(), b.id.clone()], "email_session")
-            .unwrap();
+        let email_jwt = accounts.copy_selected(&both, "email_session", &none).unwrap();
         assert_eq!(
             email_jwt,
             format!("a@example.com----{jwt}\nb@example.com----{jwt}")
         );
 
-        let json = accounts
-            .copy_selected(&[a.id.clone(), b.id.clone()], "json")
-            .unwrap();
+        let json = accounts.copy_selected(&both, "json", &none).unwrap();
         assert!(json.contains("nexus-accounts/1") && json.contains("rt-a"));
+        assert!(!json.contains("\"info\""), "没附说明就不该出现 info 字段");
+
+        assert!(accounts.copy_selected(&both, "csv", &none).is_err());
+    }
+
+    #[test]
+    fn copy_selected_puts_the_info_line_under_the_credential_line() {
+        // 说明另起一行、不进 `----` 拼接：第一行始终是脚本能切开的那一行。
+        let (accounts, _) = setup();
+        let a = accounts
+            .upsert(NewAccount {
+                email: "a@example.com".into(),
+                cursor_password: Some("pwa".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let b = accounts
+            .upsert(NewAccount {
+                email: "b@example.com".into(),
+                cursor_password: Some("pwb".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let mut info = std::collections::HashMap::new();
+        info.insert(a.id.as_str().to_string(), "API 余 54% · 按需未开启".to_string());
+        // 空白说明当没有：这个号只有一行。
+        info.insert(b.id.as_str().to_string(), "   ".to_string());
+
+        let text = accounts
+            .copy_selected(&[a.id.clone(), b.id.clone()], "email_password", &info)
+            .unwrap();
+        assert_eq!(
+            text,
+            "a@example.com----pwa\nAPI 余 54% · 按需未开启\n\nb@example.com----pwb"
+        );
+
+        let json = accounts
+            .copy_selected(&[a.id.clone(), b.id.clone()], "json", &info)
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["accounts"][0]["info"], "API 余 54% · 按需未开启");
+        assert!(v["accounts"][1].get("info").is_none());
     }
 
     #[test]

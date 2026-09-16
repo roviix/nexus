@@ -42,15 +42,7 @@ import {
   type ViewSpec,
 } from "../accounts/views";
 
-export type CopyFormat = "email" | "email_password" | "email_refresh" | "email_session" | "json";
-
-export const COPY_FORMATS: Array<{ id: CopyFormat; label: string }> = [
-  { id: "email", label: "仅邮箱" },
-  { id: "email_password", label: "邮箱----密码" },
-  { id: "email_refresh", label: "邮箱----Refresh" },
-  { id: "email_session", label: "邮箱----Session" },
-  { id: "json", label: "结构化 JSON" },
-];
+import { COPY_FORMATS, copyInfoMap, loadCopyChoice, saveCopyChoice, type CopyChoice } from "../accounts/copy";
 import {
   accountPlanGroup,
   applyAvailFilter,
@@ -73,6 +65,7 @@ import {
 import { Banner, Empty, ErrorNote, Icon, Picker } from "../ui/primitives";
 import { AddAccountModal } from "./accounts/AddAccountModal";
 import { AuthorizeModal } from "./accounts/AuthorizeModal";
+import { CopySelectedModal } from "./accounts/CopySelectedModal";
 import { ChatGptAccounts } from "./accounts/ChatGptAccounts";
 import { GrokAccounts, KiroAccounts } from "./accounts/DeviceAccounts";
 
@@ -140,6 +133,10 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [archiving, setArchiving] = useState(false);
+  // 复制弹窗：开着时记着上次选的格式与附加项；复制中禁掉按钮，别连点两次。
+  const [copying, setCopying] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyChoice, setCopyChoice] = useState<CopyChoice>(loadCopyChoice);
 
   /** 账号打码开关：点击小眼睛切换明文 / 打码展示。 */
   const [masked, setMasked] = useState(() => {
@@ -362,17 +359,28 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   const refreshable = useMemo(() => list.filter((a) => !a.archivedAt && canQueryUsage(a)).length, [list]);
   const narrowed = query.trim() !== "" || !isDefaultView(spec);
 
-  async function copySelected(fmt: CopyFormat) {
-    const ids = [...selected];
-    if (!ids.length) return;
+  // 选中的号按列表顺序排：复制出来的顺序就是眼前看到的顺序。
+  const selectedAccounts = useMemo(() => shown.filter((a) => selected.has(a.id)), [shown, selected]);
+
+  async function copySelected(choice: CopyChoice) {
+    if (!selectedAccounts.length) return;
+    setCopyBusy(true);
     try {
-      const text = await accounts.copySelected(ids, fmt);
+      const ids = selectedAccounts.map((a) => a.id);
+      const info = copyInfoMap(selectedAccounts, choice.extras);
+      const text = await accounts.copySelected(ids, choice.format, info);
       await navigator.clipboard.writeText(text);
-      const label = COPY_FORMATS.find((f) => f.id === fmt)?.label ?? "信息";
-      setNotice(`已复制 ${ids.length} 个账号的${label}到剪贴板。`);
+      saveCopyChoice(choice);
+      setCopyChoice(choice);
+      const label = COPY_FORMATS.find((f) => f.id === choice.format)?.label ?? "信息";
+      const withInfo = choice.extras.length ? "（带说明）" : "";
+      setNotice(`已复制 ${ids.length} 个账号的${label}${withInfo}到剪贴板。`);
       setError(null);
+      setCopying(false);
     } catch (err) {
       setError(err);
+    } finally {
+      setCopyBusy(false);
     }
   }
 
@@ -787,7 +795,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
               onNone={() => setSelected(new Set())}
               onArchive={() => void archiveSelected(!archived)}
               onRefresh={() => void refreshSelected()}
-              onCopy={(fmt) => void copySelected(fmt)}
+              onCopy={() => setCopying(true)}
               onExit={exitSelecting}
             />
           ) : null}
@@ -904,6 +912,17 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
           }}
         />
       ) : null}
+
+      {copying ? (
+        <CopySelectedModal
+          accounts={selectedAccounts}
+          initial={copyChoice}
+          busy={copyBusy}
+          masked={masked}
+          onClose={() => setCopying(false)}
+          onCopy={(choice) => void copySelected(choice)}
+        />
+      ) : null}
     </>
   );
 }
@@ -912,7 +931,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
 
 /**
  * 按下「选择」后出现在列表上方：选了几个、全选 / 清空，以及能对这一批做的事。
- * 动作只有归档（或取回）和刷新用量 —— 删除故意不放：它不可逆，一个个删让人多想一秒。
+ * 动作是复制、刷新用量、归档（或取回）—— 删除故意不放：它不可逆，一个个删让人多想一秒。
  */
 function SelectBar({
   count,
@@ -934,11 +953,9 @@ function SelectBar({
   onNone: () => void;
   onArchive: () => void;
   onRefresh: () => void;
-  onCopy: (format: CopyFormat) => void;
+  onCopy: () => void;
   onExit: () => void;
 }) {
-  const [format, setFormat] = useState<CopyFormat>("email");
-
   return (
     <div className="selbar" role="toolbar" aria-label="批量操作">
       <span className="selbar-n">
@@ -950,32 +967,17 @@ function SelectBar({
 
       <span className="grow" />
 
-      {/* 复制选中账号按指定格式 */}
-      <div className="row" style={{ gap: 4, alignItems: "center" }}>
-        <button
-          type="button"
-          className="btn btn-sm"
-          disabled={count === 0 || busy}
-          onClick={() => onCopy(format)}
-          title="将选中账号按右侧格式复制到剪贴板"
-        >
-          <Icon name="copy" size={13} />
-          复制
-        </button>
-        <select
-          className="input"
-          style={{ width: "auto", height: 26, fontSize: 11.5, padding: "0 6px" }}
-          value={format}
-          onChange={(e) => setFormat(e.target.value as CopyFormat)}
-          aria-label="复制格式"
-        >
-          {COPY_FORMATS.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.label}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* 格式和附带说明在弹窗里选：操作条上放一个下拉，选项一多就挤不下、也讲不清。 */}
+      <button
+        type="button"
+        className="btn btn-sm"
+        disabled={count === 0 || busy}
+        onClick={onCopy}
+        title="选择格式与附带说明后复制到剪贴板"
+      >
+        <Icon name="copy" size={13} />
+        复制…
+      </button>
 
       {!archived ? (
         <button type="button" className="btn btn-sm" disabled={count === 0 || busy} onClick={onRefresh}>

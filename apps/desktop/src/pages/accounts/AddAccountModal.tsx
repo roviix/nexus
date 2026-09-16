@@ -384,14 +384,14 @@ function useBulkPane(onDone: (count: number) => Promise<void>, existingTags: str
           </datalist>
         ) : null}
         {existingTags.length > 0 ? (
-          <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+          <div className="chips" style={{ alignItems: "center", marginTop: 6 }}>
             <span className="faint tiny">已有分组：</span>
             {existingTags.map((t) => (
               <button
                 key={t}
                 type="button"
-                className={`pool-chip${bulkTag === t ? " is-active" : ""}`}
-                style={{ fontSize: 11, padding: "2px 8px" }}
+                className={`chip${bulkTag === t ? " is-on" : ""}`}
+                aria-pressed={bulkTag === t}
                 onClick={() => setBulkTag(bulkTag === t ? "" : t)}
               >
                 {t}

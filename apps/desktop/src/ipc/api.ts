@@ -150,11 +150,15 @@ export const accounts = {
   /** 解析一份粘进来的清单，只预览不写库。 */
   parseDump: (text: string) => call<ImportPreview>("accounts_parse_dump", { text }),
   importDump: (text: string, tag?: string) => call<ImportOutcome>("accounts_import_dump", { text, tag }),
-  /** 多选账号按格式复制内容到剪贴板。 */
+  /**
+   * 多选账号按格式复制。`info` 按账号 id 附一行说明（界面排好的用量 / 按需 / 积分 / 重置），
+   * 文本格式另起一行跟在凭证后面，JSON 落进 `info` 字段。
+   */
   copySelected: (
     ids: string[],
     format: "email" | "email_password" | "email_refresh" | "email_session" | "json",
-  ) => call<string>("accounts_copy_selected", { ids, format }),
+    info?: Record<string, string>,
+  ) => call<string>("accounts_copy_selected", { ids, format, info }),
   /**
    * 把全部账号连凭证导出成清单文件（`~/.roviix/exports`），与 `importDump` 是同一种文件。
    * 只回路径和条数；文件里是明文凭证，Rust 侧会记一条 warn 级活动日志。
