@@ -105,6 +105,13 @@ jobs:
     name: 依赖审计
     runs-on: ubuntu-latest
     continue-on-error: true
+    # audit-check 把结果写成一条 check run。仓库的默认 token 是只读的，少了这一行
+    # 它在 push 上报 `Resource not accessible by integration`，整份审计结果连带丢掉 ——
+    # 红的不是依赖有问题，而是它没处写。（dependabot 开的 PR 上 token 一律只读，
+    # 提权对它无效，所以这个 job 仍是 continue-on-error。）
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
