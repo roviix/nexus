@@ -624,19 +624,35 @@ pub fn accounts_set_secret(
 /// **这是 `nexus-accounts` 与 `nexus-switcher` 之间唯一的数据通路**（ARCHITECTURE R1）。
 /// 两个 crate 互不依赖，拷贝发生在这里、由用户点击触发、一次一个号。
 ///
-/// 收两种号：有 refresh 的，和只有一把**还活着的**会话 JWT 的（`can_write_cursor_login`）。
+/// 收三类号：有 refresh 的、有一把活着的**桌面 session** JWT 的、以及只有一把活着的**网站 web**
+/// token 的——最后这类会先在后台转成 session（见下）。
 ///
-/// 仅会话的号把同一把 JWT 写进 `accessToken` / `refreshToken` 两格。这不是占位、不是权宜——
-/// Cursor 自己每次续期成功后就是这么写盘的（`storeAccessRefreshToken(t, t)`），而它的
-/// `/oauth/token` 接受会话 JWT 当 `refresh_token`（2026-09-16 实测：200、不 rotate、旧的照活）。
-/// 0.5.1 把这类号挡在门外的理由已被推翻，见 `Account::can_write_cursor_login` 的注释。
+/// - 有 refresh：切号那步用 refresh 换一把新鲜 session 再写。
+/// - session 型仅会话号：把同一把 JWT 写进 `accessToken` / `refreshToken` 两格。这不是占位——
+///   Cursor 自己续期成功后就是这么写盘的（`storeAccessRefreshToken(t, t)`），`/oauth/token` 也接受
+///   session JWT 当 `refresh_token`（2026-09-16 实测：200、不 rotate、旧的照活）。
+/// - web 型仅会话号：**绝不能直接写**——写进去 Cursor 一续期就 `shouldLogout` 把号踢掉。先用它还活着的
+///   网站会话走一次官方 `loginDeepControl` 换出桌面 session + refresh（`convert_web_to_session`，
+///   无密码、无验证码、不掉原会话），号升级成有 refresh 的长期号，再照常切。
 #[tauri::command]
 pub async fn accounts_add_to_switch_book(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<SwitchProfile> {
     let id = AccountId::from_raw(id);
-    let account = state.accounts.repo.get(&id)?;
+    let mut account = state.accounts.repo.get(&id)?;
+
+    // web-only 号：先转换。转换成功后它就有 refresh 了，走下面正常那条路。
+    if account.web_session_only() {
+        activity::info(
+            &state.db,
+            "accounts",
+            Some(&account.email),
+            "切号前把 web token 转成桌面 session（loginDeepControl）",
+        );
+        account = state.accounts.convert_web_to_session(&id).await?;
+    }
+
     if !account.can_write_cursor_login() {
         return Err(AppError::new(
             ErrorCode::ProfileIncomplete,
@@ -651,8 +667,8 @@ pub async fn accounts_add_to_switch_book(
     }
 
     // 有 refresh 的号强制换一把足寿的 access 再写进 Cursor：复用的可能只剩一分钟寿命，
-    // Cursor 一启动就得先去续期，而那正是用户在切号的当口。仅会话的号换不出新的，
-    // `session()` 会复用手上那把（`can_write_cursor_login` 已保证它还活着）。
+    // Cursor 一启动就得先去续期，而那正是用户在切号的当口。session 型仅会话号换不出新的，
+    // `session()` 会复用手上那把（`can_write_cursor_login` 已保证它还活着且是 session 型）。
     let session = if account.has_refresh {
         state.accounts.fresh_session(&id).await?
     } else {

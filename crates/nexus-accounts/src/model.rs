@@ -147,6 +147,11 @@ pub struct Account {
     pub has_access: bool,
     /// 那把 access 的 `exp`，ISO。列表里判「还活着没」不用解密就能看。
     pub access_expires_at: Option<String>,
+    /// 那把 access JWT 的 `type` claim：`session`（桌面会话，可切进 Cursor）/ `web`（网站会话，
+    /// **不能**直接写 Cursor——写进去 Cursor 会拿它续期、服务端回 `shouldLogout`、把号踢掉）/
+    /// 其它。`None` = 还没解析出来（老行）或没有 access。判「能不能切号」要看它，见
+    /// [`Account::can_write_cursor_login`]。
+    pub access_token_type: Option<String>,
     pub has_password: bool,
     pub has_email_password: bool,
     pub has_recovery_email: bool,
@@ -203,6 +208,24 @@ impl Account {
         !self.has_refresh && self.has_access
     }
 
+    /// 手上那把 access 是**桌面 session** 而不是网站 web token。
+    ///
+    /// `type=session` 才能直接写进 Cursor 的登录态；`type=web` 写进去 Cursor 会拿它续期、
+    /// 服务端回 `shouldLogout`、把号踢掉。`None`（老行还没解析出 type）保守当作**不是** session——
+    /// 宁可让它走一次 web→session 转换，也不要拿不确定的 token 去写 Cursor 把号弄掉。
+    pub fn access_is_session(&self) -> bool {
+        self.access_token_type.as_deref() == Some("session")
+    }
+
+    /// 只有一把还活着的**网站** web token（没有 refresh、也不是桌面 session）。
+    /// 它能查用量 / 进网关，但不能直接切号——切号入口要先把它转成 session（见
+    /// `accounts_add_to_switch_book`）。
+    pub fn web_session_only(&self) -> bool {
+        !self.has_refresh
+            && self.has_live_access()
+            && self.access_token_type.as_deref() == Some("web")
+    }
+
     /// 能不能查用量：有 refresh 就永远行；没 refresh 看手上 access 还活着没；
     /// 再不行还有 `crsr_` —— 只能拉逐条花费，没有额度百分比。
     pub fn can_query_usage(&self) -> bool {
@@ -217,21 +240,25 @@ impl Account {
         self.status != Status::Dead && (self.has_refresh || self.has_live_access())
     }
 
-    /// 能不能把登录态写进本机 Cursor（加进切号本）：有 refresh，**或**手上的 access JWT 还活着。
+    /// 能不能**直接**把登录态写进本机 Cursor（切号写盘那一步认它）：有 refresh，**或**手上有一把
+    /// 还活着的**桌面 session** access（`type=session`）。
     ///
-    /// 0.5.1 曾把它收成「必须有 refresh」，理由是仅会话的号写进去要拿 access 占
-    /// `cursorAuth/refreshToken` 那一格，「Cursor 拿假 refresh 续期必然 401 掉登录」。
-    /// 2026-09-16 对着 Cursor 3.19.13 的 bundle 和真上游核了一遍，这个前提不成立：
-    /// - Cursor 自己续期成功后就是把新的 access **同时写进两格**
-    ///   （`storeAccessRefreshToken(c.access_token, c.access_token)`），盘上的稳态本来就是两格相同；
-    /// - `POST /oauth/token` 的 `refresh_token` 参数接受会话 JWT 本身，实测回 200 + 新的 60 天
-    ///   session JWT，不 rotate，旧的照活；
-    /// - 续期失败只在服务端回 `shouldLogout: true` 时才登出，网络错误 / 非 200 只打日志。
+    /// 判据经过两次校正，都是被真机事故推着走的：
     ///
-    /// 所以判据就是「这把 JWT 此刻活着没」。当年那批号掉登录，是导入进来的 token 在服务端
-    /// 已经废了（源会话被登出 / 别处重登 / 过 60 天），不切也一样用不了。
+    /// 1. 0.5.1「必须有 refresh」——理由是仅会话号写进去要拿 access 占 refresh 那一格、Cursor 续期
+    ///    必 401 掉登录。2026-09-16 核 Cursor 3.19.13 bundle + 真上游推翻了这个前提：Cursor 自己续期
+    ///    成功后就是把 access **同写两格**（`storeAccessRefreshToken(t, t)`），`POST /oauth/token` 也接受
+    ///    session JWT 当 refresh（回 200、不 rotate、旧的照活）。于是一度放开成「JWT 活着就行」。
+    /// 2. 但「JWT 活着」不够——**token 的 `type` 决定生死**。`type=web`（网站 WorkOS 会话）写进 Cursor 后，
+    ///    Cursor 一续期就收到 `shouldLogout: true` 并走登出流程，把这个 WorkOS 会话终止，号就掉了
+    ///    （2026-09-16 真机：joshua / jessica）。`type=session` 才安全。所以仅会话的号必须是 session 型
+    ///    才允许直接写；web 型要先走 `loginDeepControl` 转换成 session（那条路无密码、无验证码、不掉原会话，
+    ///    见 `accounts_add_to_switch_book`），转换本身不在这个判据里。
+    ///
+    /// 有 refresh 的号不受 type 影响：切号那一步会先用 refresh 换一把新鲜 session 再写。
     pub fn can_write_cursor_login(&self) -> bool {
-        self.status != Status::Dead && (self.has_refresh || self.has_live_access())
+        self.status != Status::Dead
+            && (self.has_refresh || (self.has_live_access() && self.access_is_session()))
     }
 }
 
@@ -446,6 +473,7 @@ mod tests {
             has_refresh: true,
             has_access: false,
             access_expires_at: None,
+            access_token_type: None,
             has_password: false,
             has_email_password: false,
             has_recovery_email: false,
@@ -490,6 +518,7 @@ mod tests {
             has_refresh: false,
             has_access: false,
             access_expires_at: None,
+            access_token_type: None,
             has_password: false,
             has_email_password: false,
             has_recovery_email: false,
@@ -571,6 +600,7 @@ mod tests {
             has_refresh: true,
             has_access: false,
             access_expires_at: None,
+            access_token_type: None,
             has_password: false,
             has_email_password: false,
             has_recovery_email: false,
@@ -610,6 +640,7 @@ mod tests {
             has_refresh: false,
             has_access: true,
             access_expires_at: Some("2099-01-01T00:00:00Z".into()),
+            access_token_type: Some("session".into()),
             has_password: false,
             has_email_password: false,
             has_recovery_email: false,
@@ -623,8 +654,27 @@ mod tests {
         assert!(a.session_only());
         assert!(a.can_query_usage(), "有效期内拿它查用量 / 进网关都行");
         assert!(a.has_usable_session(), "有效期内拿得出一把会话");
-        // 活着的会话 JWT 同写两格就是 Cursor 自己续期后的盘上稳态，切得进去。
-        assert!(a.can_write_cursor_login(), "JWT 活着就能写 Cursor 登录态");
+        // 活着的**桌面 session** JWT 同写两格就是 Cursor 自己续期后的盘上稳态，切得进去。
+        assert!(
+            a.can_write_cursor_login(),
+            "活着的 session token 能写 Cursor 登录态"
+        );
+        assert!(!a.web_session_only(), "session 型不是 web-only");
+
+        // web 型：同样活着、同样能查用量 / 进网关，但**不能**直接写 Cursor——写进去 Cursor
+        // 一续期就 shouldLogout 把号踢掉。它得先走 web→session 转换。
+        a.access_token_type = Some("web".into());
+        assert!(
+            a.can_query_usage() && a.has_usable_session(),
+            "web 型也能查用量 / 进网关"
+        );
+        assert!(
+            !a.can_write_cursor_login(),
+            "web token 绝不直接写 Cursor 登录态"
+        );
+        assert!(a.web_session_only(), "活着的 web-only：切号入口要先转换");
+
+        a.access_token_type = Some("session".into());
         a.access_expires_at = Some("2020-01-01T00:00:00Z".into());
         assert!(!a.can_query_usage());
         assert!(!a.has_usable_session(), "过期之后连会话都拿不出来");

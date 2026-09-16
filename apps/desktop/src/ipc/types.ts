@@ -333,6 +333,11 @@ export interface Account {
   hasAccess: boolean;
   /** 那把 access 的到期时刻（ISO）。判「仅会话的号还活着没」用它，不用解密。 */
   accessExpiresAt?: string | null;
+  /**
+   * 那把 access JWT 的 `type`：`session`（桌面会话，可直接切进 Cursor）/ `web`（网站会话，
+   * 切号前会先自动转成 session）/ 其它。`null` = 还没解析出来或没有 access。
+   */
+  accessTokenType?: string | null;
   hasPassword: boolean;
   hasEmailPassword: boolean;
   hasRecoveryEmail: boolean;

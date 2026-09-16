@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Account, SwitchProfile } from "../ipc/types";
-import { buildSwitchPool, canAddToSwitchPool, canMintApiKey, listAvailableSwitchAccounts } from "./switcher";
+import { buildSwitchPool, canAddToSwitchPool, canMintApiKey, listAvailableSwitchAccounts, switchNeedsWebConversion } from "./switcher";
 
 function account(
   email: string,
@@ -138,6 +138,32 @@ describe("canAddToSwitchPool", () => {
       canAddToSwitchPool(
         account("dead@example.com", { hasRefresh: true, status: "dead" }),
       ),
+    ).toBe(false);
+    // web-only 也放行——切号时后台自动转成 session（不用碰 crsr）。
+    expect(
+      canAddToSwitchPool(
+        account("web@example.com", {
+          hasRefresh: false,
+          hasAccess: true,
+          accessExpiresAt: "2099-01-01T00:00:00Z",
+          accessTokenType: "web",
+        }),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("switchNeedsWebConversion", () => {
+  it("flags only the live web-only accounts (they convert on first switch)", () => {
+    const live = { hasRefresh: false, hasAccess: true, accessExpiresAt: "2099-01-01T00:00:00Z" as const };
+    expect(switchNeedsWebConversion(account("w@x.com", { ...live, accessTokenType: "web" }))).toBe(true);
+    // session 型直接切，不用转换。
+    expect(switchNeedsWebConversion(account("s@x.com", { ...live, accessTokenType: "session" }))).toBe(false);
+    // 有 refresh 的号用 refresh 换，不走 web 转换。
+    expect(switchNeedsWebConversion(account("r@x.com", { hasRefresh: true, accessTokenType: "web" }))).toBe(false);
+    // 过期的 web token 不能转（网站会话也没了）。
+    expect(
+      switchNeedsWebConversion(account("e@x.com", { hasRefresh: false, hasAccess: true, accessExpiresAt: "2020-01-01T00:00:00Z", accessTokenType: "web" })),
     ).toBe(false);
   });
 });

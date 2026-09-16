@@ -180,6 +180,20 @@ pub fn jwt_expiry_iso(jwt: &str) -> Option<String> {
     nexus_core::clock::iso_from_millis((exp * 1000.0) as i64)
 }
 
+/// JWT 的 `type` claim（`session` / `web` / `api_key_token` …）。
+///
+/// 这不是装饰字段：Cursor IDE 只可以接 `type=session`。`type=web` 是网站 WorkOS 会话，
+/// 虽然它在有效期内也能当 Bearer / Cookie 用，但写进 Cursor 后 IDE 会拿它走
+/// `/oauth/token`，服务端回 `shouldLogout: true` 并把这把网站会话注销。
+pub fn jwt_type(jwt: &str) -> Option<String> {
+    let kind = decode_payload(jwt)?
+        .get("type")?
+        .as_str()?
+        .trim()
+        .to_ascii_lowercase();
+    (!kind.is_empty()).then_some(kind)
+}
+
 fn decode_payload(jwt: &str) -> Option<serde_json::Value> {
     use base64::Engine;
     let payload = jwt.split('.').nth(1)?;

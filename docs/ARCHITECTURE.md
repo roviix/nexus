@@ -276,11 +276,23 @@ Rust 侧只要一个 `reqwest`。
 - Cursor 在 token 剩余寿命 < 53 天（`Ylr = 1272h`，即签发满 7 天）时于每次 `getAccessToken()` 里主动
   续期；续期失败只在服务端回 `shouldLogout: true` 时才登出，网络错误 / 非 200 只打日志、旧 token 照用。
 
-所以判据就是「**这把 JWT 此刻活着没**」。当年那批号掉登录，是导入进来的 token 在服务端**本来就已经
-废了**（源会话被登出、号在别处重登、或过了 60 天）——切号只是第一个去用它的动作。这类号不切也一样
-用不了；而只要 JWT 活着，同写两格就和 FlyCursor / cursor-free-vip 这些工具一直在做的事完全一样。
-切号本身**不做任何网络请求**：不探活、不续期，纯写盘；死 token 写进去顶多让 Cursor 显示掉登录，
-我们库里的那份原样还在。
+于是一度放开成「**JWT 活着就能切**」。但很快被第三次校正——**token 的 `type` 决定生死**。access JWT 有
+`type` claim：`session`（PKCE / 深链登录拿到的桌面会话）和 `web`（网站 / cookie 里的 `WorkosCursorSessionToken`）。
+两者都能读 api2、都能查用量，但只有 `session` 能写进 Cursor。`web` 写进去后 Cursor 一续期就收到
+`shouldLogout: true`、走登出流程终止这个 WorkOS 会话，号就掉了（2026-09-16 真机：joshua / jessica，两把
+web token）。注意杀号的是 Cursor 的**登出动作**，不是续期本身——单独打 `/oauth/token` 不作废 web token
+（jessica 调完照样读 200）。所以：
+
+- **`type=session` 仅会话号**：JWT 活着就直接切,同写两格,和 FlyCursor / cursor-free-vip 一直做的一样。
+- **`type=web` 仅会话号**:**绝不直接写**。切号入口先用它还活着的网站会话走一次官方 `loginDeepControl`
+  换出桌面 session + refresh（`convert::web_to_session`,无密码、无验证码,且**不作废原 web 会话**——真机
+  验证:换完原 token 还能读 api2,换出的 refresh 能反复续期),号顺带升级成长期号,再照常切。转换是切号
+  入口按需触发的一次网络往返,不是自动路径。
+- 判据落在 `access_token_type` 列上(v16 迁移;老行启动 backfill),前端不用解密就知道要不要转换。
+
+切号写盘那一步本身仍**不做任何网络请求**:不探活、不续期,纯写盘;死 token 写进去顶多让 Cursor 显示掉
+登录,我们库里的那份原样还在。当年 0.5.1 那批号掉登录,真正原因是导入进来的多是 `type=web`、或服务端
+本来就废了的 token,不切也一样用不了。
 
 顺带撤掉的还有 `refresh_is_placeholder`（两格相同即拒切）那道闸——按上面第一条，它拦下的是所有被
 Cursor 续过一次的正常号。

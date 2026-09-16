@@ -350,6 +350,17 @@ ALTER TABLE accounts ADD COLUMN has_api_key INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE accounts ADD COLUMN archived_at TEXT;
 "#,
         ),
+        // v16：Cursor access JWT 的 `type` claim（session | web | …）。
+        //
+        // `type=session` 可以写进 Cursor IDE；`type=web` 只是一把网站 WorkOS 会话。把 web JWT
+        // 同时写进 accessToken / refreshToken 后，Cursor 会拿它请求 `/oauth/token`，服务端回
+        // `shouldLogout: true` 并注销这把网站会话（2026-09-16 真机事故）。只看 exp 分不出二者，
+        // 所以把非秘密的 claim 投影出来，列表页不用解密就能正确禁用「切号」。
+        M::up(
+            r#"
+ALTER TABLE accounts ADD COLUMN access_token_type TEXT;
+"#,
+        ),
     ])
 }
 

@@ -279,10 +279,14 @@ impl Accounts {
         let has_email_password = has(AccountSecret::EmailPassword);
         let has_recovery_email = has(AccountSecret::RecoveryEmail);
         let has_api_key = has(AccountSecret::ApiKey);
-        // access 的过期时刻从 JWT 里读出来落成一列：列表页判「仅会话的号还活着没」不用再解密。
+        // access 的过期时刻与 type 从 JWT 里读出来落成列：列表页判「仅会话的号还活着没 / 是不是 web」
+        // 不用再解密。type 尤其要紧——web token 不能直接切进 Cursor（见 `Account::can_write_cursor_login`）。
         let access = self.secret(id, AccountSecret::Access)?;
         let has_access = access.is_some();
-        let access_expires_at = access.and_then(|a| token::jwt_expiry_iso(a.expose()));
+        let access_expires_at = access
+            .as_ref()
+            .and_then(|a| token::jwt_expiry_iso(a.expose()));
+        let access_token_type = access.as_ref().and_then(|a| token::jwt_type(a.expose()));
         let live_access = has_access && !token::session_expired(access_expires_at.as_deref());
 
         self.db.with(|c| {
@@ -295,6 +299,7 @@ impl Accounts {
                    has_access         = ?8,
                    access_expires_at  = ?9,
                    has_api_key        = ?10,
+                   access_token_type  = ?11,
                    -- 已判死的号不因为补了凭证就自动复活：那要走一次真正的刷新。
                    status = CASE WHEN status = 'dead' THEN status ELSE ?6 END,
                    updated_at = ?7
@@ -310,10 +315,35 @@ impl Accounts {
                     has_access,
                     access_expires_at,
                     has_api_key,
+                    access_token_type,
                 ],
             )
         })?;
         Ok(())
+    }
+
+    /// 给 v16 之前入库、`access_token_type` 还是 NULL 的老行补上 type。
+    ///
+    /// type 决定一个仅会话号能不能直接切进 Cursor（web 不行、session 行），所以列不能一直空着，
+    /// 否则老 web 号会被当成「未知」而错误放行 / 拦截。列只在写凭证时才更新，老号可能很久不写，
+    /// 所以启动时扫一遍：有 access、type 仍空的，重算一次 `sync_credential_flags`（它顺手把 type 落好）。
+    /// 解一次密才知道 type，比 exists 贵，但只在有 access 且列空的行上做，量很小。
+    pub fn backfill_access_token_types(&self) -> Result<usize> {
+        let ids: Vec<String> = self.db.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id FROM accounts WHERE has_access = 1 AND access_token_type IS NULL",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+        let n = ids.len();
+        for id in ids {
+            // 单个失败不该拖垮整轮 backfill（比如某条 access 秘密读不出来）。
+            if let Err(err) = self.sync_credential_flags(&AccountId::from_raw(id)) {
+                tracing::warn!(%err, "backfill access_token_type 单行失败");
+            }
+        }
+        Ok(n)
     }
 
     // ── 用量与状态回写 ───────────────────────────────────────────────────────
@@ -435,7 +465,8 @@ const SELECT: &str = "SELECT id, email, source, status, note, tags, membership, 
         workos_user_id, usage_json, last_checked_at, last_error, code_channel,
         code_channel_resolved, last_code_at, has_refresh, has_password,
         has_email_password, has_recovery_email, created_at, updated_at,
-        has_access, access_expires_at, billing_json, has_api_key, rowid, archived_at
+        has_access, access_expires_at, billing_json, has_api_key, rowid, archived_at,
+        access_token_type
  FROM accounts";
 
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
@@ -472,6 +503,7 @@ fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
         has_api_key: row.get(24)?,
         seq: row.get(25)?,
         archived_at: row.get(26)?,
+        access_token_type: row.get(27)?,
         // 先占位，下面统一算：它依赖上面那几格，Rust 不允许在字面量里引用兄弟字段。
         availability: crate::model::Availability::LoggedOut,
     })
@@ -762,12 +794,17 @@ mod tests {
     }
 
     fn jwt_expiring_at(exp: i64) -> String {
+        jwt_typed(exp, "session")
+    }
+
+    /// 带 `type` claim 的假 JWT。type 决定仅会话号能不能直接切进 Cursor（session 行、web 不行）。
+    fn jwt_typed(exp: i64, kind: &str) -> String {
         use base64::Engine;
         let enc = |v: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
         format!(
             "{}.{}.{}",
             enc(br#"{"alg":"HS256"}"#),
-            enc(format!(r#"{{"sub":"auth0|user_42","exp":{exp}}}"#).as_bytes()),
+            enc(format!(r#"{{"sub":"auth0|user_42","exp":{exp},"type":"{kind}"}}"#).as_bytes()),
             enc(b"sig")
         )
     }
@@ -786,7 +823,12 @@ mod tests {
             .unwrap();
         assert_eq!(a.status, Status::Active);
         assert!(a.session_only() && a.can_query_usage() && a.has_usable_session());
-        assert!(a.can_write_cursor_login(), "JWT 活着就能切进 Cursor");
+        assert_eq!(a.access_token_type.as_deref(), Some("session"));
+        assert!(
+            a.can_write_cursor_login(),
+            "活着的 session token 能切进 Cursor"
+        );
+        assert!(!a.web_session_only());
         assert_eq!(a.workos_user_id.as_deref(), Some("user_42"));
         assert!(a.access_expires_at.is_some());
         // 库里只有裸 JWT：前缀能从 JWT 算回来，存两份迟早对不上。
@@ -795,6 +837,63 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.expose(), jwt);
+    }
+
+    /// 只有一把还活着的 **web** token：查用量 / 进网关都行，但**不能**直接切进 Cursor——
+    /// 写进去 Cursor 一续期就 shouldLogout 把号踢掉（2026-09-16 真机事故）。它得先走
+    /// web→session 转换。`access_token_type` 落成 `web`，`web_session_only()` 为真。
+    #[test]
+    fn a_live_web_token_serves_usage_but_never_writes_the_cursor_login_directly() {
+        let (accounts, _) = setup();
+        let far = (time::OffsetDateTime::now_utc() + time::Duration::hours(3)).unix_timestamp();
+        let a = accounts
+            .upsert(NewAccount {
+                email: "w@example.com".into(),
+                access_token: Some(format!("user_42%3A%3A{}", jwt_typed(far, "web"))),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(a.status, Status::Active);
+        assert_eq!(a.access_token_type.as_deref(), Some("web"));
+        assert!(
+            a.can_query_usage() && a.has_usable_session(),
+            "web 型也能查用量 / 进网关"
+        );
+        assert!(
+            !a.can_write_cursor_login(),
+            "web token 绝不直接写 Cursor 登录态"
+        );
+        assert!(a.web_session_only(), "活着的 web-only：切号入口要先转换");
+    }
+
+    /// v16 之前入库的老行 `access_token_type` 是 NULL；backfill 扫一遍把它补上，
+    /// 补完 web 号才会被正确拦在直接切号之外。
+    #[test]
+    fn backfill_fills_missing_access_token_types() {
+        let (accounts, _) = setup();
+        let far = (time::OffsetDateTime::now_utc() + time::Duration::hours(3)).unix_timestamp();
+        let a = accounts
+            .upsert(NewAccount {
+                email: "w@example.com".into(),
+                access_token: Some(jwt_typed(far, "web")),
+                ..Default::default()
+            })
+            .unwrap();
+        // 模拟老行：把列清空。
+        accounts
+            .db
+            .with(|c| {
+                c.execute(
+                    "UPDATE accounts SET access_token_type = NULL WHERE id = ?1",
+                    [a.id.as_str()],
+                )
+            })
+            .unwrap();
+        assert!(accounts.get(&a.id).unwrap().access_token_type.is_none());
+        assert_eq!(accounts.backfill_access_token_types().unwrap(), 1);
+        let after = accounts.get(&a.id).unwrap();
+        assert_eq!(after.access_token_type.as_deref(), Some("web"));
+        assert!(!after.can_write_cursor_login());
     }
 
     #[test]

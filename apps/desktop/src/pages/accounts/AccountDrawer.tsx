@@ -27,7 +27,7 @@ import { accounts, crsr, gateway as gatewayApi, switcher as switcherApi } from "
 import { Banner, CopyButton, Drawer, ErrorNote, Health, Icon, Spinner, Switch, Tag } from "../../ui/primitives";
 import { accountSourceLabel, timeAgo, timeUntil } from "../../ui/format";
 import { canQueryUsage, canUseDashboard, hasLiveAccess, sessionOnly } from "../../ui/accounts";
-import { canAddToSwitchPool, canMintApiKey } from "../../ui/switcher";
+import { canAddToSwitchPool, canMintApiKey, switchNeedsWebConversion } from "../../ui/switcher";
 import { GrokBotTab } from "./GrokBotTab";
 import { BillTab } from "./BillTab";
 import {
@@ -166,9 +166,11 @@ export function AccountDrawer({
                   : sessionOnly(account)
                     ? "这个号的 session token 已过期，写进 Cursor 只会显示掉登录。到凭证页粘一份新的，或授权一次拿到 refresh_token。"
                     : "切号要一把活着的会话：粘一份 session token，或授权一次拿到 refresh_token"
-                : sessionOnly(account)
-                  ? "切入 Cursor（Cursor 在跑时不重启）。这个号只有 session token：Cursor 会拿它自己续期，到期前都能用"
-                  : "切入 Cursor（Cursor 在跑时不重启）"
+                : switchNeedsWebConversion(account)
+                  ? "切入 Cursor。这个号是网站 web token：首次切号会先自动换成桌面登录（几秒，无需密码 / 验证码），之后就是长期号"
+                  : sessionOnly(account)
+                    ? "切入 Cursor（Cursor 在跑时不重启）。这个号只有 session token：Cursor 会拿它自己续期，到期前都能用"
+                    : "切入 Cursor（Cursor 在跑时不重启）"
             }
           >
             {switching ? <Spinner /> : <Icon name="switcher" size={13} />}

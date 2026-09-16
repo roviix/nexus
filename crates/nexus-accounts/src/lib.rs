@@ -13,6 +13,7 @@
 
 pub mod accounts_json;
 pub mod billing;
+pub mod convert;
 pub mod export;
 pub mod import;
 pub mod model;

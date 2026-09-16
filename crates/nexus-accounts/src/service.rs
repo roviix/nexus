@@ -175,6 +175,43 @@ impl AccountsService {
         Ok(session)
     }
 
+    /// 把一个**只有活着的 web token** 的号转成长期号：拿它的网站会话走一次官方 `loginDeepControl`
+    /// 深链，换出桌面 session + refresh 落库。见 [`crate::convert`]。
+    ///
+    /// 转换成功后号就有了 refresh（`has_refresh` 变真），从此可直接切号、可续期。切号入口在写
+    /// Cursor 之前对 web-only 号调它；有 refresh 或已经是 session 型的号用不到。
+    ///
+    /// 不改判死逻辑：`put_access` / `put_secret` 里 `status=dead` 的号不会被凭证写活。
+    pub async fn convert_web_to_session(&self, id: &AccountId) -> Result<Account> {
+        let account = self.repo.get(id)?;
+        let access = self
+            .repo
+            .secret(id, AccountSecret::Access)?
+            .ok_or_else(|| {
+                AppError::new(ErrorCode::SecretMissing, "这个号没有 web token，转换不了。")
+            })?;
+        let jwt = access.expose();
+        let user_id = account
+            .workos_user_id
+            .clone()
+            .or_else(|| token::extract_user_id(jwt))
+            .ok_or_else(|| {
+                AppError::invalid("这把 token 里读不出 user_id，转换不了。")
+                    .with_hint("到凭证页粘一份 user_xxx::eyJ… 形态的 session token。")
+            })?;
+
+        let tokens = crate::convert::web_to_session(&user_id, jwt).await?;
+
+        // 先写 refresh 再写 access：任一步中断，下次要么当仅会话号、要么已升级，不会半吊子。
+        self.repo.put_secret(
+            id,
+            AccountSecret::Refresh,
+            Some(tokens.refresh_token.expose()),
+        )?;
+        self.repo.put_access(id, tokens.access_token.expose())?;
+        self.repo.get(id)
+    }
+
     /// 刷一个号的用量，并写回库。
     ///
     /// 复用的会话被拒时**换一把新的重试一次**再下结论：那多半只说明这把会话提前失效了，

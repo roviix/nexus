@@ -89,6 +89,11 @@ impl AppState {
         ));
 
         let accounts = Arc::new(AccountsService::new(db.clone(), secrets.clone()));
+        // v16 之前入库的号 access_token_type 是空的；补一遍，web 号才会被正确拦在直接切号之外。
+        // 失败不该拖垮启动——顶多是老 web 号这次没标上，下次写凭证会补。
+        if let Err(err) = accounts.repo.backfill_access_token_types() {
+            tracing::warn!(%err, "启动补 access_token_type 失败");
+        }
         let crsr = Arc::new(CrsrService::new(
             db.clone(),
             data_dir,

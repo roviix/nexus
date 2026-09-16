@@ -24,16 +24,29 @@ export const SWITCH_SORT_LABEL: Record<SwitchSort, string> = {
 export const DEFAULT_SWITCH_SORT: SwitchSort = "switched";
 
 /**
- * 能不能把这个号的登录态写进 Cursor：有 refresh，**或**手上的 access JWT 还活着。
- * 和 Rust 侧 `Account::can_write_cursor_login` 同口径。
+ * 能不能加进切号池 / 一键切进 Cursor：有 refresh，**或**手上的 access JWT 还活着。
  *
- * 仅会话的号把同一把 JWT 写进两格——这正是 Cursor 自己续期之后的盘上稳态，它的
- * `/oauth/token` 接受会话 JWT 当 refresh_token（2026-09-16 实测）。0.5.1 那条「必须有
- * refresh」的限制建立在被推翻的前提上，见 Rust 侧注释。
+ * 三类都能切，只是写盘前那一步不同（后端 `accounts_add_to_switch_book` 处理，前端只管放行）：
+ * - 有 refresh：换一把新鲜 session 再写；
+ * - `type=session` 仅会话号：同一把 JWT 写进两格（Cursor 续期后的盘上稳态）；
+ * - `type=web` 仅会话号：先走一次官方 `loginDeepControl` 把 web 换成 session（无密码、无验证码、
+ *   不掉原会话），号顺带升级成长期号——所以这里放行 web，切号时自动转换，不用碰 crsr。
+ *
+ * 只有 dead / 过期的号不放行。
  */
 export function canAddToSwitchPool(account: Account, now = Date.now()): boolean {
   if (account.status === "dead") return false;
   return account.hasRefresh || hasLiveAccess(account, now);
+}
+
+/** 这个号切号时要先做一次 web→session 转换（活着的 web-only 号）。给界面提示「首次切号会多花几秒」。 */
+export function switchNeedsWebConversion(account: Account, now = Date.now()): boolean {
+  return (
+    account.status !== "dead" &&
+    !account.hasRefresh &&
+    hasLiveAccess(account, now) &&
+    account.accessTokenType === "web"
+  );
 }
 
 /**
