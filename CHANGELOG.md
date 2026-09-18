@@ -8,6 +8,13 @@
 
 ## [未发布]
 
+## [0.6.6] — 2026-09-18
+
+### 修复
+
+- **账号页右上角「隐藏邮箱」现在会打码卡片上的邮箱。** 视图层以前用完整邮箱盖掉打码后的展示名，点了等于没点。
+- **刷新用量只刷眼前这批。** 筛子 / 搜索下不再扫全库；切到「已归档」也能刷。
+
 ## [0.6.5] — 2026-09-16
 
 ### 修复
@@ -312,7 +319,9 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.6.4...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/roviix/nexus/releases/tag/v0.6.6
+[0.6.5]: https://github.com/roviix/nexus/releases/tag/v0.6.5
 [0.6.4]: https://github.com/roviix/nexus/releases/tag/v0.6.4
 [0.6.3]: https://github.com/roviix/nexus/releases/tag/v0.6.3
 [0.6.2]: https://github.com/roviix/nexus/releases/tag/v0.6.2
