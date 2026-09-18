@@ -69,6 +69,11 @@ export type AccountView = CursorAccountView | ChatGptAccountView;
 
 export interface CursorAccountViewInput {
   label: string;
+  /**
+   * 卡片上要画的那一行。缺省用托管邮箱。账号页打码时把打过码的字符串从这里传进来——
+   * 以前这里被 `managed.email` 盖掉，右上角「隐藏」按了等于没按。
+   */
+  displayLabel?: string;
   managed?: Account | null;
   placement: AccountPlacement;
   fallbackPercentUsed?: number | null;
@@ -77,6 +82,7 @@ export interface CursorAccountViewInput {
 
 export function createCursorAccountView({
   label,
+  displayLabel,
   managed = null,
   placement,
   fallbackPercentUsed,
@@ -112,7 +118,7 @@ export function createCursorAccountView({
     platform: "cursor",
     // 未托管账号只能用邮箱做临时 UI identity；真正多平台持久化不能沿用这条规则。
     key: `cursor:${managed ? `managed:${managed.id}` : `external:${normalizedLabel}`}`,
-    label: managed?.email ?? label,
+    label: displayLabel ?? managed?.email ?? label,
     managed,
     usage,
     membership: managed?.usage?.plan ?? managed?.membership ?? null,

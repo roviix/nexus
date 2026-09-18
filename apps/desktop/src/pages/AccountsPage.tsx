@@ -11,8 +11,8 @@
  * 数字不单独摆一排：它们长在各自的筛子上，数的都是「点下去会剩几个」（见 `applyFacets`）。
  * 筛选 / 排序的组合会记住，也能起名存成视图（`accounts/views.ts`），常问的问题一键就回到那一组筛子。
  *
- * 归档：多选几个号「归档」，它们就从这一页消失（也不再参与批量刷新、不进网关候选），
- * 只在「已归档」视图里能看到、能取回。凭证一个字节不动。
+ * 归档：多选几个号「归档」，它们就从默认列表消失、不进网关候选；切到「已归档」还能看、
+ * 能取回、也能刷用量。凭证一个字节不动。
  */
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { AccountCard } from "../accounts/AccountCard";
@@ -400,8 +400,9 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
         : null,
     [openAccount],
   );
-  // 归档的号不参与批量刷新：收起来就是不想再管它。
-  const refreshable = useMemo(() => list.filter((a) => !a.archivedAt && canQueryUsage(a)).length, [list]);
+  // 刷的是眼前这批：筛子 / 搜索 / 归档视图下只动看得见的号，别把别的档也带上。
+  const refreshTargets = useMemo(() => shown.filter((a) => canQueryUsage(a)).map((a) => a.id), [shown]);
+  const refreshable = refreshTargets.length;
   const narrowed = query.trim() !== "" || lookup != null || !isDefaultView(spec);
 
   // 选中的号按列表顺序排：复制出来的顺序就是眼前看到的顺序。
@@ -529,7 +530,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   }
 
   async function refreshAll() {
-    await refreshIds(list.filter((a) => !a.archivedAt && canQueryUsage(a)).map((a) => a.id));
+    await refreshIds(refreshTargets);
   }
 
   /**
@@ -570,8 +571,14 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
             <button
               type="button"
               className="btn btn-icon"
-              data-tip={refreshing.size > 0 ? `刷新中 ${refreshing.size}` : "刷新用量"}
-              aria-label="刷新用量"
+              data-tip={
+                refreshing.size > 0
+                  ? `刷新中 ${refreshing.size}`
+                  : narrowed || archived
+                    ? `刷新当前 ${refreshable} 个账号的用量`
+                    : "刷新用量"
+              }
+              aria-label={narrowed || archived ? `刷新当前 ${refreshable} 个账号的用量` : "刷新用量"}
               disabled={refreshing.size > 0}
               onClick={() => void refreshAll()}
             >
@@ -581,8 +588,8 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
           <button
             type="button"
             className={`btn btn-icon${masked ? " is-active" : ""}`}
-            data-tip={masked ? "显示明文账号" : "账号打码保护"}
-            aria-label={masked ? "显示明文账号" : "账号打码保护"}
+            data-tip={masked ? "显示邮箱" : "隐藏邮箱"}
+            aria-label={masked ? "显示邮箱" : "隐藏邮箱"}
             onClick={toggleMasked}
           >
             <Icon name={masked ? "eyeOff" : "eye"} size={15} />
@@ -656,7 +663,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
         <div style={{ marginBottom: 14 }}>
           <Banner
             tone="default"
-            title={`Grok Bot 登着 ${grokMissing}，账号库里还没有它。`}
+            title={`Grok Bot 登着 ${masked ? maskEmail(grokMissing) : grokMissing}，账号库里还没有它。`}
             hint="收进来后可查用量、切号、进各个池。"
             action={
               <button type="button" className="btn btn-sm btn-primary" disabled={importingGrok} onClick={() => void importFromGrok()}>
@@ -931,7 +938,8 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                   <AccountCard
                     key={a.id}
                     view={createCursorAccountView({
-                      label: masked ? maskEmail(a.email) : a.email,
+                      label: a.email,
+                      displayLabel: masked ? maskEmail(a.email) : undefined,
                       managed: a,
                       placement: { kind: "library", label: "账号库" },
                     })}
@@ -1147,7 +1155,8 @@ function LookupBar({
 
 /**
  * 按下「选择」后出现在列表上方：选了几个、全选 / 清空，以及能对这一批做的事。
- * 动作是复制、刷新用量、归档（或取回）—— 删除故意不放：它不可逆，一个个删让人多想一秒。
+ * 动作是复制、刷新用量、归档（或取回）。归档视图里也能刷用量——收起来不等于用量过期了。
+ * 删除故意不放：它不可逆，一个个删让人多想一秒。
  */
 function SelectBar({
   count,
@@ -1195,12 +1204,10 @@ function SelectBar({
         复制…
       </button>
 
-      {!archived ? (
-        <button type="button" className="btn btn-sm" disabled={count === 0 || busy} onClick={onRefresh}>
-          <Icon name="refresh" size={13} />
-          刷新用量
-        </button>
-      ) : null}
+      <button type="button" className="btn btn-sm" disabled={count === 0 || busy} onClick={onRefresh}>
+        <Icon name="refresh" size={13} />
+        刷新用量
+      </button>
       <button type="button" className="btn btn-sm btn-primary" disabled={count === 0 || busy} onClick={onArchive}>
         <Icon name={archived ? "undo" : "archive"} size={13} />
         {archived ? "取回" : "归档"}

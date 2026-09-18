@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 账号页要连归档的一起拿：它自己按 `archivedAt` 分开画，切到「已归档」视图不用再问一次。
-/// 网关、批量刷新走的是 `repo.list()`，那条只给没归档的。
+/// 网关选号走 `repo.list()`（只给没归档的）；刷用量若带了 id，归档的号也能刷。
 #[tauri::command(async)]
 pub fn accounts_list(state: State<'_, AppState>) -> Result<Vec<Account>> {
     state.accounts.repo.list_all()

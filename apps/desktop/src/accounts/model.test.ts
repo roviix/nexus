@@ -50,6 +50,19 @@ describe("account presentation model", () => {
     });
   });
 
+  it("keeps a display label when the page is masking emails", () => {
+    const view = createCursorAccountView({
+      label: "User@Example.com",
+      displayLabel: "Us****er@example.com",
+      managed: account(),
+      placement: { kind: "library", label: "账号库" },
+    });
+
+    expect(view.key).toBe("cursor:managed:account-1");
+    expect(view.label).toBe("Us****er@example.com");
+    expect(view.managed?.email).toBe("User@Example.com");
+  });
+
   it("keeps a runtime-only account visible with an honest summary", () => {
     const view = createCursorAccountView({
       label: " Runtime@Example.com ",
