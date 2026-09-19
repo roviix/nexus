@@ -22,6 +22,7 @@ pub mod playground;
 pub mod sand;
 pub mod sand_remote;
 pub mod switcher;
+pub mod zcode;
 
 /// 事件名。集中在这里，免得前后端各写各的字符串。
 pub mod events {

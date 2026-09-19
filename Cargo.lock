@@ -2817,6 +2817,7 @@ dependencies = [
  "nexus-sand",
  "nexus-store",
  "nexus-switcher",
+ "nexus-zcode",
  "rfd",
  "serde",
  "serde_json",
@@ -2846,6 +2847,7 @@ dependencies = [
  "nexus-grok",
  "nexus-kiro",
  "nexus-store",
+ "nexus-zcode",
  "prost",
  "prost-types",
  "regex",
@@ -2984,6 +2986,28 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "nexus-zcode"
+version = "0.6.6"
+dependencies = [
+ "base64 0.23.1",
+ "iana-time-zone",
+ "libc",
+ "nexus-core",
+ "nexus-store",
+ "reqwest 0.12.28",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -88,6 +88,20 @@ describe("channelOfModel / defaultChannelId", () => {
     expect(channelOfModel(channels, "gpt-5.4")).toBe("chatgpt");
   });
 
+  it("routes both zcode/ and glm/ to the ZCode channel", () => {
+    const status = {
+      ...base,
+      settings: { ...base.settings, defaultChannel: "zcode" },
+      channels: [channel({ id: "zcode", label: "ZCode", vendor: "zhipu", prefixes: ["zcode/", "glm/"] })],
+    };
+    const channels = localChannels(status, []);
+    expect(defaultChannelId(status)).toBe("zcode");
+    expect(channelOfModel(channels, "zcode/glm-4.7")).toBe("zcode");
+    expect(channelOfModel(channels, "glm/glm-4.7")).toBe("zcode");
+    // 裸名走用户设的默认通道，和别的平台一个规矩。
+    expect(channelOfModel(channels, "glm-4.7")).toBe("zcode");
+  });
+
   it("does not dump bare catalog names onto Cursor", () => {
     const local: LocalModel[] = [
       { id: "cursor/claude-sonnet-5", vendor: "anthropic", vendorLabel: "Anthropic", series: "cursor/claude-sonnet-5", variant: "standard", aliases: [], note: null },

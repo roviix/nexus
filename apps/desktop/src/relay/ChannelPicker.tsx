@@ -31,6 +31,7 @@ const LOCAL_VENDOR: Record<LocalChannelId, Parameters<typeof VendorLogo>[0]["ven
   chatgpt: "openai",
   grok: "xai",
   kiro: "other",
+  zcode: "zhipu",
 };
 
 export function ChannelCard({

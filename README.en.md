@@ -16,7 +16,7 @@
 </div>
 
 Nexus is a Rust + Tauri v2 desktop app for macOS and Windows. It runs a gateway on `127.0.0.1`
-that uses **your own** Cursor / ChatGPT / Grok / Kiro accounts as upstreams and speaks the standard
+that uses **your own** Cursor / ChatGPT / Grok / Kiro / ZCode accounts as upstreams and speaks the standard
 `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/models` and `/v1/images/generations`.
 Anything that talks the OpenAI or Anthropic dialect — Claude Code, Codex CLI, OpenCode, the official
 SDKs, plain `curl` — can point at it directly. No API key to apply for.
@@ -42,8 +42,8 @@ account system, no telemetry.
   `count_tokens`), OpenAI Responses, OpenAI Images. Inbound requests are parsed into a single
   intermediate representation and then bridged to the upstream; streaming SSE passes through as-is.
 - **Multiple upstreams.** Cursor (`aiserver.v1.InferenceService/Stream`), ChatGPT subscriptions
-  (`chatgpt.com/backend-api/codex`), Grok and Kiro. `/v1/models` aggregates the catalogue according
-  to what each upstream can actually do.
+  (`chatgpt.com/backend-api/codex`), Grok, Kiro and ZCode (Zhipu GLM coding plan). `/v1/models`
+  aggregates the catalogue according to what each upstream can actually do.
 - **The channel is part of the model name.** Catalogue entries are keyed as `{channel}/{model}`
   (`cursor/claude-opus-5`, `chatgpt/gpt-5`). A prefixed name is forced onto that channel; a bare name
   goes to **the default channel you picked**. Which pool a request lands on is visible and editable
@@ -81,6 +81,10 @@ if the file isn't valid JSON/TOML to begin with, Nexus refuses to edit it rather
 - Add Cursor / ChatGPT / Grok / Kiro accounts. OAuth opens your system browser and the app collects
   the token in the background; you can also bulk-import by pasting refresh tokens, `crsr_` API keys
   or Codex session JSON — several at once, format detected automatically.
+- ZCode has no authorisation flow of its own: sign in once in the official ZCode client and Nexus
+  reads the credentials it leaves behind (`~/.zcode/v2/credentials.json`, AES-256-GCM). Individual
+  and team plans under one credential file become separate accounts — their quotas are separate.
+  You can also paste a `{apiKeyId}.{apiKeySecret}` pair yourself.
 - See plan, quota and reset times. Expired, banned and exhausted accounts are flagged automatically.
 - Quota and billing are two separate cards: one for what's left and when it resets, one for list
   price, discounts, next charge and past invoices. They are different units and are never merged
@@ -219,6 +223,7 @@ credentials — delete them when you're done.**
 │   ├── nexus-chatgpt/              # ChatGPT subscriptions: login, refresh, Codex backend
 │   ├── nexus-grok/ nexus-grokbot/  # Grok accounts and Grok Bot quota
 │   ├── nexus-kiro/                 # Kiro accounts
+│   ├── nexus-zcode/                # ZCode (Zhipu GLM): credentials imported from the official client
 │   ├── nexus-gateway/              # the local gateway: dialect port, quota relay, ledger
 │   ├── nexus-connect/              # one-click setup for Claude Code / Codex / OpenCode
 │   ├── nexus-playground/           # playground thread and message storage

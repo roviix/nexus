@@ -1,9 +1,9 @@
 /**
  * 网关通道的纯函数：从 `GatewayStatus` 里把所有通道摆成**同一种东西**，再算一句结论。
  *
- * 网关背后是好几队号：Cursor / ChatGPT / Grok Build / Kiro。Rust 侧把 Cursor 放在
+ * 网关背后是好几队号：Cursor / ChatGPT / Grok Build / Kiro / ZCode。Rust 侧把 Cursor 放在
  * `status.lane`、其余放在 `status.channels`——那是选路实现上的主次；对用户来说它们是并列
- * 的四条通道。这里把两处并成一份 `LocalChannel[]`，Cursor 永远排第一。默认通道由用户指定，
+ * 的五条通道。这里把两处并成一份 `LocalChannel[]`，Cursor 永远排第一。默认通道由用户指定，
  * 不再写死 Cursor。
  */
 import type { LocalModel } from "../ipc/models";
@@ -20,7 +20,7 @@ export const CURSOR: LocalChannelId = "cursor";
 export interface LocalChannel {
   id: LocalChannelId;
   label: string;
-  /** `/v1/models` 的 owned_by：cursor / openai / xai / aws。 */
+  /** `/v1/models` 的 owned_by：cursor / openai / xai / aws / zhipu。 */
   vendor: string;
   /** 用户指定的默认通道：裸名 / 空模型走这里。Cursor 的号池仍在网关页管。 */
   isDefault: boolean;
@@ -43,7 +43,7 @@ export interface LocalChannel {
  */
 export function defaultChannelId(status: GatewayStatus | null | undefined): LocalChannelId {
   const id = status?.settings.defaultChannel;
-  if (id === "chatgpt" || id === "grok" || id === "kiro" || id === "cursor") return id;
+  if (id === "chatgpt" || id === "grok" || id === "kiro" || id === "zcode" || id === "cursor") return id;
   return CURSOR;
 }
 
@@ -53,7 +53,17 @@ export function splitModelId(id: string): { channel: LocalChannelId | null; name
   if (slash <= 0) return { channel: null, name: id };
   const head = id.slice(0, slash).toLowerCase();
   const channel: LocalChannelId | null =
-    head === "cursor" ? "cursor" : head === "chatgpt" || head === "codex" ? "chatgpt" : head === "grok" || head === "xai" ? "grok" : head === "kiro" ? "kiro" : null;
+    head === "cursor"
+      ? "cursor"
+      : head === "chatgpt" || head === "codex"
+        ? "chatgpt"
+        : head === "grok" || head === "xai"
+          ? "grok"
+          : head === "kiro"
+            ? "kiro"
+            : head === "zcode" || head === "glm"
+              ? "zcode"
+              : null;
   if (channel) return { channel, name: id.slice(slash + 1) };
   return { channel: null, name: id };
 }

@@ -23,6 +23,7 @@ pub const CURSOR: ChannelId = "cursor";
 pub const CHATGPT: ChannelId = "chatgpt";
 pub const GROK: ChannelId = "grok";
 pub const KIRO: ChannelId = "kiro";
+pub const ZCODE: ChannelId = "zcode";
 
 /// 规范通道 id。别名（`codex/` `xai/`）只在请求前缀里认，不进这一张表。
 pub fn parse_id(id: &str) -> Option<ChannelId> {
@@ -31,6 +32,7 @@ pub fn parse_id(id: &str) -> Option<ChannelId> {
         "chatgpt" => Some(CHATGPT),
         "grok" => Some(GROK),
         "kiro" => Some(KIRO),
+        "zcode" | "glm" => Some(ZCODE),
         _ => None,
     }
 }
@@ -193,7 +195,7 @@ impl ChannelRegistry {
     pub fn set_default(&self, id: &str) -> Result<(), String> {
         let Some(parsed) = parse_id(id) else {
             return Err(format!(
-                "默认通道只能是 cursor / chatgpt / grok / kiro，给的是 {id}"
+                "默认通道只能是 cursor / chatgpt / grok / kiro / zcode，给的是 {id}"
             ));
         };
         if self.get(parsed).is_none() {

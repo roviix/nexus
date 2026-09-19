@@ -22,6 +22,7 @@ use crate::normalized::{
     estimate_tokens, ChatRequest, Completion, Delta, FinishReason, Role, ToolCall, ToolChoice,
     Usage,
 };
+use crate::sse::{SseDecoder, SseEvent};
 use crate::upstream::{DeltaSink, Upstream};
 use base64::Engine as _;
 use nexus_grok::{
@@ -1071,75 +1072,6 @@ fn handle_event(
     }
     Ok(())
 }
-
-struct SseEvent {
-    event: String,
-    data: String,
-}
-
-#[derive(Default)]
-struct SseDecoder {
-    buf: Vec<u8>,
-}
-
-impl SseDecoder {
-    fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        self.buf.extend_from_slice(chunk);
-        let mut out = Vec::new();
-        while let Some((frame_len, sep_len)) = find_frame_end(&self.buf) {
-            let frame = self.buf[..frame_len].to_vec();
-            self.buf.drain(..frame_len + sep_len);
-            if let Some(ev) = parse_frame(&frame) {
-                out.push(ev);
-            }
-        }
-        out
-    }
-
-    fn finish(&mut self) -> Vec<SseEvent> {
-        if self.buf.is_empty() {
-            return Vec::new();
-        }
-        let frame = std::mem::take(&mut self.buf);
-        parse_frame(&frame).into_iter().collect()
-    }
-}
-
-fn find_frame_end(buf: &[u8]) -> Option<(usize, usize)> {
-    let lf = buf.windows(2).position(|w| w == b"\n\n").map(|i| (i, 2));
-    let crlf = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| (i, 4));
-    match (lf, crlf) {
-        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
-        (a, b) => a.or(b),
-    }
-}
-
-fn parse_frame(frame: &[u8]) -> Option<SseEvent> {
-    let text = String::from_utf8_lossy(frame);
-    let mut event = String::new();
-    let mut data: Vec<&str> = Vec::new();
-    for line in text.lines() {
-        if line.starts_with(':') {
-            continue;
-        }
-        if let Some(v) = line.strip_prefix("event:") {
-            event = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("data:") {
-            data.push(v.strip_prefix(' ').unwrap_or(v));
-        }
-    }
-    if data.is_empty() {
-        return None;
-    }
-    Some(SseEvent {
-        event,
-        data: data.join("\n"),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

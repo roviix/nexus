@@ -74,8 +74,10 @@ pub mod proto;
 mod proto_tests;
 pub mod server;
 pub mod service;
+pub mod sse;
 pub mod subscriptions;
 pub mod upstream;
+pub mod zcode;
 
 pub use channel::{Capability, Channel, ChannelGate, ChannelId, ChannelRegistry, OpenGate};
 pub use codex::{CodexConfig, CodexUpstream};
@@ -97,5 +99,8 @@ pub use normalized::{
     ToolChoice, ToolDef, ToolResult, Usage,
 };
 pub use server::Gateway;
-pub use service::{ChannelSnapshot, GatewayService, GatewaySettings, GatewayStatus, SettingsPatch};
+pub use service::{
+    ChannelSnapshot, GatewayService, GatewaySettings, GatewayStatus, SettingsPatch,
+    SubscriptionServices,
+};
 pub use upstream::{CursorUpstream, Upstream};

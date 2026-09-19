@@ -3,7 +3,9 @@
 //! ref 只在这里构造。散落各处手写字符串的后果是拼错一个字符就"秘密丢了"，
 //! 而且 grep 不出来谁在读谁在写。
 
-use nexus_core::{AccountId, BackupId, ChatGptAccountId, GrokAccountId, KiroAccountId, ProfileId};
+use nexus_core::{
+    AccountId, BackupId, ChatGptAccountId, GrokAccountId, KiroAccountId, ProfileId, ZcodeAccountId,
+};
 
 /// 一条秘密的引用。SQLite 里存的就是它的字符串形式。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -164,6 +166,32 @@ pub fn kiro_secret(id: &KiroAccountId, kind: KiroSecret) -> SecretRef {
     SecretRef(format!("kiro/{}/{}", id.as_str(), kind.slug()))
 }
 
+/// ZCode 账号：编码套餐的永久 API key、体验套餐的 JWT。
+///
+/// 两把不合并成一把：一份官方凭证里两者可能同时存在，而它们走的是不同的上游地址和认证头。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ZcodeSecret {
+    /// `{apiKeyId}.{apiKeySecret}`，coding-plan 用。
+    ApiKey,
+    /// zcode-plan 网关的 JWT，start-plan 用。
+    Jwt,
+}
+
+impl ZcodeSecret {
+    fn slug(self) -> &'static str {
+        match self {
+            ZcodeSecret::ApiKey => "api_key",
+            ZcodeSecret::Jwt => "jwt",
+        }
+    }
+
+    pub const ALL: [ZcodeSecret; 2] = [ZcodeSecret::ApiKey, ZcodeSecret::Jwt];
+}
+
+pub fn zcode_secret(id: &ZcodeAccountId, kind: ZcodeSecret) -> SecretRef {
+    SecretRef(format!("zcode/{}/{}", id.as_str(), kind.slug()))
+}
+
 /// 一个切号档的整套 `cursorAuth/*`（JSON）。
 pub fn profile_auth(id: &ProfileId) -> SecretRef {
     SecretRef(format!("switch/{}/auth", id.as_str()))
@@ -234,7 +262,22 @@ mod tests {
             grok_secret(&GrokAccountId::from_raw(same), GrokSecret::Access),
             chatgpt_secret(&ChatGptAccountId::from_raw(same), ChatGptSecret::Access)
         );
+        assert_eq!(
+            zcode_secret(&ZcodeAccountId::from_raw(same), ZcodeSecret::ApiKey).as_str(),
+            "zcode/X1/api_key"
+        );
         assert_eq!(KiroSecret::ALL.len(), 4);
+        assert_eq!(ZcodeSecret::ALL.len(), 2);
+    }
+
+    #[test]
+    fn a_zcode_account_keeps_its_two_credentials_apart() {
+        // 一份官方凭证里 coding 的 key 和 start 的 JWT 可能同时存在，混成一把就串了。
+        let id = ZcodeAccountId::from_raw("z1");
+        assert_ne!(
+            zcode_secret(&id, ZcodeSecret::ApiKey),
+            zcode_secret(&id, ZcodeSecret::Jwt)
+        );
     }
 
     #[test]

@@ -73,6 +73,8 @@ import type {
   TunnelStatus,
   SwitchProgress,
   UsageSummary,
+  ZcodeClientProbe,
+  ZcodeImportReport,
 } from "./types";
 
 /** Rust 侧返回的错误都是 `AppError`；这里把它认出来，别让界面显示 `[object Object]`。 */
@@ -336,7 +338,7 @@ export const gateway = {
   unenroll: (label: string) => call<GatewayStatus>("gateway_unenroll", { label }),
   setCurrent: (label: string) => call<GatewayStatus>("gateway_set_current", { label }),
   resetLane: () => call<GatewayStatus>("gateway_reset_lane"),
-  /** 订阅通道（chatgpt / grok / kiro）的接力队：指定当前号 / 清掉耗尽与冷却。 */
+  /** 订阅通道（chatgpt / grok / kiro / zcode）的接力队：指定当前号 / 清掉耗尽与冷却。 */
   channelSetCurrent: (channel: GatewayChannelId, label: string) =>
     call<GatewayStatus>("gateway_channel_set_current", { channel, label }),
   channelResetLane: (channel: GatewayChannelId) => call<GatewayStatus>("gateway_channel_reset_lane", { channel }),
@@ -385,7 +387,7 @@ export const grok = {
   list: () => call<DeviceAccount[]>("grok_list"),
   loginStart: (note?: string) => call<DeviceLoginHandle>("grok_login_start", { note }),
   loginCancel: (sessionId: string) => call<void>("grok_login_cancel", { sessionId }),
-  importCli: () => call<DeviceAccount>("grok_import_cli"),
+  importLocal: () => call<DeviceAccount>("grok_import_cli"),
   /** `~/.grok/auth.json` 原文 / `access----refresh` / 一把 `xai-…` API Key 都认。 */
   importText: (text: string, note?: string) => call<DeviceAccount>("grok_import_text", { text, note }),
   /** 加一个 xAI API Key 号（按 token 计费，走 api.x.ai）。 */
@@ -408,13 +410,35 @@ export const kiro = {
   list: () => call<DeviceAccount[]>("kiro_list"),
   loginStart: (note?: string) => call<DeviceLoginHandle>("kiro_login_start", { note }),
   loginCancel: (sessionId: string) => call<void>("kiro_login_cancel", { sessionId }),
-  importCli: () => call<DeviceAccount>("kiro_import_cli"),
+  importLocal: () => call<DeviceAccount>("kiro_import_cli"),
   importText: (text: string, note?: string) => call<DeviceAccount>("kiro_import_text", { text, note }),
   remove: (id: string) => call<void>("kiro_remove", { id }),
   setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("kiro_set_enabled", { id, enabled }),
   setNote: (id: string, note: string | null) => call<DeviceAccount>("kiro_set_note", { id, note }),
   setCurrent: (label: string) => gateway.channelSetCurrent("kiro", label),
   resetLane: () => gateway.channelResetLane("kiro"),
+};
+
+/**
+ * ZCode（智谱 GLM 编码套餐）。
+ *
+ * 没有 `loginStart`：官方 ZCode 客户端登录后把凭证写在 `~/.zcode/v2/credentials.json`，
+ * 用户在那边登录一次，这里直接读。所以入口只有「从客户端导入」和「粘贴」两个。
+ *
+ * 导入回的是一份报告而不是一个号：一份凭证文件里常常同时有个人版、团队版和体验套餐。
+ */
+export const zcode = {
+  list: () => call<DeviceAccount[]>("zcode_list"),
+  /** 本机官方客户端在不在、凭证文件在哪。 */
+  probeClient: () => call<ZcodeClientProbe>("zcode_probe_client"),
+  importLocal: (note?: string) => call<ZcodeImportReport>("zcode_import_client", { note }),
+  /** 一行 `{apiKeyId}.{apiKeySecret}`、一个 JWT，或一整份 credentials.json 都认。 */
+  importText: (text: string, note?: string) => call<ZcodeImportReport>("zcode_import_text", { text, note }),
+  remove: (id: string) => call<void>("zcode_remove", { id }),
+  setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("zcode_set_enabled", { id, enabled }),
+  setNote: (id: string, note: string | null) => call<DeviceAccount>("zcode_set_note", { id, note }),
+  setCurrent: (label: string) => gateway.channelSetCurrent("zcode", label),
+  resetLane: () => gateway.channelResetLane("zcode"),
 };
 
 // ── 一键接入 ─────────────────────────────────────────────────────────────────

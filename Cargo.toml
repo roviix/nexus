@@ -9,6 +9,7 @@ members = [
     "crates/nexus-chatgpt",
     "crates/nexus-grok",
     "crates/nexus-kiro",
+    "crates/nexus-zcode",
     "crates/nexus-sand",
     "crates/nexus-crsr",
     "crates/nexus-grokbot",
@@ -34,6 +35,7 @@ nexus-accounts = { path = "crates/nexus-accounts" }
 nexus-chatgpt = { path = "crates/nexus-chatgpt" }
 nexus-grok = { path = "crates/nexus-grok" }
 nexus-kiro = { path = "crates/nexus-kiro" }
+nexus-zcode = { path = "crates/nexus-zcode" }
 nexus-sand = { path = "crates/nexus-sand" }
 nexus-crsr = { path = "crates/nexus-crsr" }
 nexus-grokbot = { path = "crates/nexus-grokbot" }
@@ -67,6 +69,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "http2", "gzip", "cookies"] }
 sha2 = "0.10"
 base64 = "0.23"
+# ZCode 官方客户端的凭证文件是 AES-256-GCM，V4 请求签名还要 HKDF / HMAC / Ed25519。
+# 用 ring 而不是 RustCrypto 那一串：rustls 已经把它带进依赖树了，四个原语一个 crate 全有。
+ring = "0.17"
+iana-time-zone = "0.1"
 rand = "0.10"
 regex = "1"
 

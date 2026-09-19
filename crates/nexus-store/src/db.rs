@@ -361,6 +361,33 @@ ALTER TABLE accounts ADD COLUMN archived_at TEXT;
 ALTER TABLE accounts ADD COLUMN access_token_type TEXT;
 "#,
         ),
+        // v17：ZCode（智谱 GLM 编码套餐）账号。和别的平台一样分表（§5.3），表里不存秘密 ——
+        // API key 与 JWT 走 secrets。
+        //
+        // `plan` 单独一列而不是并进 status：同一个邮箱下的个人版 / 团队版 / 体验套餐是三条
+        // 独立的号，各有各的凭证、各有各的额度，而且体验套餐走的是另一个上游地址。
+        M::up(
+            r#"
+CREATE TABLE zcode_accounts (
+  id               TEXT PRIMARY KEY,
+  account_ref      TEXT UNIQUE NOT NULL,
+  provider         TEXT NOT NULL,
+  plan             TEXT NOT NULL,
+  family           TEXT,
+  email            TEXT,
+  status           TEXT NOT NULL,
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  note             TEXT,
+  key_hint         TEXT,
+  has_api_key      INTEGER NOT NULL DEFAULT 0,
+  has_jwt          INTEGER NOT NULL DEFAULT 0,
+  last_checked_at  TEXT,
+  last_error       TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+"#,
+        ),
     ])
 }
 

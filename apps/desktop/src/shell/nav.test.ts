@@ -94,6 +94,8 @@ describe("route ⇄ hash", () => {
     expect(parseRoute("#accounts/grok")).toEqual({ section: "accounts", platform: "grok" });
     expect(routeHash(go("accounts", { platform: "kiro" }))).toBe("#accounts/kiro");
     expect(parseRoute("#accounts/kiro")).toEqual({ section: "accounts", platform: "kiro" });
+    expect(routeHash(go("accounts", { platform: "zcode" }))).toBe("#accounts/zcode");
+    expect(parseRoute("#accounts/zcode")).toEqual({ section: "accounts", platform: "zcode" });
     // 没写平台 = Cursor（页面自己取默认），地址保持最短。
     expect(routeHash(go("accounts"))).toBe("#accounts");
     expect(parseRoute("#accounts/nope")).toEqual({ section: "accounts" });

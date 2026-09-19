@@ -12,7 +12,7 @@
 
 ### 1.1 一页纸
 
-Nexus 在 `127.0.0.1` 上起一个网关，用用户**自己的** Cursor / ChatGPT / Grok / Kiro 订阅账号做上游，
+Nexus 在 `127.0.0.1` 上起一个网关，用用户**自己的** Cursor / ChatGPT / Grok / Kiro / ZCode 订阅账号做上游，
 对外说 OpenAI 与 Anthropic 的标准方言。任何讲这两种方言的客户端都可以直接指过来，不需要再申请 API key。
 围绕这条主线还有三件配套的事：管理这些账号（登录、看额度、存凭证）、把 Cursor IDE 的登录态在多个号
 之间切换、以及一个应用内的对话工作台用来验证链路是否通。
@@ -115,6 +115,7 @@ Rust 侧只要一个 `reqwest`。
 ├──────────┬──────────┬──────────┬──────────┬──────────┬───────────┤
 │ switcher │ accounts │ chatgpt  │ gateway  │ playground│  connect  │  业务 crate
 │          │          │ grok kiro│  grokbot │           │           │  （互不依赖）
+│          │          │   zcode  │          │           │           │
 │          │          │          │sand crsr │           │           │
 ├──────────┴────┬─────┴──────────┴──────────┴──────────┴───────────┤
 │ nexus-cursor  │  nexus-store（SQLite：数据 + 秘密 + 迁移）         │  基础能力
@@ -138,6 +139,7 @@ Rust 侧只要一个 `reqwest`。
 | `nexus-accounts` | Cursor 账号池：OAuth、刷 token、拉用量、导入导出。 |
 | `nexus-chatgpt` | ChatGPT 订阅号：登录、刷 token、Codex 后端协议。 |
 | `nexus-grok` / `nexus-kiro` | 对应平台的账号、OAuth、协议、额度。 |
+| `nexus-zcode` | ZCode（智谱 GLM 编码套餐）账号。没有 OAuth 也没有刷新——凭证从官方客户端的加密 JSON 导入，失效就重新导。 |
 | `nexus-grokbot` | Grok Bot 额度凭证的获取与维护。 |
 | `nexus-gateway` | 本地网关：方言口、通道注册表、额度接力、账本。 |
 | `nexus-playground` | 游乐场的线程 / 消息 / 图片 / 视频存储与编排。 |
@@ -363,7 +365,7 @@ channel       通道注册表选路（§6.2）
    ▼
 lane          额度接力挑号（§6.3）
    ▼
-upstream      Cursor InferenceService/Stream · ChatGPT Codex · Grok · Kiro
+upstream      Cursor InferenceService/Stream · ChatGPT Codex · Grok · Kiro · ZCode
    ▼
 inbound       统一表示 → 客户端方言的 SSE（流式原样支持）
    ▼
@@ -388,7 +390,7 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 
 **对外目录的主键是 `{通道}/{模型}`**（`cursor/claude-opus-5`），**选路只剩两条规则**，对聊天 /
 生图 / 生视频一致：显式前缀强制走那条通道，不看它此刻有没有号；裸名或空模型走**用户设的默认
-通道**。别名 `codex/` 与 `xai/` 只在请求前缀里认，不进目录。
+通道**。别名 `codex/`、`xai/`、`glm/` 只在请求前缀里认，不进目录。
 
 早先还有中间一条「无前缀时按『声明拥有该模型且此刻有号』反推归属」。它猜错的时候没法解释：
 同一个模型名在两条通道上都有，请求落到哪条取决于哪条恰好还有号，用户看到的是「昨天还好好的，
@@ -400,7 +402,9 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 能力按维度建模（`Capability::{Chat, Image, Video}`），不是一组布尔。视频是异步任务，状态轮询
 必须回到**创建它的那个号**——任务是账号维度的，换个号去查就是 404。
 
-前端 `gateway/channels.ts` 的摘要全部从快照算，加第五个平台时这里不用改。
+前端 `gateway/channels.ts` 的摘要全部从快照算，加第五个平台时这里不用改——2026-09 加 ZCode
+时兑现了这句话：新增一条通道只写了 `zcode_channel` 与它的门禁，注册表、目录、账本、状态快照、
+前端摘要一处没动。
 
 ### 6.3 额度接力，不是负载均衡
 
@@ -435,6 +439,30 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 输入输出 token、首字延迟、总耗时、走的哪条通道。概览页的「本地用量」读的就是它。
 
 这是**本地**账本，不上报任何地方。
+
+### 6.6 ZCode：导入来的凭证，两档套餐只做一档
+
+ZCode（智谱 GLM 编码套餐）是第五条通道，也是唯一一条**没有授权流程**的：它的官方客户端把凭证
+写在 `~/.zcode/v2/credentials.json`，AES-256-GCM 加密，密钥由 `ZCODE_CREDENTIAL_SECRET` 或本机
+用户名 + 主目录派生。Nexus 直接读它——自己再实现一遍 OAuth 只是把同一份凭证换条路拿到手。
+代价是凭证跨机器拷不动（密钥绑本机），以及失效了只能回官方客户端重登一次，**没有刷新**。
+
+一份凭证里可能有多档套餐，Nexus 按 `{邮箱} · {套餐}` 拆成互相独立的号——它们额度分开，
+混在一条号里接力会在错误的地方判「耗尽」。
+
+两档套餐差别不在协议在风控：
+
+| | coding-plan | start-plan |
+|---|---|---|
+| 凭证 | 永久 API Key `{id}.{secret}` | OAuth JWT |
+| 端点 | `api.z.ai` 直连 | `zcode.z.ai` 网关 |
+| 门槛 | 无 | **每个请求**要一枚阿里云验证码票据 + 强制注入 ZCode 系统提示 |
+
+只做了 coding-plan。start-plan 的验证码要在浏览器环境里跑阿里云的 JS SDK 才能拿到票据，
+Tauri 的 WebView 理论上能做，但那是每请求一次的开销和一条会随对方前端改版而碎掉的链路——
+现在这类号在导入时收下、在转发时明确报错，而不是让用户看一串看不懂的 403。
+
+出站一律用 Anthropic Messages 方言，客户端讲 OpenAI 也照样翻过去——这是上游的形状，不是选择。
 
 ---
 

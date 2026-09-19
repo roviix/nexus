@@ -70,7 +70,7 @@ import { AuthorizeModal } from "./accounts/AuthorizeModal";
 import { CopySelectedModal } from "./accounts/CopySelectedModal";
 import { LookupModal } from "./accounts/LookupModal";
 import { ChatGptAccounts } from "./accounts/ChatGptAccounts";
-import { GrokAccounts, KiroAccounts } from "./accounts/DeviceAccounts";
+import { GrokAccounts, KiroAccounts, ZcodeAccounts } from "./accounts/DeviceAccounts";
 
 const SORTS: AccountSort[] = ["added", "reset", "botReset", "checked"];
 const POOL_FILTERS: PoolFilter[] = ["any", "switcher", "gateway", "unpooled"];
@@ -105,6 +105,8 @@ export function AccountsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
         <GrokAccounts tabs={tabs} onGo={onGo} />
       ) : platform === "kiro" ? (
         <KiroAccounts tabs={tabs} onGo={onGo} />
+      ) : platform === "zcode" ? (
+        <ZcodeAccounts tabs={tabs} onGo={onGo} />
       ) : (
         <CursorAccounts tabs={tabs} onGo={onGo} />
       )}

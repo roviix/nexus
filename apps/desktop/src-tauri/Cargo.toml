@@ -24,6 +24,7 @@ nexus-accounts.workspace = true
 nexus-chatgpt.workspace = true
 nexus-grok.workspace = true
 nexus-kiro.workspace = true
+nexus-zcode.workspace = true
 nexus-sand.workspace = true
 nexus-crsr.workspace = true
 nexus-grokbot.workspace = true

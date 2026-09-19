@@ -28,9 +28,9 @@ export type Section =
 
 /**
  * 账号页的两个平台。Cursor 的号能切进 IDE、能进切号池 / 网关号池；ChatGPT 的号
- * 只有一个用途——给本机网关跑 Codex 模型。Grok Build / Kiro 同样只喂网关，各自一页签。
+ * 只有一个用途——给本机网关跑 Codex 模型。Grok Build / Kiro / ZCode 同样只喂网关，各自一页签。
  */
-export type AccountPlatform = "cursor" | "chatgpt" | "grok" | "kiro";
+export type AccountPlatform = "cursor" | "chatgpt" | "grok" | "kiro" | "zcode";
 
 /**
  * 游乐场的三个子项。对话与图片是两种会话（走的接口不同：chat completions / images），
@@ -145,6 +145,7 @@ export const ACCOUNT_PLATFORMS: AccountPlatformMeta[] = [
   { id: "chatgpt", label: "ChatGPT" },
   { id: "grok", label: "Grok Build" },
   { id: "kiro", label: "Kiro" },
+  { id: "zcode", label: "ZCode" },
 ];
 
 export interface SettingsTabMeta {

@@ -294,6 +294,13 @@ pub fn run() {
             commands::kiro::kiro_remove,
             commands::kiro::kiro_set_enabled,
             commands::kiro::kiro_set_note,
+            commands::zcode::zcode_list,
+            commands::zcode::zcode_probe_client,
+            commands::zcode::zcode_import_client,
+            commands::zcode::zcode_import_text,
+            commands::zcode::zcode_remove,
+            commands::zcode::zcode_set_enabled,
+            commands::zcode::zcode_set_note,
             // 一键接入（改客户端配置文件）
             commands::connect::connect_inspect,
             commands::connect::connect_apply,

@@ -25,6 +25,7 @@ use nexus_grok::GrokService;
 use nexus_kiro::KiroService;
 use nexus_store::keys::SecretRef;
 use nexus_store::{settings, Db, SecretStore};
+use nexus_zcode::ZcodeService;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
@@ -135,6 +136,17 @@ struct Running {
     task: tokio::task::JoinHandle<()>,
 }
 
+/// 应用里那几份订阅号服务。
+///
+/// 收成一个结构体而不是继续往 [`GatewayService::with_services`] 上加参数：平台还会再加，
+/// 八个位置参数的调用点已经没人看得懂谁是谁了。
+pub struct SubscriptionServices {
+    pub chatgpt: Arc<ChatGptService>,
+    pub grok: Arc<GrokService>,
+    pub kiro: Arc<KiroService>,
+    pub zcode: Arc<ZcodeService>,
+}
+
 pub struct GatewayService {
     db: Arc<Db>,
     secrets: Arc<dyn SecretStore>,
@@ -142,6 +154,7 @@ pub struct GatewayService {
     chatgpt: Arc<ChatGptService>,
     grok: Arc<GrokService>,
     kiro: Arc<KiroService>,
+    zcode: Arc<ZcodeService>,
     /// 哪些号进接力队。跨启停都是同一份，落库。
     roster: Arc<Roster>,
     /// Cursor 正登着的号。设置页改目录时换读者，接力队还是这一份。
@@ -169,7 +182,19 @@ impl GatewayService {
     ) -> Self {
         let grok = Arc::new(GrokService::new(db.clone(), secrets.clone()));
         let kiro = Arc::new(KiroService::new(db.clone(), secrets.clone()));
-        Self::with_services(db, secrets, cursor, accounts, chatgpt, grok, kiro)
+        let zcode = Arc::new(ZcodeService::new(db.clone(), secrets.clone()));
+        Self::with_services(
+            db,
+            secrets,
+            cursor,
+            accounts,
+            SubscriptionServices {
+                chatgpt,
+                grok,
+                kiro,
+                zcode,
+            },
+        )
     }
 
     /// 与应用其余部分共用同一份订阅号服务（账号页改了开关，网关这边立刻看得到）。
@@ -178,10 +203,14 @@ impl GatewayService {
         secrets: Arc<dyn SecretStore>,
         cursor: Arc<nexus_cursor::Cursor>,
         accounts: Arc<AccountsService>,
-        chatgpt: Arc<ChatGptService>,
-        grok: Arc<GrokService>,
-        kiro: Arc<KiroService>,
+        subs: SubscriptionServices,
     ) -> Self {
+        let SubscriptionServices {
+            chatgpt,
+            grok,
+            kiro,
+            zcode,
+        } = subs;
         let settings = read_settings(&db);
         let roster = Arc::new(Roster::load(db.clone()));
         let (cursor_login, lane) = build_lane(cursor, accounts.clone(), roster.clone());
@@ -205,6 +234,12 @@ impl GatewayService {
                     kiro.clone() as Arc<dyn SubscriptionAccounts>
                 )),
             ),
+            (
+                channel::ZCODE,
+                Arc::new(subscriptions::subscription_lane(
+                    zcode.clone() as Arc<dyn SubscriptionAccounts>
+                )),
+            ),
         ];
         let ledger = Arc::new(Ledger::new(db.clone()));
         if let Err(err) = ledger.prune() {
@@ -223,6 +258,7 @@ impl GatewayService {
             chatgpt,
             grok,
             kiro,
+            zcode,
             roster,
             cursor_login,
             lane: Arc::new(lane),
@@ -234,7 +270,7 @@ impl GatewayService {
         }
     }
 
-    /// 网关的全部通道（默认 Cursor + 三条订阅通道）。每次起服务时装一份；门禁现查，加号 / 关号 /
+    /// 网关的全部通道（默认 Cursor + 四条订阅通道）。每次起服务时装一份；门禁现查，加号 / 关号 /
     /// 拉到新目录都不用重启。
     fn registry(&self, cursor_cfg: StreamConfig) -> ChannelRegistry {
         let mut reg = ChannelRegistry::new(channel::cursor_channel(
@@ -247,6 +283,7 @@ impl GatewayService {
                 channel::CHATGPT => subscriptions::chatgpt_channel(lane, self.chatgpt.clone()),
                 channel::GROK => subscriptions::grok_channel(lane, self.grok.clone()),
                 channel::KIRO => subscriptions::kiro_channel(lane, self.kiro.clone()),
+                channel::ZCODE => subscriptions::zcode_channel(lane, self.zcode.clone()),
                 other => unreachable!("未知通道 {other}"),
             };
             reg = reg.with(ch);
@@ -324,6 +361,10 @@ impl GatewayService {
                 channel::KIRO => (
                     "Amazon",
                     Some("经 Kiro（Amazon Q / Builder ID）。对外 kiro/kiro-claude-*。"),
+                ),
+                channel::ZCODE => (
+                    "智谱",
+                    Some("经 ZCode（智谱 GLM 编码套餐）。裸 glm-* 也认，zcode/ 前缀可显式指定。"),
                 ),
                 _ => (ch.label, None),
             };
@@ -452,7 +493,7 @@ impl GatewayService {
         if let Some(dc) = patch.default_channel {
             let Some(id) = channel::parse_id(&dc) else {
                 return Err(AppError::invalid(format!(
-                    "默认通道只能是 cursor / chatgpt / grok / kiro，给的是 {dc}"
+                    "默认通道只能是 cursor / chatgpt / grok / kiro / zcode，给的是 {dc}"
                 )));
             };
             s.default_channel = id.to_string();

@@ -16,7 +16,7 @@
 </div>
 
 Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.0.0.1` 上起一个本地网关，
-用你自己的 Cursor / ChatGPT / Grok / Kiro 账号做上游，对外暴露标准的
+用你自己的 Cursor / ChatGPT / Grok / Kiro / ZCode 账号做上游，对外暴露标准的
 `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/models`、`/v1/images/generations`。
 任何讲 OpenAI 或 Anthropic 方言的客户端——Claude Code、Codex CLI、OpenCode、官方 SDK、`curl`——
 都可以直接指到它上面，不需要再申请一把 API key。
@@ -36,7 +36,8 @@ Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.
 - **一个端口，四种方言。** OpenAI Chat Completions、Anthropic Messages（含 `count_tokens`）、
   OpenAI Responses、OpenAI Images。入站统一解析成一份中间表示再桥接到上游，流式 SSE 原样支持。
 - **多平台上游。** Cursor（`aiserver.v1.InferenceService/Stream`）、ChatGPT 订阅号
-  （`chatgpt.com/backend-api/codex`）、Grok、Kiro。模型目录（`/v1/models`）按上游能力自动汇总。
+  （`chatgpt.com/backend-api/codex`）、Grok、Kiro、ZCode（智谱 GLM 编码套餐）。
+  模型目录（`/v1/models`）按上游能力自动汇总。
 - **通道写在模型名里。** 目录主键是 `{通道}/{模型}`（`cursor/claude-opus-5`、`chatgpt/gpt-5`），
   带前缀就强制走那条通道；不带前缀的走**你自己设的默认通道**。请求落到哪条号池是看得见、
   改得动的，不靠网关猜。
@@ -68,6 +69,9 @@ Codex CLI（`~/.codex/config.toml`）、OpenCode 指到本地网关上；改之�
 
 - 添加 Cursor / ChatGPT / Grok / Kiro 账号：OAuth 走系统浏览器登录，应用后台收 token；也可以粘
   refresh token、`crsr_` API Key、Codex session JSON 批量导入（一次贴多个，格式自动认）。
+- ZCode 账号没有单独的授权流程：在官方 ZCode 客户端里登录一次，Nexus 直接读它留下的凭证
+  （`~/.zcode/v2/credentials.json`，AES-256-GCM）。一份凭证里的个人版 / 团队版是两条独立的号——
+  额度是分开的。也可以自己贴一把 `{apiKeyId}.{apiKeySecret}`。
 - 查看订阅、额度、重置时间；到期 / 封禁 / 额度耗尽自动标记。
 - 额度和账单分两张卡：一张是还剩多少、什么时候重置，另一张是标价、券、下次扣多少、历史发票。
   两者不是一个口径，不叠成一个数。
@@ -189,6 +193,7 @@ node scripts/test-package-release.mjs
 │   ├── nexus-chatgpt/              # ChatGPT 订阅号：登录、刷 token、Codex 后端
 │   ├── nexus-grok/ nexus-grokbot/  # Grok 账号与 Grok Bot 额度
 │   ├── nexus-kiro/                 # Kiro 账号
+│   ├── nexus-zcode/                # ZCode（智谱 GLM）账号：从官方客户端导入凭证
 │   ├── nexus-gateway/              # 本地网关：方言口 + 额度接力 + 账本
 │   ├── nexus-connect/              # 一键接入：改 Claude Code / Codex / OpenCode 配置
 │   ├── nexus-playground/           # 游乐场的线程 / 消息存储

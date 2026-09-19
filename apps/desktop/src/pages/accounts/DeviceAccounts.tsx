@@ -1,15 +1,20 @@
 /**
- * 账号 · Grok Build / Kiro —— 设备码平台共用这一页。
+ * 账号 · Grok Build / Kiro / ZCode —— 「号只喂本机网关」的平台共用这一页。
  *
  * 和 ChatGPT 页签同一套心智（号只喂本机网关、凭证不进前端、接力状态来自网关），
- * 差别只有登录：xAI / AWS Builder ID 走 OIDC **设备码**，浏览器里输入 user_code，
- * 没有 Codex 那种 localhost:1455 回调可贴。所以弹窗里最显眼的是那串码，而不是「贴地址」。
+ * 差别在怎么把号弄进来：
+ *
+ * - Grok / Kiro 走 OIDC **设备码**：浏览器里输入 user_code，没有 Codex 那种
+ *   localhost:1455 回调可贴，所以弹窗里最显眼的是那串码而不是「贴地址」。
+ * - ZCode **没有授权登录**：官方客户端登录后把凭证写在本机一个加密 JSON 里，
+ *   用户在那边登录一次，这里直接读。`spec.api.loginStart` 缺席就是这个意思，
+ *   「授权登录」页签会整个消失。
  *
  * Grok Bot（钥匙串里的 grok.com 额度）不是 Grok Build，别混进这一页。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { channelOf, laneOf } from "../../gateway/channels";
-import { gateway, grok, kiro, onGrokLogin, onKiroLogin } from "../../ipc/api";
+import { gateway, grok, kiro, onGrokLogin, onKiroLogin, zcode } from "../../ipc/api";
 import type {
   GatewayChannelId,
   DeviceAccount,
@@ -26,10 +31,16 @@ import { laneBadge } from "./chatgpt";
 
 type DeviceApi = {
   list: () => Promise<DeviceAccount[]>;
-  loginStart: (note?: string) => Promise<DeviceLoginHandle>;
-  loginCancel: (sessionId: string) => Promise<void>;
-  importCli: () => Promise<DeviceAccount>;
-  importText: (text: string, note?: string) => Promise<DeviceAccount>;
+  /** 走设备码授权的平台才有。缺席时「授权登录」页签不出现（ZCode）。 */
+  loginStart?: (note?: string) => Promise<DeviceLoginHandle>;
+  loginCancel?: (sessionId: string) => Promise<void>;
+  /**
+   * 从本机装着的那个客户端导入（Grok CLI / Kiro IDE / ZCode 桌面端）。
+   *
+   * 回值没人用：导入完一律重拉列表。ZCode 一次能带回好几个号，所以不限定成单个。
+   */
+  importLocal: () => Promise<unknown>;
+  importText: (text: string, note?: string) => Promise<unknown>;
   remove: (id: string) => Promise<void>;
   setEnabled: (id: string, enabled: boolean) => Promise<DeviceAccount>;
   setCurrent: (label: string) => Promise<GatewayStatus>;
@@ -57,7 +68,13 @@ interface Spec {
   apiKeyHint?: ReactNode;
   labelPrefix: string;
   api: DeviceApi;
-  listen: (cb: (s: DeviceLoginState) => void) => Promise<() => void>;
+  /** 设备码授权的进度事件。和 `api.loginStart` 同进同退。 */
+  listen?: (cb: (s: DeviceLoginState) => void) => Promise<() => void>;
+  /**
+   * 本机那个客户端在不在。给了就在「从本机导入」页签上先说清楚，
+   * 而不是让用户点一下再吃一个「读不到文件」。
+   */
+  probeLocal?: () => Promise<{ present: boolean; path: string }>;
 }
 
 const GROK: Spec = {
@@ -114,17 +131,69 @@ const KIRO: Spec = {
   listen: onKiroLogin,
 };
 
+const ZCODE: Spec = {
+  id: "zcode",
+  title: "ZCode",
+  emptyTitle: "还没有 ZCode 账号",
+  emptyBody:
+    "智谱 GLM 的编码套餐。在官方 ZCode 客户端里登录一次，这里就能把凭证收进来——加进来后，glm-* 走这条通道（zcode/glm-4.7 也认）。凭证只在这台电脑上。",
+  bannerHint: "ZCode 的号只有一个用途：给本机网关跑 glm-*。开了网关，Claude Code / OpenCode 指到它就能用。",
+  usableHint: "个可接 · glm-* 走这里",
+  addSubtitle:
+    "ZCode 没有单独的授权流程：在官方客户端里登录一次，这里直接读它留下的凭证。也可以自己贴一把 API key。",
+  // 没有 loginStart，这两条用不上，但 Spec 要求非空。
+  oauthHint: "",
+  waitingHint: "",
+  cliTab: "从本机 ZCode 客户端",
+  cliHint: (
+    <>
+      读取 <code className="mono">~/.zcode/v2/credentials.json</code>（官方客户端登录后留下的态）。文件不动，只把凭证收进
+      Nexus。一次会把里面所有套餐都收进来——个人版、团队版各算一个号，额度是分开的。
+      <br />
+      这个文件的加密密钥绑了本机用户名与主目录，<strong>不能从别的电脑拷过来</strong>。
+    </>
+  ),
+  pastePlaceholder:
+    "三种写法都认：\n· 一行 {apiKeyId}.{apiKeySecret}\n· 一整份 credentials.json 的原文\n· 一个 JWT（体验套餐）",
+  labelPrefix: "zcode",
+  api: zcode,
+  probeLocal: zcode.probeClient,
+};
+
 export function GrokAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
   return <DeviceAccounts spec={GROK} tabs={tabs} onGo={onGo} />;
+}
+
+export function ZcodeAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
+  return <DeviceAccounts spec={ZCODE} tabs={tabs} onGo={onGo} />;
 }
 
 export function KiroAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
   return <DeviceAccounts spec={KIRO} tabs={tabs} onGo={onGo} />;
 }
 
-function labelOf(a: Pick<DeviceAccount, "email" | "accountRef">, prefix: string): string {
+/**
+ * 号的显示名，**同时是网关接力队里的键**。
+ *
+ * 后端给了 `label` 就用它——ZCode 一个邮箱下有个人版 / 团队版 / 体验套餐三条号，
+ * 光看邮箱三条长得一模一样，键就撞了。所以那边的名字由 Rust 拼好送来，前端不再推导。
+ */
+function labelOf(a: Pick<DeviceAccount, "email" | "accountRef" | "label">, prefix: string): string {
+  const given = a.label?.trim();
+  if (given) return given;
   const email = a.email?.trim();
   return email ? email : `${prefix}…${a.accountRef.slice(-6)}`;
+}
+
+/**
+ * 这个号还能不能自己拿出凭证。
+ *
+ * OAuth 号看 refresh token，API Key 号看 key，ZCode 看永久 key / JWT——它没有
+ * `hasRefresh` 那一位，因为压根没有续期这回事。
+ */
+function deviceCanServe(a: DeviceAccount): boolean {
+  if (a.hasRefresh !== undefined) return a.hasRefresh;
+  return (a.hasApiKey ?? false) || (a.hasJwt ?? false);
 }
 
 function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onGo: (r: Route) => void }) {
@@ -186,7 +255,7 @@ function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onG
   }
 
   const list = accounts ?? [];
-  const active = list.filter((a) => a.enabled && a.status === "active" && a.hasRefresh).length;
+  const active = list.filter((a) => a.enabled && a.status === "active" && deviceCanServe(a)).length;
   const disabled = working;
 
   return (
@@ -341,7 +410,7 @@ function AccountRow({
   onMediaOverride?: (value: boolean | null) => void;
 }) {
   const isCurrent = lane?.state.kind === "current";
-  const needsLogin = a.status !== "active" || !a.hasRefresh;
+  const needsLogin = a.status !== "active" || !deviceCanServe(a);
   const isApiKey = a.authKind === "api_key";
   const quota = a.usage ?? null;
   const tier = a.subscriptionTier ?? quota?.subscriptionTier ?? a.planType;
@@ -447,7 +516,8 @@ function AccountRow({
 type Mode = "oauth" | "cli" | "paste" | "apikey";
 
 function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void; onAdded: () => Promise<void> }) {
-  const [mode, setMode] = useState<Mode>("oauth");
+  const canOauth = !!spec.api.loginStart && !!spec.listen;
+  const [mode, setMode] = useState<Mode>(canOauth ? "oauth" : "cli");
   const [error, setError] = useState<unknown>(null);
   const [working, setWorking] = useState(false);
   const [handle, setHandle] = useState<DeviceLoginHandle | null>(null);
@@ -455,12 +525,29 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
   const [paste, setPaste] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [note, setNote] = useState("");
+  const [probe, setProbe] = useState<{ present: boolean; path: string } | null>(null);
   const handleRef = useRef<DeviceLoginHandle | null>(null);
   handleRef.current = handle;
 
   useEffect(() => {
+    const p = spec.probeLocal;
+    if (!p) return;
+    let alive = true;
+    void p()
+      .then((r) => {
+        if (alive) setProbe(r);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [spec]);
+
+  useEffect(() => {
+    const listen = spec.listen;
+    if (!listen) return;
     let unlisten: (() => void) | null = null;
-    void spec.listen((st: DeviceLoginState) => {
+    void listen((st: DeviceLoginState) => {
       const h = handleRef.current;
       if (!h || st.sessionId !== h.sessionId) return;
       if (st.state === "waiting") setWaitSecs(st.elapsedSecs);
@@ -476,7 +563,7 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
     return () => {
       unlisten?.();
       const h = handleRef.current;
-      if (h) void spec.api.loginCancel(h.sessionId);
+      if (h) void spec.api.loginCancel?.(h.sessionId);
     };
   }, [onAdded, spec]);
 
@@ -504,12 +591,12 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
           <button type="button" className="btn" onClick={onClose}>
             {handle ? "关闭" : "取消"}
           </button>
-          {mode === "oauth" && !handle ? (
+          {mode === "oauth" && !handle && spec.api.loginStart ? (
             <button
               type="button"
               className="btn btn-primary"
               disabled={working}
-              onClick={() => void go(async () => setHandle(await spec.api.loginStart(note.trim() || undefined)))}
+              onClick={() => void go(async () => setHandle(await spec.api.loginStart!(note.trim() || undefined)))}
             >
               <Icon name="external" size={13} />
               打开浏览器授权
@@ -519,10 +606,10 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
             <button
               type="button"
               className="btn btn-primary"
-              disabled={working}
+              disabled={working || probe?.present === false}
               onClick={() =>
                 void go(async () => {
-                  await spec.api.importCli();
+                  await spec.api.importLocal();
                   await onAdded();
                 })
               }
@@ -568,7 +655,7 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
         <div className="gwset-options" role="radiogroup" aria-label="添加方式">
           {(
             [
-              ["oauth", "授权登录"],
+              ...(canOauth ? [["oauth", "授权登录"] as [Mode, string]] : []),
               ["cli", spec.cliTab],
               ["paste", "粘贴 token"],
               ...(spec.apiKeyHint && spec.api.addApiKey ? [["apikey", "API Key"] as [Mode, string]] : []),
@@ -618,7 +705,24 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
           )
         ) : null}
 
-        {mode === "cli" ? <p className="muted" style={{ margin: 0 }}>{spec.cliHint}</p> : null}
+        {mode === "cli" ? (
+          <div className="stack" style={{ gap: 10 }}>
+            <p className="muted" style={{ margin: 0 }}>
+              {spec.cliHint}
+            </p>
+            {probe ? (
+              probe.present ? (
+                <Banner tone="ok" title="找到本机的凭证了，可以直接导入。" hint={probe.path} />
+              ) : (
+                <Banner
+                  tone="warn"
+                  title="这台电脑上没找到凭证文件。"
+                  hint={`先装官方客户端并登录一次，或者改用「粘贴」。找的位置：${probe.path}`}
+                />
+              )
+            ) : null}
+          </div>
+        ) : null}
 
         {mode === "paste" ? (
           <div className="stack" style={{ gap: 10 }}>

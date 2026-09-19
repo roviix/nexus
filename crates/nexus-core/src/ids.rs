@@ -68,6 +68,11 @@ id_type!(
     KiroAccountId,
     "一个 Kiro（Amazon Q / Builder ID）账号的 id。和 Cursor / ChatGPT / Grok 分表。"
 );
+id_type!(
+    ZcodeAccountId,
+    "一个 ZCode（智谱 GLM 编码套餐）账号的 id。同一个邮箱下的个人版 / 团队版 / 体验套餐是三条账号——\
+     它们各有各的凭证和额度。"
+);
 
 #[cfg(test)]
 mod tests {

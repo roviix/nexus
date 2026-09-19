@@ -17,6 +17,7 @@ nexus-cursor.workspace = true
 nexus-chatgpt.workspace = true
 nexus-grok.workspace = true
 nexus-kiro.workspace = true
+nexus-zcode.workspace = true
 
 sha2.workspace = true
 base64.workspace = true

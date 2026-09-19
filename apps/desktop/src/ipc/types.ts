@@ -889,7 +889,7 @@ export interface GatewayLane {
 }
 
 /** 网关里一条订阅通道的 id。与 Rust `channel::ChannelId` 的取值一致；也是账号页签的平台 id。 */
-export type GatewayChannelId = "chatgpt" | "grok" | "kiro";
+export type GatewayChannelId = "chatgpt" | "grok" | "kiro" | "zcode";
 
 /** 一条订阅通道的快照。与 Rust `service::ChannelSnapshot` 对齐。 */
 export interface ChannelSnapshot {
@@ -1104,9 +1104,28 @@ export interface DeviceAccount {
   subscriptionTier?: string | null;
   lastCheckedAt: string | null;
   lastError: string | null;
-  /** OAuth 号：有 refresh token；API Key 号：有 key。都是「还能自己拿到凭证」。 */
-  hasRefresh: boolean;
+  /**
+   * OAuth 号：有 refresh token；API Key 号：有 key。都是「还能自己拿到凭证」。
+   *
+   * ZCode 没有这一位——它的凭证是永久 API key / 无 exp 的 JWT，压根没有续期这回事。
+   * 判「还能不能出流量」用 `deviceCanServe()`，别直接读这个字段。
+   */
+  hasRefresh?: boolean;
   accessExpiresAt: string | null;
+  /** 后端给的显示名，同时是网关接力队里的键。给了就用它，别在前端重新拼。 */
+  label?: string;
+  /** ZCode：coding-plan（永久 key）/ start-plan（JWT）。 */
+  plan?: "coding-plan" | "start-plan";
+  /** ZCode：zai / bigmodel。 */
+  provider?: "zai" | "bigmodel";
+  /** ZCode：官方客户端里的套餐族名，如 zai-individual-coding-plan。 */
+  family?: string | null;
+  /** ZCode：API key 的前 8 位，给人认哪张是哪张。 */
+  keyHint?: string | null;
+  /** ZCode：有编码套餐的 API key。 */
+  hasApiKey?: boolean;
+  /** ZCode：有体验套餐的 JWT。 */
+  hasJwt?: boolean;
   /** Grok：额度快照。 */
   usage?: GrokQuota | null;
   /** Grok：自动探测出的媒体资格；null = 还没探过。 */
@@ -1269,4 +1288,19 @@ export interface UsageSummary {
   recent: UsageRecent[];
   /** 账本里最早一条的时刻；一条都没有是 null。 */
   since: string | null;
+}
+
+/** 一次 ZCode 导入的结果。与 Rust `service::ImportReport` 对齐。 */
+export interface ZcodeImportReport {
+  accounts: DeviceAccount[];
+  created: number;
+  updated: number;
+  /** 跳过的条目（解不开、形状不对）。 */
+  skipped: string[];
+}
+
+/** 本机官方 ZCode 客户端的状态。 */
+export interface ZcodeClientProbe {
+  present: boolean;
+  path: string;
 }

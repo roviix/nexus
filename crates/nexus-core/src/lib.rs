@@ -13,6 +13,8 @@ pub mod secret;
 pub use clock::{file_stamp, iso_from_system_time, now_iso, Clock, SystemClock};
 pub use email::Email;
 pub use error::{AppError, ErrorCode, Result};
-pub use ids::{AccountId, BackupId, ChatGptAccountId, GrokAccountId, KiroAccountId, ProfileId};
+pub use ids::{
+    AccountId, BackupId, ChatGptAccountId, GrokAccountId, KiroAccountId, ProfileId, ZcodeAccountId,
+};
 pub use machine::{MachineProfile, TELEMETRY_KEYS};
 pub use secret::Secret;

@@ -9,7 +9,7 @@ use nexus_accounts::{AccountsService, OauthSession};
 use nexus_chatgpt::ChatGptService;
 use nexus_crsr::CrsrService;
 use nexus_cursor::{Cursor, CursorControl};
-use nexus_gateway::GatewayService;
+use nexus_gateway::{GatewayService, SubscriptionServices};
 use nexus_grok::GrokService;
 use nexus_grokbot::GrokBotService;
 use nexus_kiro::KiroService;
@@ -17,6 +17,7 @@ use nexus_playground::PlaygroundService;
 use nexus_sand::SandService;
 use nexus_store::{settings, Backups, Db, SecretStore, SqliteSecrets};
 use nexus_switcher::Switcher;
+use nexus_zcode::ZcodeService;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -48,6 +49,7 @@ pub struct AppState {
     /// Grok Build / Kiro：第三、四种号源。同样分表。
     pub grok: Arc<GrokService>,
     pub kiro: Arc<KiroService>,
+    pub zcode: Arc<ZcodeService>,
     /// 本地推理网关。默认关着，由用户点开；读 accounts 取号、读 cursor 拿当前登录号，
     /// 不碰 switcher（ARCHITECTURE §3.4）。
     pub gateway: Arc<GatewayService>,
@@ -104,14 +106,18 @@ impl AppState {
         let chatgpt = Arc::new(ChatGptService::new(db.clone(), secrets.clone()));
         let grok = Arc::new(GrokService::new(db.clone(), secrets.clone()));
         let kiro = Arc::new(KiroService::new(db.clone(), secrets.clone()));
+        let zcode = Arc::new(ZcodeService::new(db.clone(), secrets.clone()));
         let gateway = Arc::new(GatewayService::with_services(
             db.clone(),
             secrets.clone(),
             Arc::new(cursor.clone()),
             accounts.clone(),
-            chatgpt.clone(),
-            grok.clone(),
-            kiro.clone(),
+            SubscriptionServices {
+                chatgpt: chatgpt.clone(),
+                grok: grok.clone(),
+                kiro: kiro.clone(),
+                zcode: zcode.clone(),
+            },
         ));
 
         // 本机 Cursor 的 commit：远程往往堆着好几个 commit 的 server，只有和本机同 commit 的
@@ -137,6 +143,7 @@ impl AppState {
             chatgpt,
             grok,
             kiro,
+            zcode,
             gateway,
             playground: Arc::new(PlaygroundService::new(db.clone(), data_dir)),
             switcher: Arc::new(Switcher::new(db.clone(), secrets.clone(), cursor)),
