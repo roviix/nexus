@@ -8,6 +8,33 @@
 
 ## [未发布]
 
+## [0.7.0] — 2026-09-19
+
+### 新增
+
+- **ZCode 通道**（智谱 GLM 编码套餐），第五条上游。目录前缀 `zcode/`，请求里也认 `glm/`；
+  出站讲 Anthropic Messages，客户端发 OpenAI 也照样翻过去。
+- **ZCode 账号从官方客户端导入，不用再授权一次。** 在 ZCode 客户端里登录过就行，Nexus 读它留
+  在 `~/.zcode/v2/credentials.json` 的凭证（AES-256-GCM）。添加前会先探一下那个文件在不在、
+  里面有几个号，探不到就说清楚原因而不是让你点了才知道。也可以自己贴一把
+  `{apiKeyId}.{apiKeySecret}`。
+  - 凭证的密钥绑本机用户名与主目录，**从别的机器拷过来解不开**；官方客户端那边设过
+    `ZCODE_CREDENTIAL_SECRET` 的话，这里要设同一个值。
+  - 一份凭证里的个人版 / 团队版拆成互相独立的号——它们额度是分开的，混成一条会在错的地方判
+    「耗尽」。
+  - 没有刷新这回事：ZCode 的 API Key 是永久的，JWT 过期只能回官方客户端重登一次。
+- 账号页导入面板现在可以先报告「本机客户端里有什么」，探不到凭证时直接禁掉导入按钮。
+
+### 已知限制
+
+- **体验套餐（start-plan）能导入、不能转发。** 它的网关要求**每个请求**带一枚阿里云验证码票据，
+  本地网关还没有求解器。这类号在转发时会收到一句说明这件事的错误，而不是一串看不懂的 403。
+  编码套餐（coding-plan）不受影响。
+
+### 迁移
+
+- v17 `zcode_accounts`（ZCode 账号的元信息；凭证本身进 `SecretStore`）
+
 ## [0.6.6] — 2026-09-18
 
 ### 修复
@@ -319,7 +346,8 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.6.6...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/roviix/nexus/releases/tag/v0.7.0
 [0.6.6]: https://github.com/roviix/nexus/releases/tag/v0.6.6
 [0.6.5]: https://github.com/roviix/nexus/releases/tag/v0.6.5
 [0.6.4]: https://github.com/roviix/nexus/releases/tag/v0.6.4
