@@ -22,6 +22,7 @@ import type {
 } from "../ipc/types";
 import { go, type Route } from "../shell/nav";
 import { Banner, Empty, ErrorNote, Icon, Modal, Opt, Spinner, Switch, Tag } from "../ui/primitives";
+import { confirm } from "../ui/confirm";
 import { timeAgo } from "../ui/format";
 import { RemoteHosts } from "./sand/RemoteHosts";
 
@@ -491,15 +492,21 @@ export function SandPage({ onGo, embedded = false }: { onGo: (r: Route) => void;
           backups={backups}
           busy={busy}
           onClose={() => setShowBackups(false)}
-          onRestore={(id) => {
-            const b = backups.find((x) => x.id === id);
-            const ok = window.confirm(`把 ${b ? `「${b.operation}」` : "这次改动"}之前的原始文件写回？${relaunch ? "\n\n完成后会退出并重启 Cursor。" : ""}`);
-            if (!ok) return;
-            setShowBackups(false);
-            void run(() => sand.restoreBackup(id, relaunch));
-          }}
+          onRestore={(id) =>
+            void (async () => {
+              const b = backups.find((x) => x.id === id);
+              const ok = await confirm(`把 ${b ? `「${b.operation}」` : "这次改动"}之前的原始文件写回。${relaunch ? "\n\n完成后会退出并重启 Cursor。" : ""}`, {
+                title: "还原原始文件？",
+                okLabel: relaunch ? "还原并重启" : "还原",
+                danger: true,
+              });
+              if (!ok) return;
+              setShowBackups(false);
+              await run(() => sand.restoreBackup(id, relaunch));
+            })()
+          }
           onRemove={async (id) => {
-            if (!window.confirm("删除这份备份？")) return;
+            if (!(await confirm("删除这份备份？", { okLabel: "删除", danger: true }))) return;
             await sand.removeBackup(id);
             setBackups(await sand.backups());
           }}

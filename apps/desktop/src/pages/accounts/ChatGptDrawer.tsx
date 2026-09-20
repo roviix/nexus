@@ -9,6 +9,7 @@ import type { ChatGptAccountView } from "../../accounts/model";
 import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster } from "../../accounts/pools";
 import { chatgpt as chatgptApi } from "../../ipc/api";
 import type { ChatGptAccount, ChatGptBilling } from "../../ipc/types";
+import { confirm } from "../../ui/confirm";
 import { timeAgo, timeUntil } from "../../ui/format";
 import { shortDateTime } from "../../ui/usage";
 import { Banner, CopyButton, Drawer, ErrorNote, Gauge, Health, Icon, Reset, Spinner, Tag } from "../../ui/primitives";
@@ -247,12 +248,19 @@ function GatewayUsedIn({
               type="button"
               className="btn btn-sm btn-quiet btn-danger"
               disabled={busy}
-              onClick={() => {
-                if (isCurrent && !window.confirm(`${account.email ?? "这个号"} 正在被网关使用。移出后下一个请求会换号，正在进行的对话会丢上游缓存。继续？`)) {
-                  return;
-                }
-                void act(false);
-              }}
+              onClick={() =>
+                void (async () => {
+                  if (isCurrent) {
+                    const ok = await confirm(`${account.email ?? "这个号"} 正在被网关使用。移出后下一个请求会换号，正在进行的对话会丢上游缓存。`, {
+                      title: "移出网关号池",
+                      okLabel: "移出",
+                      danger: true,
+                    });
+                    if (!ok) return;
+                  }
+                  await act(false);
+                })()
+              }
             >
               {busy ? <Spinner /> : "移出"}
             </button>

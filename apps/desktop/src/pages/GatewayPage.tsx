@@ -36,6 +36,7 @@ import { models as modelsApi, type LocalModel } from "../ipc/models";
 import type { Account, GatewayAvailable, GatewayCandidate, GatewaySettings, GatewayStatus, MediaJob } from "../ipc/types";
 import { go, type AccountPlatform, type Route } from "../shell/nav";
 import { ShellIcon } from "../shell/ShellIcon";
+import { confirm } from "../ui/confirm";
 import { timeAgo } from "../ui/format";
 import { Banner, CopyButton, Empty, ErrorNote, Icon, Modal, Opt, Switch, Tag } from "../ui/primitives";
 import { accountProblem, planLabel, planTone } from "../ui/usage";
@@ -146,7 +147,12 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
     if (c.state.kind === "current") {
       const next = candidates.find((x) => x.state.kind === "ready");
       const then = next ? `下一个请求会换到 ${next.label}` : "名单里没有别的可用号了，网关会开始回 503";
-      if (!window.confirm(`${c.label} 正在被网关使用。移出后${then}，正在进行的对话会丢上游缓存。继续？`)) return;
+      const ok = await confirm(`${c.label} 正在被网关使用。移出后${then}，正在进行的对话会丢上游缓存。`, {
+        title: "移出网关号池",
+        okLabel: "移出",
+        danger: true,
+      });
+      if (!ok) return;
     }
     await run(() => gateway.unenroll(c.label));
   }
@@ -160,7 +166,12 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
   }
 
   async function rotateKey() {
-    if (!window.confirm("换一把口令后，已经配了旧口令的客户端会立刻 401，要重新填。继续？")) return;
+    const ok = await confirm("已经配了旧口令的客户端会立刻 401，要重新填。", {
+      title: "换一把口令？",
+      okLabel: "换口令",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       setKey(await gateway.rotateKey());
       await reload();

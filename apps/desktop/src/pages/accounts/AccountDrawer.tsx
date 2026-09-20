@@ -7,6 +7,8 @@
  * 标题区把这个号的「身份」摆齐：邮箱、档位、健康度、来源、备注（可就地改）。
  * 动作也在标题区 —— 刷新 / 授权 / 切号 是来这一页最常按的三个键，不该藏在页脚。
  * 「切号」就地热切：Cursor 在跑时不退出；只有开了「切换时同时切机器码」才会问一句。
+ * 切号会把号带进切号池（切号器只认「档」），所以号还不在池里时按钮写「加入切号池并切号」——
+ * 一键做完，但不藏着；进了池随时可在下面「所在池」那一行移出。
  * 仅会话（token 导入、没有 refresh）的号切不了，凭证页给它「铸一把 crsr_ Key」当出路。
  *
  * 标题区下面先答「它在哪儿被用着」：切号池里有没有、网关号池里有没有，各一行，能就地加入 /
@@ -21,9 +23,10 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 import type { AccountPlacement } from "../../accounts/model";
-import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster, usePools } from "../../accounts/pools";
+import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster, usePools, type Pools } from "../../accounts/pools";
 import type { Account, CrsrStatus, KickOutcome, MintedApiKey, SecretKind } from "../../ipc/types";
 import { accounts, crsr, gateway as gatewayApi, switcher as switcherApi } from "../../ipc/api";
+import { confirm } from "../../ui/confirm";
 import { Banner, CopyButton, Drawer, ErrorNote, Health, Icon, Spinner, Switch, Tag } from "../../ui/primitives";
 import { accountSourceLabel, timeAgo, timeUntil } from "../../ui/format";
 import { canQueryUsage, canUseDashboard, hasLiveAccess, sessionOnly } from "../../ui/accounts";
@@ -97,11 +100,17 @@ export function AccountDrawer({
   const problem = accountProblem(account, u);
   const dead = account.status === "dead";
   const switchable = canAddToSwitchPool(account);
+  // 两个池的名单在抽屉这一层拉一次：标题区的主键要按「在不在切号池」换文案，
+  // 下面「所在池」那一段也用同一份，切完号刷一次两边一起变。
+  const pools = usePools();
+  const inSwitchPool = pools.membership(account.email).switcher != null;
 
   async function switchNow() {
     setSwitching(true);
     try {
       await onSwitch();
+      // 切号会顺带入池；不刷的话「所在池」那一行还写着「未加入」，主键也还写着「加入并切号」。
+      await pools.reload();
     } finally {
       setSwitching(false);
     }
@@ -166,15 +175,16 @@ export function AccountDrawer({
                   : sessionOnly(account)
                     ? "这个号的 session token 已过期，写进 Cursor 只会显示掉登录。到凭证页粘一份新的，或授权一次拿到 refresh_token。"
                     : "切号要一把活着的会话：粘一份 session token，或授权一次拿到 refresh_token"
-                : switchNeedsWebConversion(account)
-                  ? "切入 Cursor。这个号是网站 web token：首次切号会先自动换成桌面登录（几秒，无需密码 / 验证码），之后就是长期号"
-                  : sessionOnly(account)
-                    ? "切入 Cursor（Cursor 在跑时不重启）。这个号只有 session token：Cursor 会拿它自己续期，到期前都能用"
-                    : "切入 Cursor（Cursor 在跑时不重启）"
+                : (inSwitchPool ? "" : "先把它加进切号池（之后随时可在下方「所在池」移出），再") +
+                  (switchNeedsWebConversion(account)
+                    ? "切入 Cursor。这个号是网站 web token：首次切号会先自动换成桌面登录（几秒，无需密码 / 验证码），之后就是长期号"
+                    : sessionOnly(account)
+                      ? "切入 Cursor（Cursor 在跑时不重启）。这个号只有 session token：Cursor 会拿它自己续期，到期前都能用"
+                      : "切入 Cursor（Cursor 在跑时不重启）")
             }
           >
             {switching ? <Spinner /> : <Icon name="switcher" size={13} />}
-            {switching ? "切换中" : "切号"}
+            {switching ? "切换中" : inSwitchPool || pools.loading ? "切号" : "加入切号池并切号"}
           </button>
         )}
       </div>
@@ -242,7 +252,7 @@ export function AccountDrawer({
           </div>
         ) : null}
 
-        <UsedIn account={account} placement={placement} onChanged={onReload} />
+        <UsedIn account={account} pools={pools} placement={placement} onChanged={onReload} />
 
         <div className="tabs tabs-block">
           {TABS.map(([id, label]) => (
@@ -272,8 +282,18 @@ export function AccountDrawer({
  * 动作已经摆在上面的 `account-context` 里了，这里对应那一行就只报状态、不再放第二个键 ——
  * 同一件事两个入口会让人以为是两件事。
  */
-function UsedIn({ account, placement, onChanged }: { account: Account; placement?: AccountPlacement; onChanged: () => Promise<void> }) {
-  const pools = usePools();
+function UsedIn({
+  account,
+  pools,
+  placement,
+  onChanged,
+}: {
+  account: Account;
+  /** 抽屉那一层拉好的名单：标题区主键和这里共用一份，谁改了另一边立刻跟上。 */
+  pools: Pools;
+  placement?: AccountPlacement;
+  onChanged: () => Promise<void>;
+}) {
   const [busy, setBusy] = useState<"switcher" | "gateway" | null>(null);
   const [error, setError] = useState<unknown>(null);
   const m = pools.membership(account.email);
@@ -300,10 +320,17 @@ function UsedIn({ account, placement, onChanged }: { account: Account; placement
         type="button"
         className="btn btn-sm btn-quiet btn-danger"
         disabled={busy != null}
-        onClick={() => {
-          if (!window.confirm(`把 ${account.email} 移出切号池？会删掉为它保存的登录态快照；账号本身不受影响，随时能再加。`)) return;
-          void act("switcher", () => switcherApi.remove(m.switcher!.id));
-        }}
+        onClick={() =>
+          void (async () => {
+            const ok = await confirm(`会删掉为 ${account.email} 保存的登录态快照；账号本身不受影响，随时能再加。`, {
+              title: "移出切号池",
+              okLabel: "移出",
+              danger: true,
+            });
+            if (!ok) return;
+            await act("switcher", () => switcherApi.remove(m.switcher!.id));
+          })()
+        }
       >
         移出
       </button>
@@ -325,10 +352,19 @@ function UsedIn({ account, placement, onChanged }: { account: Account; placement
         type="button"
         className="btn btn-sm btn-quiet btn-danger"
         disabled={busy != null}
-        onClick={() => {
-          if (m.gateway === "current" && !window.confirm(`${account.email} 正在被网关使用。移出后下一个请求会换号，正在进行的对话会丢上游缓存。继续？`)) return;
-          void act("gateway", () => gatewayApi.unenroll(account.email));
-        }}
+        onClick={() =>
+          void (async () => {
+            if (m.gateway === "current") {
+              const ok = await confirm(`${account.email} 正在被网关使用。移出后下一个请求会换号，正在进行的对话会丢上游缓存。`, {
+                title: "移出网关号池",
+                okLabel: "移出",
+                danger: true,
+              });
+              if (!ok) return;
+            }
+            await act("gateway", () => gatewayApi.unenroll(account.email));
+          })()
+        }
       >
         移出
       </button>
@@ -531,7 +567,7 @@ function KickSessions({ accountId, onDone }: { accountId: string; onDone: () => 
  */
 export function DeleteAccount({
   onConfirm,
-  warning = "会连同 refresh_token 和密码一起从本机清除，不可恢复。",
+  warning = "会连同 refresh_token 和密码一起从本机清除，不可恢复；在切号池里的话也一并移出。",
 }: {
   onConfirm: () => Promise<void>;
   warning?: string;
@@ -951,12 +987,12 @@ function OnDemandEditor({ account, onReload }: { account: Account; onReload: () 
         nextLimit == null
           ? "不设上限，额度用完会继续扣信用卡"
           : `上限 $${(nextLimit / 100).toFixed(0)}，额度用完后按需扣到这个数`;
-      if (!window.confirm(`开启按需计费？${cap}。继续？`)) {
+      if (!(await confirm(`${cap}。`, { title: "开启按需计费？", okLabel: "开启" }))) {
         setOn(enabled);
         return;
       }
     }
-    if (!nextOn && enabled && !window.confirm("关闭按需计费后，包含额度用完即停。继续？")) {
+    if (!nextOn && enabled && !(await confirm("关闭后，包含额度用完即停。", { title: "关闭按需计费？", okLabel: "关闭" }))) {
       setOn(enabled);
       return;
     }

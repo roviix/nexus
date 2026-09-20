@@ -13,6 +13,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SwitcherPage } from "./pages/SwitcherPage";
 import { go, NAV_GROUPS, parseRoute, PLAYGROUND_VIEWS, routeHash, sectionMeta, type Route } from "./shell/nav";
 import { ShellIcon } from "./shell/ShellIcon";
+import { ConfirmHost } from "./ui/confirm";
 import { Wordmark } from "./ui/Mark";
 import { Icon } from "./ui/primitives";
 import { UpdateNotice } from "./UpdateNotice";
@@ -128,6 +129,8 @@ function Shell() {
       {/* 首次启动把会弹系统窗的权限一次问完；只弹一次，跳过也算走完，以后在「设置 → 权限」里再申请。 */}
       <PreflightModal />
       <UpdateNotice />
+      {/* 所有「确认？」都从这里弹。`window.confirm` 在 mac 的 WKWebView 里是哑的，见 ui/confirm.tsx。 */}
+      <ConfirmHost />
     </div>
   );
 }

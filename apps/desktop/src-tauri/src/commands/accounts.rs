@@ -236,12 +236,28 @@ pub fn accounts_patch(
     state.accounts.repo.patch(&AccountId::from_raw(id), patch)
 }
 
+/// 删账号，连带把它从切号池移出。
+///
+/// 「账号 → 切号」会把号顺带带进池（ARCHITECTURE §5.2 的那次显式拷贝）；账号删了还把档留着，
+/// 池里就多一个「已不在账号中」的孤儿，用户得再去切号页删一遍。池里本来没有它是常态，不算错。
+/// 只靠「收录当前登录」进池、从没进过账号库的档不受影响——这条路根本走不到它。
 #[tauri::command(async)]
 pub fn accounts_remove(state: State<'_, AppState>, id: String) -> Result<()> {
     let id = AccountId::from_raw(id);
     let email = state.accounts.repo.get(&id)?.email;
     state.accounts.repo.remove(&id)?;
     activity::info(&state.db, "accounts", Some(&email), "已删除账号");
+    match state.switcher.book.remove_by_email(&email) {
+        Ok(true) => activity::info(
+            &state.db,
+            "switcher",
+            Some(&email),
+            "账号已删除，连带移出切号池",
+        ),
+        Ok(false) => {}
+        // 账号已经删掉了，池里那一档清不掉只是留个孤儿，切号页还能手动移出；不把删账号报成失败。
+        Err(err) => tracing::warn!(%err, email, "账号已删除，但从切号池移出失败"),
+    }
     Ok(())
 }
 
@@ -416,12 +432,7 @@ fn log_provision(state: &State<'_, AppState>, report: &ProvisionReport) {
         true => activity::info,
         false => activity::warn,
     };
-    log(
-        &state.db,
-        "accounts",
-        Some(&report.email),
-        report.summary(),
-    );
+    log(&state.db, "accounts", Some(&report.email), report.summary());
 }
 
 /// 把一个只有**网站 web token** 的号转成长期号：拿它还活着的网站会话走一次官方

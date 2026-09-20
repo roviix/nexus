@@ -16,6 +16,7 @@ import type { Account, AuthBackup, Overview, SwitchProfile, SwitchProgress } fro
 import { onSwitchProgress } from "../ipc/api";
 import { go, type Route } from "../shell/nav";
 import { Banner, Empty, ErrorNote, Icon, Modal, Picker, Spinner, Tag } from "../ui/primitives";
+import { confirm } from "../ui/confirm";
 import { timeAgo } from "../ui/format";
 import { sessionOnly } from "../ui/accounts";
 import {
@@ -223,15 +224,19 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     setConfirming(entry);
   }
 
-  function removeFromPool(entry: SwitchPoolEntry) {
-    if (
-      !entry.account &&
-      !window.confirm(`移出 ${entry.email}？这个账号已不在“账号”中。`)
-    ) {
-      return;
+  async function removeFromPool(entry: SwitchPoolEntry) {
+    // 账号库里还有它的话，登录态随时能再换一份，移出是可逆的，不必问。
+    // 库里没有（只靠「收录当前登录」进来的档）时，这份快照就是它唯一的凭证，问一句。
+    if (!entry.account) {
+      const ok = await confirm(`${entry.email} 已不在「账号」里，这份登录态快照是它在本机唯一的凭证，移出后找不回来。`, {
+        title: "移出切号池",
+        okLabel: "移出",
+        danger: true,
+      });
+      if (!ok) return;
     }
     setOpenKey(null);
-    void run(() => switcher.remove(entry.profile.id));
+    await run(() => switcher.remove(entry.profile.id));
   }
 
   return (
@@ -347,7 +352,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
                 open={entry.key === openKey}
                 onOpen={() => setOpenKey(entry.key)}
                 onSwitch={() => requestSwitch(entry)}
-                onRemove={() => removeFromPool(entry)}
+                onRemove={() => void removeFromPool(entry)}
               />
             ))}
           </div>
@@ -373,7 +378,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
               type="button"
               className="btn btn-sm btn-danger"
               disabled={busy}
-              onClick={() => removeFromPool(openEntry)}
+              onClick={() => void removeFromPool(openEntry)}
             >
               移出切号池
             </button>

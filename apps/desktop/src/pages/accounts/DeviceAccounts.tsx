@@ -24,6 +24,7 @@ import type {
   GatewayStatus,
 } from "../../ipc/types";
 import { go, type Route } from "../../shell/nav";
+import { confirm } from "../../ui/confirm";
 import { timeAgo, timeUntil } from "../../ui/format";
 import { resetInShort } from "../../ui/usage";
 import { Banner, CopyButton, Empty, ErrorNote, Gauge, Icon, Modal, Switch, Tag } from "../../ui/primitives";
@@ -250,7 +251,12 @@ function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onG
   async function remove(a: DeviceAccount) {
     const current = laneByLabel.get(labelOf(a, spec.labelPrefix).toLowerCase())?.state.kind === "current";
     const warn = current ? "它正在被网关使用，进行中的对话会换号并丢上游缓存。" : "";
-    if (!window.confirm(`删除 ${labelOf(a, spec.labelPrefix)}？本机保存的凭证一起删除。${warn}`)) return;
+    const ok = await confirm(`本机保存的凭证一起删除。${warn}`, {
+      title: `删除 ${labelOf(a, spec.labelPrefix)}？`,
+      okLabel: "删除",
+      danger: true,
+    });
+    if (!ok) return;
     await run(() => spec.api.remove(a.id));
   }
 

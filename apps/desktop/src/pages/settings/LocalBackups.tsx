@@ -12,6 +12,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { useCallback, useEffect, useState } from "react";
 import { backup, errorText } from "../../ipc/api";
 import type { LocalBackup } from "../../ipc/types";
+import { confirm } from "../../ui/confirm";
 import { bytes, timeAgo } from "../../ui/format";
 import { Banner, Empty, Icon, Tag } from "../../ui/primitives";
 
@@ -59,10 +60,11 @@ export function LocalBackups() {
     });
   }
 
-  function restore(b: LocalBackup) {
-    const ok = window.confirm(
-      `用 ${when(b)} 的备份覆盖当前的账号、凭证、切号本和设置？\n\n` +
+  async function restore(b: LocalBackup) {
+    const ok = await confirm(
+      `用 ${when(b)} 的备份覆盖当前的账号、凭证、切号本和设置。\n\n` +
         "当前状态会先自动另存一份，还原错了能回来。还原完成后应用会重启。",
+      { title: "还原这份备份？", okLabel: "还原并重启", danger: true },
     );
     if (!ok) return;
     return run(b.fileName, async () => {
@@ -71,8 +73,8 @@ export function LocalBackups() {
     });
   }
 
-  function remove(b: LocalBackup) {
-    if (!window.confirm(`删除 ${when(b)} 的备份？`)) return;
+  async function remove(b: LocalBackup) {
+    if (!(await confirm(`删除 ${when(b)} 的备份？`, { okLabel: "删除", danger: true }))) return;
     return run(b.fileName, async () => {
       await backup.remove(b.fileName);
       await reload();

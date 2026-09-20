@@ -160,6 +160,32 @@ impl SwitchBook {
         Ok(())
     }
 
+    /// 按邮箱删档。没有这一档不算错（返回 `false`）——调用方是「删除账号」这类连带清理，
+    /// 账号本来就不在池里是常态，不该因此让删账号失败。
+    ///
+    /// 「账号 → 切号」会把号顺带带进池；不连带清掉的话，删了账号池里还留一个切不进去的孤儿档。
+    pub fn remove_by_email(&self, email: &str) -> Result<bool> {
+        let id: Option<String> = self.db.with(|c| {
+            c.query_row(
+                "SELECT id FROM switch_profiles WHERE email = ?1 COLLATE NOCASE",
+                [email],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })
+        })?;
+        match id {
+            Some(id) => {
+                self.remove(&ProfileId::from_raw(id))?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     pub(crate) fn mark_switched(&self, id: &ProfileId) -> Result<()> {
         let now = now_iso();
         self.db.with(|c| {
@@ -349,6 +375,23 @@ mod tests {
         book.remove(&p.id).unwrap();
         assert_eq!(secrets.len(), 0, "秘密存储里不该留孤儿");
         assert!(book.list(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_by_email_is_case_insensitive_and_tolerates_absence() {
+        let secrets = Arc::new(MemorySecrets::new());
+        let book = SwitchBook::new(Arc::new(Db::open_in_memory().unwrap()), secrets.clone());
+        book.upsert(&auth_for("a@example.com"), None, None).unwrap();
+        book.upsert(&auth_for("b@example.com"), None, None).unwrap();
+
+        // 邮箱大小写不同也算同一个号：账号库存的是用户敲的，池里存的是 Cursor 回的。
+        assert!(book.remove_by_email("A@Example.COM").unwrap());
+        assert_eq!(book.list(None).unwrap().len(), 1);
+        assert_eq!(secrets.len(), 1, "登录态快照要跟着删");
+
+        // 本来就不在池里：不是错，删账号那条路不该因此失败。
+        assert!(!book.remove_by_email("nobody@example.com").unwrap());
+        assert_eq!(book.list(None).unwrap().len(), 1);
     }
 
     #[test]
