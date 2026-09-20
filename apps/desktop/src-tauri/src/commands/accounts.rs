@@ -4,7 +4,7 @@ use crate::commands::events;
 use crate::state::AppState;
 use nexus_accounts::{
     Account, AccountBilling, AccountPatch, AccountUsage, ActiveSession, KickOutcome,
-    MintedApiKeyInfo, NewAccount, OauthSession, OauthState,
+    MintedApiKeyInfo, NewAccount, OauthSession, OauthState, ProvisionPlan, ProvisionReport,
 };
 use nexus_core::{AccountId, AppError, Clock, ErrorCode, Result};
 use nexus_cursor::AuthBundle;
@@ -104,6 +104,12 @@ pub struct ImportOutcome {
     pub skipped: u32,
     /// 逐条失败原因。整批里坏一条不该让其余的都不进来。
     pub failures: Vec<String>,
+    /// 收下的那些号的 id，**按清单顺序**。
+    ///
+    /// 导入完紧接着要自动配置这一批（`accounts_provision_all`），而「这一批」指的就是刚收下的
+    /// 这几个，不是库里全部——重新导一次同一份清单，不该把上个月那两百个号又跑一遍。
+    /// 同名号是 upsert（更新已有那条），所以 id 里可能有本来就在库里的。
+    pub ids: Vec<String>,
 }
 
 /// 执行导入。同一份文本再解析一次 —— 前端只拿到预览，明文凭证从没出过 Rust。
@@ -118,6 +124,7 @@ pub fn accounts_import_dump(
         imported: 0,
         skipped: report.rejected_count,
         failures: Vec::new(),
+        ids: Vec::new(),
     };
     let tag = tag.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
 
@@ -128,7 +135,10 @@ pub fn accounts_import_dump(
             new_account.tags = vec![t.clone()];
         }
         match state.accounts.repo.upsert(new_account) {
-            Ok(_) => outcome.imported += 1,
+            Ok(account) => {
+                outcome.imported += 1;
+                outcome.ids.push(account.id.to_string());
+            }
             Err(err) => outcome.failures.push(format!("{email}：{}", err.message)),
         }
     }
@@ -334,6 +344,113 @@ pub async fn accounts_refresh_all(
         })
         .await?;
     Ok(results.iter().filter(|(_, r)| r.is_ok()).count() as u32)
+}
+
+// ── 自动配置 ────────────────────────────────────────────────────────────────
+
+/// 给一个号跑一遍自动配置：换桌面 session → 铸 `crsr_` Key → 开按需（不封顶）→ 刷用量。
+/// 哪几步跑、为什么跳过，见 `nexus_accounts::provision`。
+///
+/// 返回的报告里每一步都有结论（做了 / 跳过了为什么 / 失败了什么话），因为这几步的失败多半
+/// 是**正当的**：Apple 内购的号开不了按需、团队成员号只有管理员能改。把它们当整体错误抛出来，
+/// 用户就只能看到一句「配置失败」而不知道哪一步、还剩什么能用。
+#[tauri::command]
+pub async fn accounts_provision(
+    state: State<'_, AppState>,
+    id: String,
+    plan: Option<ProvisionPlan>,
+    day_start_ms: Option<i64>,
+) -> Result<ProvisionReport> {
+    let plan = plan.unwrap_or_default();
+    if plan.is_empty() {
+        return Err(AppError::invalid("没勾任何要配置的项。").with_hint("至少勾一项再开始。"));
+    }
+    let report = state
+        .accounts
+        .provision(&AccountId::from_raw(id), &plan, day_start_ms)
+        .await?;
+    log_provision(&state, &report);
+    Ok(report)
+}
+
+/// 批量自动配置。逐个推 `ACCOUNT_PROVISIONED` 事件：一个号要走四步十来个请求，一批几十个号
+/// 是分钟级的活，只在最后一次性交付结果的话界面得空着转几分钟。
+///
+/// 不带 `ids` 就配所有**没归档、此刻拿得出会话**的号：没有会话的号四步全都会被跳过，
+/// 把它们放进批次只是在报告里堆一片「跳过」。
+#[tauri::command]
+pub async fn accounts_provision_all(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ids: Option<Vec<String>>,
+    plan: Option<ProvisionPlan>,
+    day_start_ms: Option<i64>,
+) -> Result<Vec<ProvisionReport>> {
+    let ids: Vec<AccountId> = match ids {
+        Some(list) => list.into_iter().map(AccountId::from_raw).collect(),
+        None => state
+            .accounts
+            .repo
+            .list()?
+            .into_iter()
+            .filter(Account::has_usable_session)
+            .map(|a| a.id)
+            .collect(),
+    };
+
+    let reports = state
+        .accounts
+        .provision_all(&ids, &plan.unwrap_or_default(), day_start_ms, &|report| {
+            let _ = app.emit(events::ACCOUNT_PROVISIONED, report);
+        })
+        .await?;
+
+    for report in &reports {
+        log_provision(&state, report);
+    }
+    Ok(reports)
+}
+
+fn log_provision(state: &State<'_, AppState>, report: &ProvisionReport) {
+    let log = match report.ok() {
+        true => activity::info,
+        false => activity::warn,
+    };
+    log(
+        &state.db,
+        "accounts",
+        Some(&report.email),
+        report.summary(),
+    );
+}
+
+/// 把一个只有**网站 web token** 的号转成长期号：拿它还活着的网站会话走一次官方
+/// `loginDeepControl`，换出桌面 session + refresh 落库。
+///
+/// 这件事原先只藏在「加入切号本」里顺手做。单独开一个入口是因为它的价值跟切号无关：转完
+/// 这个号就有了 refresh，从此能续期、能切号、能复制出一把别人也能用的 `type=session` token，
+/// 不再是「几小时后就死」的一次性号。凭证页对 web-only 的号直接给这个动作。
+#[tauri::command]
+pub async fn accounts_convert_web_to_session(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Account> {
+    let id = AccountId::from_raw(id);
+    let before = state.accounts.repo.get(&id)?;
+    if before.has_refresh {
+        return Err(AppError::invalid(format!(
+            "{} 已经有 refresh_token，不用转换。",
+            before.email
+        )));
+    }
+    let account = state.accounts.convert_web_to_session(&id).await?;
+    activity::info(
+        &state.db,
+        "accounts",
+        Some(&account.email),
+        "已把 web token 转成桌面 session（loginDeepControl）",
+    );
+    Ok(account)
 }
 
 // ── OAuth ──────────────────────────────────────────────────────────────────

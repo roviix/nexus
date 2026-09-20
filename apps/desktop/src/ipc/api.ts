@@ -45,6 +45,8 @@ import type {
   Overview,
   PermReport,
   ProbeReport,
+  ProvisionPlan,
+  ProvisionReport,
   RemoteHost,
   RemoteOutcome,
   RemoteOverview,
@@ -188,6 +190,23 @@ export const accounts = {
     }),
   refreshAll: (ids?: string[]) =>
     call<number>("accounts_refresh_all", { ids, dayStartMs: startOfLocalDay() }),
+  /**
+   * 给一个号跑一遍自动配置：换桌面 session → 铸 crsr_ Key → 开按需（不封顶）→ 刷用量。
+   *
+   * 不抛「配置失败」：每一步的结论都在报告里。这几步的失败多半是正当的（Apple 内购的号
+   * 开不了按需、团队号只有管理员能改），要能看出是哪一步、还剩什么能用。
+   */
+  provision: (id: string, plan?: ProvisionPlan) =>
+    call<ProvisionReport>("accounts_provision", { id, plan, dayStartMs: startOfLocalDay() }),
+  /** 批量自动配置。逐个推 `accounts://provisioned`，进度靠 `onAccountProvisioned` 收。 */
+  provisionAll: (ids?: string[], plan?: ProvisionPlan) =>
+    call<ProvisionReport[]>("accounts_provision_all", {
+      ids,
+      plan,
+      dayStartMs: startOfLocalDay(),
+    }),
+  /** 把只有网站 web token 的号转成长期号（官方 loginDeepControl）：转完就有 refresh。 */
+  convertWebToSession: (id: string) => call<Account>("accounts_convert_web_to_session", { id }),
   startOauth: (email: string) => call<OauthStarted>("accounts_start_oauth", { email }),
   cancelOauth: (uuid: string) => call<void>("accounts_cancel_oauth", { uuid }),
   listSessions: (id: string) => call<ActiveSession[]>("accounts_list_sessions", { id }),
@@ -481,6 +500,7 @@ export const EVENTS = {
   grokLogin: "grok://login",
   kiroLogin: "kiro://login",
   accountRefreshed: "accounts://refreshed",
+  accountProvisioned: "accounts://provisioned",
   sandProgress: "sand://progress",
   crsrProgress: "crsr://progress",
   sandRemoteProgress: "sand://remote-progress",
@@ -526,4 +546,9 @@ export interface AccountRefreshed {
 
 export function onAccountRefreshed(cb: (r: AccountRefreshed) => void): Promise<UnlistenFn> {
   return listen<AccountRefreshed>(EVENTS.accountRefreshed, (e) => cb(e.payload));
+}
+
+/** 批量自动配置的逐个结果。一批号是分钟级的活，界面靠它一行一行填上去。 */
+export function onAccountProvisioned(cb: (r: ProvisionReport) => void): Promise<UnlistenFn> {
+  return listen<ProvisionReport>(EVENTS.accountProvisioned, (e) => cb(e.payload));
 }

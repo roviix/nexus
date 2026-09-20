@@ -18,6 +18,9 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 const AGGREGATED_URL: &str = "https://cursor.com/api/dashboard/get-aggregated-usage-events";
 const SET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/set-hard-limit";
 const GET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/get-hard-limit";
+/// Fable 5 的「非零数据保留」同意开关（仪表盘 Privacy 那格）。2026-09-19 抓包实测。
+const SET_ZDR_CONSENT_URL: &str =
+    "https://cursor.com/api/dashboard/set-user-no-zdr-model-consent";
 const CREDIT_GRANTS_URL: &str = "https://cursor.com/api/dashboard/get-credit-grants-balance";
 const CREDIT_GRANT_LIST_URL: &str =
     "https://cursor.com/api/dashboard/get-client-visible-credit-grants";
@@ -540,7 +543,7 @@ pub async fn set_on_demand(
         }
     }
     if !wrote {
-        let json = post_required(http, SET_HARD_LIMIT_URL, &cookie, body).await?;
+        let json = post_required(http, SET_HARD_LIMIT_URL, &cookie, body, "改按需计费").await?;
         if unauthenticated(Some(&json)) {
             return Err(AppError::unauthorized("session token 已被上游拒绝。")
                 .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
@@ -564,6 +567,45 @@ pub async fn set_on_demand(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// Fable 5 数据保留策略里那个模型 id 与条款版本（2026-09-19 抓包）。上游会校验版本，
+/// 版本号变了要跟着改；单独拎成常量，接口挪动时改一处。
+pub const FABLE5_MODEL_ID: &str = "claude-fable-5";
+pub const FABLE5_CONSENT_VERSION: &str = "fable-data-retention-v1";
+
+/// 给某个模型打开「非零数据保留」同意——仪表盘 Privacy 页那个开关。
+///
+/// 走 cursor.com 的 cookie 面 `set-user-no-zdr-model-consent`（2026-09-19 抓包实测）：
+/// `enabled:true` 开、`acknowledged:true` 表示看过条款、`consentVersion` 是当前条款版本；
+/// 上游回 `{"consented":true}`。
+///
+/// **幂等，所以不查旧状态直接写。** 重复对同一个 consent POST 上游照样回 `consented:true`，
+/// 没有副作用。查一遍现状要多打一个 `get-no-zdr-model-consent-status`，为省这一个请求，
+/// 代价只是重跑一批号时各多发一次这条 POST——划算。
+pub async fn set_data_retention_consent(
+    http: &reqwest::Client,
+    session_token: &str,
+    model_id: &str,
+    consent_version: &str,
+) -> Result<()> {
+    let cookie = session_cookie(session_token);
+    let body = serde_json::json!({
+        "modelId": model_id,
+        "enabled": true,
+        "acknowledged": true,
+        "consentVersion": consent_version,
+    });
+    let json = post_required(http, SET_ZDR_CONSENT_URL, &cookie, body, "开数据保留策略").await?;
+    if unauthenticated(Some(&json)) {
+        return Err(AppError::unauthorized("session token 已被上游拒绝。")
+            .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
+    }
+    if let Some(msg) = error_message(&json) {
+        return Err(AppError::upstream(msg)
+            .with_hint("条款版本可能变了；抓一条新的 set-user-no-zdr-model-consent 更新常量。"));
     }
     Ok(())
 }
@@ -604,11 +646,16 @@ fn error_message(json: &Value) -> Option<String> {
 }
 
 /// 改配置的那一记：失败必须报出去，不能像刷用量那样把单项静默降级成「没有」。
+/// 往 cursor.com 的 dashboard cookie 面发一个写请求，429 / 5xx 重试三次。
+///
+/// `action` 是给人看的动作名（「改按需计费」「开数据保留策略」），只用来拼错误话——
+/// 一个通用的 POST 助手被两三个写操作共用，报错里得说清是哪一件事没成。
 async fn post_required(
     http: &reqwest::Client,
     url: &str,
     cookie: &str,
     body: Value,
+    action: &str,
 ) -> Result<Value> {
     const ATTEMPTS: u32 = 3;
     let mut last_err: Option<AppError> = None;
@@ -639,17 +686,15 @@ async fn post_required(
                 if status == reqwest::StatusCode::UNAUTHORIZED
                     || status == reqwest::StatusCode::FORBIDDEN
                 {
-                    return Err(AppError::unauthorized("Cursor 拒绝了这次改按需计费。")
-                        .with_hint("会话可能过期了；Apple 内购的号开不了按需。"));
+                    return Err(AppError::unauthorized(format!("Cursor 拒绝了这次{action}。"))
+                        .with_hint("会话可能过期了；到凭证页更新 session token，或授权一次。"));
                 }
                 let text = res.text().await.unwrap_or_default();
                 if text.trim().is_empty() {
                     if status.is_success() {
                         return Ok(Value::Object(serde_json::Map::new()));
                     }
-                    return Err(AppError::upstream(format!(
-                        "改按需计费失败（HTTP {status}）。"
-                    )));
+                    return Err(AppError::upstream(format!("{action}失败（HTTP {status}）。")));
                 }
                 let json: Value =
                     serde_json::from_str(&text).unwrap_or(Value::String(text.clone()));
@@ -658,20 +703,20 @@ async fn post_required(
                 }
                 return Err(AppError::upstream(
                     error_message(&json)
-                        .unwrap_or_else(|| format!("改按需计费失败（HTTP {status}）。")),
+                        .unwrap_or_else(|| format!("{action}失败（HTTP {status}）。")),
                 ));
             }
             Err(err) if !last => {
-                last_err = Some(AppError::network(format!("改按需计费请求失败：{err}")));
+                last_err = Some(AppError::network(format!("{action}请求失败：{err}")));
                 tokio::time::sleep(backoff(attempt, None)).await;
             }
             Err(err) => {
                 return Err(last_err
-                    .unwrap_or_else(|| AppError::network(format!("改按需计费请求失败：{err}"))));
+                    .unwrap_or_else(|| AppError::network(format!("{action}请求失败：{err}"))));
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| AppError::upstream("改按需计费失败。")))
+    Err(last_err.unwrap_or_else(|| AppError::upstream(format!("{action}失败。"))))
 }
 
 pub fn session_cookie(session_token: &str) -> String {

@@ -407,6 +407,46 @@ export interface ImportOutcome {
   imported: number;
   skipped: number;
   failures: string[];
+  /** 收下的号的 id，按清单顺序。勾了「顺手配置」时，后台只配这一批。 */
+  ids: string[];
+}
+
+/* ── 自动配置 ────────────────────────────────────────────────────────────── */
+
+/** 与 Rust `nexus_accounts::ProvisionStep` 对齐。数组顺序就是执行顺序。 */
+export type ProvisionStep =
+  | "mintApiKey"
+  | "convertSession"
+  | "onDemand"
+  | "dataRetention"
+  | "refreshUsage";
+
+/** 与 Rust `nexus_accounts::ProvisionPlan` 对齐。 */
+export interface ProvisionPlan {
+  mintApiKey: boolean;
+  convertSession: boolean;
+  onDemand: boolean;
+  /** 按需的每月上限（美分）。缺席 / null = 不封顶。 */
+  onDemandLimitCents?: number | null;
+  dataRetention: boolean;
+  refreshUsage: boolean;
+}
+
+/** `skipped` 是前置条件不满足（已经配好了），**不是**错误——两者要能分开看。 */
+export type ProvisionStepState = "done" | "skipped" | "failed";
+
+export interface ProvisionStepReport {
+  step: ProvisionStep;
+  state: ProvisionStepState;
+  /** 跳过的原因，或上游的错误。成功时缺席。 */
+  message?: string | null;
+}
+
+/** 与 Rust `nexus_accounts::ProvisionReport` 对齐。 */
+export interface ProvisionReport {
+  id: string;
+  email: string;
+  steps: ProvisionStepReport[];
 }
 
 /** 导出账号清单的结果。只有路径和条数 —— 文件内容（明文凭证）没经过 IPC。 */

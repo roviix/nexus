@@ -11,8 +11,9 @@
  * 只填 crsr_ 的号能查基础用量，不能切号。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { loadAutoProvision, saveAutoProvision } from "../../accounts/provision";
 import { accounts } from "../../ipc/api";
-import type { ImportPreview } from "../../ipc/types";
+import type { ImportOutcome, ImportPreview } from "../../ipc/types";
 import { ErrorNote, Icon, Modal, Spinner } from "../../ui/primitives";
 import { ImportPanel } from "./ImportPanel";
 
@@ -33,8 +34,11 @@ export function AddAccountModal({
   onClose: () => void;
   /** 单个添加成功。 */
   onAdded: () => Promise<void>;
-  /** 批量导入成功，参数是导入的条数。 */
-  onImported: (count: number) => Promise<void>;
+  /**
+   * 批量导入成功。`provision` = 用户勾了「顺手配置」——号先进库，配置在后台接着跑，
+   * 因为那是分钟级的活，不该挡着导入这一步的完成。
+   */
+  onImported: (outcome: ImportOutcome, provision: boolean) => Promise<void>;
 }) {
   const [mode, setMode] = useState<Mode>("single");
   const single = useSinglePane(onAdded, existingTags);
@@ -303,9 +307,14 @@ function SecretInput({ id, value, onChange }: { id: string; value: string; onCha
 
 /* ── 批量 ─────────────────────────────────────────────────────────────────── */
 
-function useBulkPane(onDone: (count: number) => Promise<void>, existingTags: string[] = []): Pane {
+function useBulkPane(
+  onDone: (outcome: ImportOutcome, provision: boolean) => Promise<void>,
+  existingTags: string[] = [],
+): Pane {
   const [text, setText] = useState("");
   const [bulkTag, setBulkTag] = useState("");
+  // 「顺手配置」记在本地：日常批量入库次次都要，不该次次去勾。
+  const [provision, setProvision] = useState(loadAutoProvision);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -345,7 +354,8 @@ function useBulkPane(onDone: (count: number) => Promise<void>, existingTags: str
         setImporting(false);
         return;
       }
-      await onDone(outcome.imported);
+      saveAutoProvision(provision);
+      await onDone(outcome, provision);
     } catch (err) {
       setError(err);
       setImporting(false);
@@ -400,6 +410,23 @@ function useBulkPane(onDone: (count: number) => Promise<void>, existingTags: str
           </div>
         ) : null}
       </div>
+
+      {/* 邮箱 + 一把 access token 的号进来时还不能用：token 是网站 web 型（切号会掉登录）、
+          没有保命的 key、按需没开、用量是空的。这四件事每次都要做，所以摆在导入这一步。 */}
+      <label className="row items-center" style={{ gap: 8, cursor: "pointer" }}>
+        <input
+          type="checkbox"
+          className="tick"
+          checked={provision}
+          onChange={(e) => setProvision(e.target.checked)}
+        />
+        <span className="stack" style={{ gap: 2 }}>
+          <span>导入后顺手配置这一批</span>
+          <span className="faint tiny">
+            换桌面 session → 铸 crsr_ Key → 按需开到不封顶 → 刷用量。先入库，配置在后台挨着跑，跑的时候看得到进度。
+          </span>
+        </span>
+      </label>
     </div>
   );
 

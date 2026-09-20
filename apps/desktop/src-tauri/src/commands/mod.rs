@@ -36,6 +36,8 @@ pub mod events {
     pub const KIRO_LOGIN: &str = "kiro://login";
     /// 批量刷用量的逐个结果。
     pub const ACCOUNT_REFRESHED: &str = "accounts://refreshed";
+    /// 批量自动配置的逐个结果。载荷是 `nexus_accounts::ProvisionReport`。
+    pub const ACCOUNT_PROVISIONED: &str = "accounts://provisioned";
     /// Sand 补丁安装 / 卸载 / 还原进度。载荷是 `nexus_sand::SandProgress`。
     pub const SAND_PROGRESS: &str = "sand://progress";
     /// CRSR 补丁安装 / 卸载 / 还原进度。载荷同上（`SandProgress` 的步骤枚举）。

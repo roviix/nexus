@@ -6,6 +6,7 @@
 use crate::billing::{self, AccountBilling};
 use crate::model::{Account, NewAccount, Source};
 use crate::oauth::OauthTokens;
+use crate::provision::{self, ProvisionPlan, ProvisionReport, ProvisionStep, StepReport, StepState};
 use crate::repo::Accounts;
 use crate::token::{self, RefreshedSession};
 use crate::usage::{self, AccountUsage};
@@ -100,6 +101,41 @@ impl AccountsService {
         self.repo
             .put_secret(id, AccountSecret::ApiKey, Some(minted.api_key.expose()))?;
         Ok(minted.info())
+    }
+
+    /// 拿一把会话去打上游；复用的那把被拒了就换一把新的重试一次。
+    ///
+    /// 复用手上那把 access 省下一半请求（见 [`Self::session`]），代价是它可能已经提前失效。
+    /// 上游回 401 时不能直接下结论「这号废了」——那多半只说明这把复用的会话没了，refresh
+    /// 还好着。换一把再打一次，还是 401 才算真的。少了这一步，省请求这件事就会以「偶尔
+    /// 误判一个号已失效」为代价，那比多发一个请求糟得多。
+    ///
+    /// 只有**没有 refresh** 的号（仅会话）没有第二次机会：此刻就该退回待登录让人重新粘。
+    ///
+    /// 闭包收的是 `String` 而不是 `&str`：两次调用分别拿复用的和新换的那把，各自 move
+    /// 进自己的 future 最省事。
+    async fn with_session<T, F, Fut>(&self, id: &AccountId, call: F) -> Result<T>
+    where
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let session = self.session(id).await?;
+        let outcome = call(session.session_token.expose().to_string()).await;
+
+        let rejected = matches!(&outcome, Err(e) if e.code == ErrorCode::Unauthorized);
+        if !(session.reused && rejected) {
+            return outcome;
+        }
+        if session.refresh_token.is_none() {
+            let err = AppError::unauthorized("session token 已被上游拒绝，需要重新粘一份。")
+                .with_hint(
+                    "这个号没有 refresh_token；到凭证页更新 session token，或用密码授权一次。",
+                );
+            self.repo.record_failure(id, &err.message, true)?;
+            return Err(err);
+        }
+        let fresh = self.exchange(id).await?;
+        call(fresh.session_token.expose().to_string()).await
     }
 
     /// 强制换一把新的，不复用。
@@ -276,22 +312,12 @@ impl AccountsService {
         id: &AccountId,
         day_start_ms: Option<i64>,
     ) -> Result<AccountUsage> {
-        let session = self.session(id).await?;
-        let mut outcome =
-            usage::fetch(&self.http, session.session_token.expose(), day_start_ms).await;
-
-        if session.reused && matches!(&outcome, Err(e) if e.code == ErrorCode::Unauthorized) {
-            if session.refresh_token.is_none() {
-                let err = AppError::unauthorized("session token 已被上游拒绝，需要重新粘一份。")
-                    .with_hint(
-                        "这个号没有 refresh_token；到凭证页更新 session token，或用密码授权一次。",
-                    );
-                self.repo.record_failure(id, &err.message, true)?;
-                return Err(err);
-            }
-            let fresh = self.exchange(id).await?;
-            outcome = usage::fetch(&self.http, fresh.session_token.expose(), day_start_ms).await;
-        }
+        let outcome = self
+            .with_session(id, |token| {
+                let http = self.http.clone();
+                async move { usage::fetch(&http, &token, day_start_ms).await }
+            })
+            .await;
 
         match outcome {
             Ok(u) => Ok(u),
@@ -328,21 +354,12 @@ impl AccountsService {
     /// 免得一把提前失效的 access 把号误判成已失效。门户读失败（没有个人账单、
     /// 页面改了）不是凭证废了，不记 fatal。
     pub async fn refresh_billing(&self, id: &AccountId) -> Result<AccountBilling> {
-        let session = self.session(id).await?;
-        let mut outcome = billing::fetch(&self.http, session.session_token.expose()).await;
-
-        if session.reused && matches!(&outcome, Err(e) if e.code == ErrorCode::Unauthorized) {
-            if session.refresh_token.is_none() {
-                let err = AppError::unauthorized("session token 已被上游拒绝，需要重新粘一份。")
-                    .with_hint(
-                        "这个号没有 refresh_token；到凭证页更新 session token，或用密码授权一次。",
-                    );
-                self.repo.record_failure(id, &err.message, true)?;
-                return Err(err);
-            }
-            let fresh = self.exchange(id).await?;
-            outcome = billing::fetch(&self.http, fresh.session_token.expose()).await;
-        }
+        let outcome = self
+            .with_session(id, |token| {
+                let http = self.http.clone();
+                async move { billing::fetch(&http, &token).await }
+            })
+            .await;
 
         match outcome {
             Ok(b) => {
@@ -366,36 +383,42 @@ impl AccountsService {
         limit_cents: Option<f64>,
         day_start_ms: Option<i64>,
     ) -> Result<AccountUsage> {
-        let session = self.session(id).await?;
-        let mut outcome = usage::set_on_demand(
-            &self.http,
-            session.session_token.expose(),
-            enabled,
-            limit_cents,
-        )
-        .await;
-
-        if session.reused && matches!(&outcome, Err(e) if e.code == ErrorCode::Unauthorized) {
-            if session.refresh_token.is_none() {
-                let err = AppError::unauthorized("session token 已被上游拒绝，需要重新粘一份。")
-                    .with_hint(
-                        "这个号没有 refresh_token；到凭证页更新 session token，或用密码授权一次。",
-                    );
-                self.repo.record_failure(id, &err.message, true)?;
-                return Err(err);
-            }
-            let fresh = self.exchange(id).await?;
-            outcome = usage::set_on_demand(
-                &self.http,
-                fresh.session_token.expose(),
-                enabled,
-                limit_cents,
-            )
-            .await;
-        }
-
-        outcome?;
+        self.apply_on_demand(id, enabled, limit_cents).await?;
         self.refresh_usage(id, day_start_ms).await
+    }
+
+    /// 只写按需计费，不刷用量。
+    ///
+    /// 自动配置流水线用它：刷用量是流水线的最后一步，中间每步各刷一次等于把最贵的那个
+    /// 动作做四遍。
+    pub async fn apply_on_demand(
+        &self,
+        id: &AccountId,
+        enabled: bool,
+        limit_cents: Option<f64>,
+    ) -> Result<()> {
+        self.with_session(id, |token| {
+            let http = self.http.clone();
+            async move { usage::set_on_demand(&http, &token, enabled, limit_cents).await }
+        })
+        .await
+    }
+
+    /// 打开 Fable 5 的数据保留策略同意。幂等，见 [`usage::set_data_retention_consent`]。
+    pub async fn apply_data_retention(&self, id: &AccountId) -> Result<()> {
+        self.with_session(id, |token| {
+            let http = self.http.clone();
+            async move {
+                usage::set_data_retention_consent(
+                    &http,
+                    &token,
+                    usage::FABLE5_MODEL_ID,
+                    usage::FABLE5_CONSENT_VERSION,
+                )
+                .await
+            }
+        })
+        .await
     }
 
     /// 批量刷。**一个失败不影响其余**——刷一批号时中途报错整批停掉是最没用的行为。
@@ -408,7 +431,7 @@ impl AccountsService {
         day_start_ms: Option<i64>,
         on_each: &(dyn Fn(&AccountId, std::result::Result<(), &AppError>) + Sync),
     ) -> Result<Vec<(AccountId, Result<AccountUsage>)>> {
-        let _guard = self.begin_refresh()?;
+        let _guard = self.begin_batch()?;
         let mut out = Vec::with_capacity(ids.len());
         for (i, id) in ids.iter().enumerate() {
             if i > 0 {
@@ -424,12 +447,109 @@ impl AccountsService {
         Ok(out)
     }
 
-    fn begin_refresh(&self) -> Result<RunGuard<'_>> {
+    fn begin_batch(&self) -> Result<RunGuard<'_>> {
         if self.refreshing.swap(true, Ordering::SeqCst) {
-            return Err(AppError::new(ErrorCode::Busy, "已经有一批用量在刷了。")
-                .with_hint("等这一批跑完再点；同时刷两批只会更慢，还容易被上游限流。"));
+            return Err(AppError::new(ErrorCode::Busy, "已经有一批号在跑了。")
+                .with_hint("等这一批跑完再点；两批同时跑只会更慢，还容易被上游限流。"));
         }
         Ok(RunGuard(&self.refreshing))
+    }
+
+    /* ── 自动配置 ──────────────────────────────────────────────────────────── */
+
+    /// 给一个号跑一条自动配置流水线：换 session → 铸 key → 开按需 → 刷用量。
+    /// 哪几步跑、为什么跳过，见 [`crate::provision`]。
+    ///
+    /// 一步失败只记在报告里，不中断后面的步骤；返回 `Err` 只有一种情况——号本身读不出来
+    /// （跑到一半被删了）。
+    pub async fn provision(
+        &self,
+        id: &AccountId,
+        plan: &ProvisionPlan,
+        day_start_ms: Option<i64>,
+    ) -> Result<ProvisionReport> {
+        let mut account = self.repo.get(id)?;
+        let mut steps = Vec::new();
+
+        for step in plan.steps() {
+            let report = match provision::decide(step, &account) {
+                Err(reason) => StepReport::skipped(step, reason),
+                Ok(()) => match self.run_provision_step(step, id, plan, day_start_ms).await {
+                    Ok(()) => StepReport::done(step),
+                    Err(err) => StepReport::failed(step, err.message.clone()),
+                },
+            };
+            // 做成了就重读一遍：转换给号添了 refresh、铸 key 翻了 has_api_key、刷用量换了
+            // 那份快照，后面几步的前置条件跟着一起变（见 `provision::decide` 的注释）。
+            if report.state == StepState::Done {
+                account = self.repo.get(id)?;
+            }
+            steps.push(report);
+        }
+
+        Ok(ProvisionReport {
+            id: id.as_str().to_string(),
+            email: account.email.clone(),
+            steps,
+        })
+    }
+
+    async fn run_provision_step(
+        &self,
+        step: ProvisionStep,
+        id: &AccountId,
+        plan: &ProvisionPlan,
+        day_start_ms: Option<i64>,
+    ) -> Result<()> {
+        match step {
+            ProvisionStep::MintApiKey => self.mint_api_key(id).await.map(|_| ()),
+            ProvisionStep::ConvertSession => self.convert_web_to_session(id).await.map(|_| ()),
+            ProvisionStep::OnDemand => {
+                self.apply_on_demand(id, true, plan.on_demand_limit_cents)
+                    .await
+            }
+            ProvisionStep::DataRetention => self.apply_data_retention(id).await,
+            ProvisionStep::RefreshUsage => self.refresh_usage(id, day_start_ms).await.map(|_| ()),
+        }
+    }
+
+    /// 批量配置。纪律跟 [`Self::refresh_all`] 一样：串行、号与号之间歇 `ACCOUNT_GAP`、
+    /// 共用同一把单飞闸（两者花的是同一份上游请求预算），一个号出事不影响其余。
+    ///
+    /// `on_each` 在每个号跑完时回调一次，用来把进度发给前端——一个号要走四步、十来个请求，
+    /// 一批几十个号是分钟级的活，只在最后一次性交付结果的话界面得空着转几分钟。
+    pub async fn provision_all(
+        &self,
+        ids: &[AccountId],
+        plan: &ProvisionPlan,
+        day_start_ms: Option<i64>,
+        on_each: &(dyn Fn(&ProvisionReport) + Sync),
+    ) -> Result<Vec<ProvisionReport>> {
+        if plan.is_empty() {
+            return Err(AppError::invalid("没勾任何要配置的项。").with_hint("至少勾一项再开始。"));
+        }
+        let _guard = self.begin_batch()?;
+        let mut out = Vec::with_capacity(ids.len());
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                tokio::time::sleep(ACCOUNT_GAP).await;
+            }
+            match self.provision(id, plan, day_start_ms).await {
+                Ok(report) => {
+                    on_each(&report);
+                    out.push(report);
+                }
+                Err(err) => {
+                    // 号读不出来（配置途中被删、被换 id）：这一个略过，不拖累整批。
+                    tracing::warn!(
+                        account = %id.as_str(),
+                        error = %err.message,
+                        "自动配置略过一个号"
+                    );
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// OAuth 拿到 token 之后的落点：存 refresh，账号转「可用」。
@@ -655,15 +775,108 @@ mod tests {
         // 前端的 busy 标记是组件局部的（切个 tab 再回来就重置了），拦不住第二次点击；
         // 两批同时跑等于把请求量翻倍，正是最该避免的那种突发。
         let svc = service();
-        let guard = svc.begin_refresh().expect("第一批该拿到闸");
+        let guard = svc.begin_batch().expect("第一批该拿到闸");
 
-        let err = svc.begin_refresh().unwrap_err();
+        let err = svc.begin_batch().unwrap_err();
         assert_eq!(err.code, ErrorCode::Busy);
         assert!(err.hint.is_some(), "被拒了要说下一步怎么办");
 
         // 守卫析构即放闸，中途出错提前返回也不会把闸卡死。
         drop(guard);
-        assert!(svc.begin_refresh().is_ok(), "闸没放开");
+        assert!(svc.begin_batch().is_ok(), "闸没放开");
+    }
+
+    /// 批量刷和批量配置花的是同一份上游预算，闸也该是同一把——否则「一边刷一边配」
+    /// 正好绕过限流保护。
+    #[tokio::test]
+    async fn provisioning_and_refreshing_share_one_gate() {
+        let svc = service();
+        let guard = svc.begin_batch().unwrap();
+        let err = svc
+            .provision_all(&[], &ProvisionPlan::default(), None, &|_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Busy);
+        drop(guard);
+        assert!(svc
+            .provision_all(&[], &ProvisionPlan::default(), None, &|_| {})
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_empty_plan_is_refused_before_the_gate_is_taken() {
+        let svc = service();
+        let plan = ProvisionPlan {
+            convert_session: false,
+            mint_api_key: false,
+            on_demand: false,
+            on_demand_limit_cents: None,
+            data_retention: false,
+            refresh_usage: false,
+        };
+        let err = svc
+            .provision_all(&[], &plan, None, &|_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidInput);
+        assert!(svc.begin_batch().is_ok(), "空计划不该占着闸");
+    }
+
+    /// 只有密码的号：五步全都因为前置条件不满足而跳过，一个上游请求都不发，
+    /// 报告仍然是「成功」——「本来就没什么可做」和「做失败了」不是一回事。
+    #[tokio::test]
+    async fn an_account_with_nothing_to_do_reports_all_skips_and_no_failures() {
+        let svc = service();
+        let a = svc
+            .repo
+            .upsert(NewAccount {
+                email: "a@example.com".into(),
+                cursor_password: Some("pw".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let report = svc
+            .provision(&a.id, &ProvisionPlan::default(), None)
+            .await
+            .unwrap();
+
+        assert_eq!(report.email, "a@example.com");
+        assert_eq!(report.steps.len(), 5);
+        assert!(report
+            .steps
+            .iter()
+            .all(|s| s.state == crate::provision::StepState::Skipped));
+        assert!(report.ok());
+    }
+
+    /// 批量配置里一个号出事不该让后面的号被跳过——这跟 `refresh_all` 是同一条纪律。
+    #[tokio::test]
+    async fn provision_all_keeps_going_past_a_deleted_account() {
+        let svc = service();
+        let a = svc
+            .repo
+            .upsert(NewAccount {
+                email: "a@example.com".into(),
+                cursor_password: Some("pw".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let seen = std::sync::Mutex::new(Vec::new());
+        let out = svc
+            .provision_all(
+                &[AccountId::from_raw("gone"), a.id.clone()],
+                &ProvisionPlan::default(),
+                None,
+                &|r| seen.lock().unwrap().push(r.email.clone()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(out.len(), 1, "读不出来的那个略过，不进结果");
+        assert_eq!(*seen.lock().unwrap(), vec!["a@example.com".to_string()]);
     }
 
     #[tokio::test]
@@ -674,6 +887,6 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
-        assert!(svc.begin_refresh().is_ok());
+        assert!(svc.begin_batch().is_ok());
     }
 }

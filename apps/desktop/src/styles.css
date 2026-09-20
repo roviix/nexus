@@ -3034,6 +3034,71 @@ h2 {
   overflow: auto;
 }
 
+/* 自动配置的进度：一行一个号，右边四枚小胶囊说明每一步的去向。
+   一批号是分钟级的活，这一列会从上往下长出来，所以行高固定、不随内容跳。 */
+.prov-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 3px 2px;
+}
+
+.prov-row + .prov-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.prov-email {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--color-ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prov-steps {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+/* 三态：做成了（实心）、跳过了（淡，不是错）、失败了（红）。原因在 title 里。 */
+.prov-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.prov-pill.is-done {
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  color: var(--ok);
+}
+
+.prov-pill.is-skipped {
+  color: var(--color-faint);
+}
+
+.prov-pill.is-failed {
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+  color: var(--bad);
+}
+
+.prov-row.is-waiting {
+  gap: 8px;
+  color: var(--color-muted);
+}
+
 /* 可开关的小胶囊：多选里的附带说明、导入时的分组、接入页的语言。
    开着的用主色描边填底，关着的只有一圈细线 —— 一排扫过去，亮的就是选了的。 */
 .chips {

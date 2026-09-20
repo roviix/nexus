@@ -1188,6 +1188,10 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
               <div className="kv-row" key={kind}>
                 <span className="kv-k">{SECRET_LABEL[kind]}</span>
                 <span className="kv-v">
+                  {/* 这把 access 是哪一型，决定了它能干什么：桌面 session 能直接切号，
+                      网站 web 只能查用量和进网关（写进 Cursor 会掉登录）。差别不写出来，
+                      两个号在这一页上看着一模一样。 */}
+                  {kind === "access" && has ? <AccessTypeTag type={account.accessTokenType} /> : null}
                   {/* access 是有期限的，期限就摆在值旁边：过期了要换的就是这一行。 */}
                   {kind === "access" && has && accessExpiry != null ? (
                     <span className={accessExpiry > Date.now() + 60_000 ? "faint tiny" : "tiny"} style={accessExpiry > Date.now() + 60_000 ? undefined : { color: "var(--bad)" }}>
@@ -1261,6 +1265,8 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
         </div>
       </section>
 
+      {switchNeedsWebConversion(account) ? <ConvertSessionRow account={account} onChanged={onChanged} /> : null}
+
       {account.hasApiKey ? (
         <CrsrCredRow account={account} />
       ) : canMintApiKey(account) ? (
@@ -1280,6 +1286,83 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
         </section>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * 那把 access 是桌面 session 还是网站 web token。
+ *
+ * 这不是内部细节：批量导入进来的号拿的是网站 token，它查用量、进网关都行，但**不能**写进
+ * Cursor 的登录态（Cursor 会拿它续期、服务端回 shouldLogout 把号踢掉）。同一行凭证、两种
+ * 命运，界面上得能一眼分开。`null` 是老行还没解析出来，不猜。
+ */
+function AccessTypeTag({ type }: { type?: string | null }) {
+  if (type === "session") {
+    return (
+      <span className="faint tiny" title="桌面会话 token：能直接切进 Cursor，也能给别人用">
+        桌面 session
+      </span>
+    );
+  }
+  if (type === "web") {
+    return (
+      <span
+        className="tiny"
+        style={{ color: "var(--warn)" }}
+        title="网站会话 token：能查用量、能进网关，但不能直接写进 Cursor（会掉登录）。下面可以换成桌面 session。"
+      >
+        网站 web
+      </span>
+    );
+  }
+  return null;
+}
+
+/**
+ * 「换成桌面 session」。
+ *
+ * 拿这个号还活着的网站会话走一次官方 `loginDeepControl` 深链，换出桌面 session + refresh。
+ * 无密码、无验证码、不掉原来那个会话。
+ *
+ * 只对**活着的 web-only 号**出现（`switchNeedsWebConversion`）。切号时本来就会自动做这件事，
+ * 单独给一个按钮是因为它的价值跟切号无关：换完这个号就有了 refresh，从「几小时后就死」变成
+ * 能一直续期的长期号，也才能复制出一把别人也能用的 session token。
+ */
+function ConvertSessionRow({ account, onChanged }: { account: Account; onChanged: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+
+  async function convert() {
+    setBusy(true);
+    setError(null);
+    try {
+      await accounts.convertWebToSession(account.id);
+      await onChanged();
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="sect">
+      <div className="sect-cap">
+        <span>换成桌面 session</span>
+        <span className="sect-aside">不需要密码或验证码</span>
+      </div>
+      <ErrorNote error={error} />
+      <p className="sect-none">
+        这个号手上是一把网站 web token：能查用量、能进网关，但写进 Cursor 会掉登录，而且过期后没法续。
+        换一次就有了 refresh_token——从此能切号、能续期、复制出去的 session token 别人也能用。切号时会自动做这件事，在这里可以先做掉。
+      </p>
+      <div className="row" style={{ marginTop: 10 }}>
+        <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => void convert()}>
+          {busy ? <Spinner /> : null}
+          换一把桌面 session
+        </button>
+      </div>
+    </section>
   );
 }
 

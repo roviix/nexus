@@ -25,8 +25,22 @@ import {
   usePools,
   type PoolFilter,
 } from "../accounts/pools";
-import { accounts, backup, grokbot, onAccountRefreshed, onOauthState, switcher } from "../ipc/api";
-import type { Account, ExportOutcome, GrokBotStatus } from "../ipc/types";
+import {
+  accounts,
+  backup,
+  grokbot,
+  onAccountProvisioned,
+  onAccountRefreshed,
+  onOauthState,
+  switcher,
+} from "../ipc/api";
+import type {
+  Account,
+  ExportOutcome,
+  GrokBotStatus,
+  ProvisionPlan,
+  ProvisionReport,
+} from "../ipc/types";
 import { ACCOUNT_PLATFORMS, go, type AccountPlatform, type Route } from "../shell/nav";
 import { maskEmail } from "../ui/format";
 import {
@@ -43,6 +57,7 @@ import {
 } from "../accounts/views";
 
 import { COPY_FORMATS, copyInfoMap, loadCopyChoice, saveCopyChoice, type CopyChoice } from "../accounts/copy";
+import { loadProvisionPlan, saveProvisionPlan } from "../accounts/provision";
 import { looksLikeLookupPaste, matchLookup } from "../accounts/lookup";
 import {
   accountPlanGroup,
@@ -69,6 +84,7 @@ import { AddAccountModal } from "./accounts/AddAccountModal";
 import { AuthorizeModal } from "./accounts/AuthorizeModal";
 import { CopySelectedModal } from "./accounts/CopySelectedModal";
 import { LookupModal } from "./accounts/LookupModal";
+import { ProvisionModal } from "./accounts/ProvisionModal";
 import { ChatGptAccounts } from "./accounts/ChatGptAccounts";
 import { GrokAccounts, KiroAccounts, ZcodeAccounts } from "./accounts/DeviceAccounts";
 
@@ -146,6 +162,14 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   const [copying, setCopying] = useState(false);
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyChoice, setCopyChoice] = useState<CopyChoice>(loadCopyChoice);
+  /**
+   * 自动配置弹窗。`provisionIds` 是这一轮要配的号（多选那批，或刚导入那批），`provisionReports`
+   * 是后端逐个推回来的结果。跑起来后弹窗不换界面，原地长出进度。
+   */
+  const [provisionIds, setProvisionIds] = useState<string[] | null>(null);
+  const [provisionBusy, setProvisionBusy] = useState(false);
+  const [provisionReports, setProvisionReports] = useState<ProvisionReport[]>([]);
+  const [provisionPlan, setProvisionPlan] = useState<ProvisionPlan>(loadProvisionPlan);
 
   /** 账号打码开关：点击小眼睛切换明文 / 打码展示。 */
   const [masked, setMasked] = useState(() => {
@@ -249,6 +273,15 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // 批量自动配置：逐个把结果填进弹窗。列表统一在整批跑完后刷一次——每个号都 reload 一遍，
+  // 几十个号就是几十次全量查库，弹窗那边已经在实时显示了。
+  useEffect(() => {
+    const off = onAccountProvisioned((r) => {
+      setProvisionReports((prev) => [...prev, r]);
+    });
+    return () => void off.then((fn) => fn());
+  }, []);
 
   // 批量刷用量时逐个亮起来，而不是整片转圈。
   useEffect(() => {
@@ -410,6 +443,16 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   // 选中的号按列表顺序排：复制出来的顺序就是眼前看到的顺序。
   const selectedAccounts = useMemo(() => shown.filter((a) => selected.has(a.id)), [shown, selected]);
 
+  /**
+   * 弹窗里要配的那几个号。从**全量列表**里找而不是 `shown`：刚导入的那批很可能被当前筛子
+   * 挡着（正看着「已归档」、或搜索框里还有字），但它们确实是要配的那几个。
+   */
+  const provisionAccounts = useMemo(() => {
+    if (!provisionIds) return null;
+    const want = new Set(provisionIds);
+    return list.filter((a) => want.has(a.id));
+  }, [provisionIds, list]);
+
   /** 按清单找号。找到的替代关键字搜索；要刷新就把库里有的、能查的那几个一起刷。 */
   function runLookup(emails: string[], refresh: boolean) {
     setLookingUp(null);
@@ -493,6 +536,31 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
       setArchiving(false);
     }
   }
+  /**
+   * 给一批号跑自动配置。
+   *
+   * 逐个结果走 `accounts://provisioned` 事件填进弹窗（见上面那个 effect），所以这里只管起头、
+   * 收尾、和整批级别的错误（闸被占着、计划全空）。跑完统一 `reload()`：这四步改的是 has_refresh /
+   * has_api_key / 用量，全都是卡片上显示的东西。
+   */
+  async function provisionIdsNow(ids: string[], plan: ProvisionPlan) {
+    if (!ids.length) return;
+    saveProvisionPlan(plan);
+    setProvisionPlan(plan);
+    setProvisionBusy(true);
+    setProvisionReports([]);
+    try {
+      await accounts.provisionAll(ids, plan);
+      setError(null);
+    } catch (err) {
+      setError(err);
+      setProvisionIds(null);
+    } finally {
+      setProvisionBusy(false);
+      await reload();
+    }
+  }
+
   async function refreshSelected() {
     const ids = [...selected].filter((id) => shown.some((a) => a.id === id && canQueryUsage(a)));
     if (!ids.length) return;
@@ -900,6 +968,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
               onArchive={() => void archiveSelected(!archived)}
               onRefresh={() => void refreshSelected()}
               onCopy={() => setCopying(true)}
+              onProvision={() => setProvisionIds([...selected])}
               onExit={exitSelecting}
             />
           ) : null}
@@ -1015,10 +1084,15 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
             setAdding(false);
             await reload();
           }}
-          onImported={async (n) => {
+          onImported={async (outcome, provision) => {
             setAdding(false);
-            setNotice(`已导入 ${n} 个账号。`);
+            setNotice(`已导入 ${outcome.imported} 个账号。`);
             await reload();
+            // 勾了「顺手配置」就直接开跑，不再让人确认一遍：勾的时候已经是确认了。
+            if (provision && outcome.ids.length) {
+              setProvisionIds(outcome.ids);
+              void provisionIdsNow(outcome.ids, provisionPlan);
+            }
           }}
         />
       ) : null}
@@ -1035,6 +1109,23 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
 
       {lookingUp ? (
         <LookupModal initialText={lookingUp.text} onClose={() => setLookingUp(null)} onLookup={runLookup} />
+      ) : null}
+
+      {provisionAccounts ? (
+        <ProvisionModal
+          accounts={provisionAccounts}
+          initial={provisionPlan}
+          running={provisionBusy}
+          reports={provisionReports}
+          masked={masked}
+          onClose={() => {
+            // 跑完了才允许关（弹窗自己 disable 了取消键），这里顺手把上一轮的结果清掉。
+            setProvisionIds(null);
+            setProvisionReports([]);
+            if (selecting) exitSelecting();
+          }}
+          onStart={(plan) => void provisionIdsNow(provisionAccounts.map((a) => a.id), plan)}
+        />
       ) : null}
 
       {copying ? (
@@ -1170,6 +1261,7 @@ function SelectBar({
   onArchive,
   onRefresh,
   onCopy,
+  onProvision,
   onExit,
 }: {
   count: number;
@@ -1181,6 +1273,7 @@ function SelectBar({
   onArchive: () => void;
   onRefresh: () => void;
   onCopy: () => void;
+  onProvision: () => void;
   onExit: () => void;
 }) {
   return (
@@ -1204,6 +1297,19 @@ function SelectBar({
       >
         <Icon name="copy" size={13} />
         复制…
+      </button>
+
+      {/* 换 session / 铸 key / 开按需 / 刷用量四件事。哪几件在弹窗里勾：
+          这批号新旧不一，需要的步骤本来就不一样，操作条上放不下也讲不清。 */}
+      <button
+        type="button"
+        className="btn btn-sm"
+        disabled={count === 0 || busy}
+        onClick={onProvision}
+        title="换桌面 session、铸 crsr_ Key、按需开到不封顶、刷用量"
+      >
+        <Icon name="settings" size={13} />
+        配置…
       </button>
 
       <button type="button" className="btn btn-sm" disabled={count === 0 || busy} onClick={onRefresh}>
