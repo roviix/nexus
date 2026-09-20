@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// 本工具适配的 Cursor 版本。锚点是压缩后的精确字符串，**版本不等就拒装**，不做模糊匹配
 /// —— 锚点错配写坏 bundle 比不装糟糕得多（docs/SAND.md §5）。
-pub const SUPPORTED_CURSOR_VERSION: &str = "3.19.13";
+pub const SUPPORTED_CURSOR_VERSION: &str = "3.21.13";
 
 /// `downloads.cursor.com/production/<id>/...` 里的不可变发行 ID。
 ///
@@ -13,9 +13,11 @@ pub const SUPPORTED_CURSOR_VERSION: &str = "3.19.13";
 /// 而 Sand 仍只认 [`SUPPORTED_CURSOR_VERSION`]。升级补丁版本时必须从 Cursor 官方下载 API 重新取
 /// 这一项，并对下面生成的每个链接做一次 HEAD 校验。
 /// 官方下载直链用的 release id。**注意它不等于 `product.json` 的 `commit`**：两者只差最后一位
-/// （3.19.13 下载 `…648d5` / commit `…648d0`；3.19.7 下载 `…228e6437` / commit `…228e6430`）。
+/// （3.21.13 下载 `…f014a2` / commit `…f014a0`；3.19.13 下载 `…648d5` / commit `…648d0`；
+/// 3.19.7 下载 `…228e6437` / commit `…228e6430`）。差的那位没有规律，升级时把 commit 的末位
+/// 换成 16 个十六进制字符逐个 HEAD 探一遍即可，命中的那个返回 200、其余 403。
 /// 拿 commit 拼下载链会 403，别用 bundle 里的 sourcemap 路径来"订正"这个常量。
-const SUPPORTED_CURSOR_RELEASE_ID: &str = "dd066f332fcea7382764400fde902f61920648d5";
+const SUPPORTED_CURSOR_RELEASE_ID: &str = "e44a49c17e334d442e58bbde931d791200f014a2";
 const CURSOR_DOWNLOAD_BASE_URL: &str = "https://downloads.cursor.com/production";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

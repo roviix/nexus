@@ -24,6 +24,9 @@ use crate::model::{GrokBotAuthMode, InstallOptions, MarkerCounts, ModeGate};
 
 pub const SAND_CLIENT_MARKER: &str = "/*SAND_CLIENT_MODE_V1*/";
 pub const SAND_CLIENT_EXISTING_MARKER: &str = "/*SAND_CLIENT_EXISTING_V1*/";
+/// 3.21.13 起 agent-host 的 `header.set("x-cursor-client-type",n.clientType??"cli")` 兜底值是
+/// `cli` 而不是 `ide`。它同样要改成 sand，但卸载时必须还回 `cli`，所以单独一个 marker 记住原值。
+pub const SAND_CLIENT_CLI_MARKER: &str = "/*SAND_CLIENT_CLI_V1*/";
 pub const SAND_ELIGIBILITY_MARKER: &str = "/*SAND_ELIGIBILITY_MODE_V1*/";
 pub const SAND_MANAGED_LOCAL_ROUTE_MARKER: &str = "/*SAND_MANAGED_LOCAL_ROUTE_V1*/";
 pub const SAND_DIRECT_STREAM_MARKER: &str = "/*SAND_DIRECT_INFERENCE_STREAM_V1*/";
@@ -74,10 +77,11 @@ pub const LEGACY_KC_ELIGIBILITY_MARKER: &str = "/*KC_SAND_ELIGIBILITY_V1*/";
 /// 外部工具 marker 探测：凡是形如 `/*XXX_SAND_CLIENT…_V1*/` 又不是我们的，就算「外部」。
 /// 见到外部 marker 一律拒绝接管（`ErrorCode::SandForeignMarkers`）。
 pub const CLIENT_MARKER_GUARD_PATTERN: &str =
-    r"/\*[A-Z0-9_]*SAND_CLIENT(?:_(?:MODE|EXISTING))?_V1\*/";
+    r"/\*[A-Z0-9_]*SAND_CLIENT(?:_(?:MODE|EXISTING|CLI))?_V1\*/";
 pub const ELIGIBILITY_MARKER_GUARD_PATTERN: &str = r"/\*[A-Z0-9_]*SAND_ELIGIBILITY(?:_MODE)?_V1\*/";
 
-/// client-type 锚点的总命中数（isGlass 16 + 对象头 3 + header.set 4）。3.18.9 与 3.18.25 相同。
+/// client-type 锚点的总命中数。3.21.13 的构成是 isGlass 14 + 对象头 4 + header.set 5
+/// （4 个 `x??"ide"` + agent-host 那个三元兜底 `"cli"`），合计仍是 23。
 pub const EXPECTED_CLIENT_MARKERS: u32 = 23;
 /// 子代理模型变体：workbench.desktop.main.js 与 workbench.glass.main.js 各一处 `rRf()`。
 pub const EXPECTED_SUBAGENT_MODEL_VARIANTS_MARKERS: u32 = 2;
@@ -280,7 +284,11 @@ impl RuleId {
     /// inspect 时按哪些 marker 数这一类。client-type 有两个（新装 / 接管已有）。
     pub fn markers(self) -> &'static [&'static str] {
         match self {
-            RuleId::ClientType => &[SAND_CLIENT_MARKER, SAND_CLIENT_EXISTING_MARKER],
+            RuleId::ClientType => &[
+                SAND_CLIENT_MARKER,
+                SAND_CLIENT_EXISTING_MARKER,
+                SAND_CLIENT_CLI_MARKER,
+            ],
             RuleId::Eligibility => &[SAND_ELIGIBILITY_MARKER],
             RuleId::ManagedLocalRoute => &[SAND_MANAGED_LOCAL_ROUTE_MARKER],
             RuleId::LocalRuntimeLoad => &[SAND_LOCAL_RUNTIME_LOAD_MARKER],
@@ -381,7 +389,7 @@ pub struct PreflightAnchor {
     pub only_in_files_containing: Option<&'static str>,
 }
 
-const TASK_TOOL_FACTORY: &str = "function Ne(e){const{parentModelId:t,modelInfo:n}=e;return{";
+const TASK_TOOL_FACTORY: &str = "function zRe(e){const{parentModelId:t,modelInfo:r}=e;return{";
 
 pub fn preflight_anchors() -> Vec<PreflightAnchor> {
     vec![
@@ -434,7 +442,7 @@ const IDENT: &str = r"[A-Za-z_$][A-Za-z0-9_$]*";
 // Python：`CLIENT_RULES`（is_glass / object_header / set_header）+ `legacy_client_re`（KC 迁移）。
 // Python 用 `([\"'])(ide|sand)\2` 让引号成对；Rust `regex` 没有反向引用，改成显式交替。
 
-const CLIENT_QUOTED_VALUE: &str = r#"("(?:ide|sand)"|'(?:ide|sand)')"#;
+const CLIENT_QUOTED_VALUE: &str = r#"("(?:ide|sand|cli)"|'(?:ide|sand|cli)')"#;
 const CLIENT_QUOTED_SAND: &str = r#"("sand"|'sand')"#;
 
 /// 三条锚点的上下文（第 1 组）；第 2 组是带引号的值。顺序与 Python `CLIENT_RULES` 一致。
@@ -443,8 +451,9 @@ const CLIENT_CONTEXTS: [&str; 3] = [
     r#"(isGlass\s*\?\s*["']glass["']\s*:\s*)"#,
     // object_header：`"x-cursor-client-type":"ide"`（3 处）
     r#"(["']x-cursor-client-type["']\s*:\s*)"#,
-    // set_header：`header.set("x-cursor-client-type",x??"ide")`（4 处）
-    r#"(header\.set\(\s*["']x-cursor-client-type["']\s*,\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*(?:\?\?|\|\|)\s*)"#,
+    // set_header：`header.set("x-cursor-client-type",x??"ide")`（原形态）
+    // 3.21.13 新增三元 fallback 形态：`,null!==(o=null==n?void 0:n.clientType)&&void 0!==o?o:"ide"`。
+    r#"(header\.set\(\s*["']x-cursor-client-type["']\s*,\s*(?:[A-Za-z_$][A-Za-z0-9_$.]*\s*(?:\?\?|\|\|)|null!==\([a-z]=null==[a-z]\?void 0:[a-z]\.clientType\)&&void 0!==[a-z]\?[a-z]:)\s*)"#,
 ];
 
 /// 带引号的值拆成（引号，值）：`"ide"` → `("\"", "ide")`；`'sand'` → `("'", "sand")`。
@@ -455,10 +464,10 @@ fn split_quoted(lit: &str) -> (&str, &str) {
 /// 装：值改成 `sand` 并跟 marker。原值已是 `sand`（别的渠道改过）→ `EXISTING` marker，卸载时还回 `sand`。
 fn client_to_sand(c: &Captures<'_>) -> String {
     let (quote, value) = split_quoted(&c[2]);
-    let marker = if value == "sand" {
-        SAND_CLIENT_EXISTING_MARKER
-    } else {
-        SAND_CLIENT_MARKER
+    let marker = match value {
+        "sand" => SAND_CLIENT_EXISTING_MARKER,
+        "cli" => SAND_CLIENT_CLI_MARKER,
+        _ => SAND_CLIENT_MARKER,
     };
     format!("{}{quote}sand{quote}{marker}", &c[1])
 }
@@ -466,10 +475,10 @@ fn client_to_sand(c: &Captures<'_>) -> String {
 /// 卸：`"sand"/*MODE*/` → `"ide"`；`"sand"/*EXISTING*/` → `"sand"`。与 Python 一样不看上下文。
 fn client_restore(c: &Captures<'_>) -> String {
     let (quote, _) = split_quoted(&c[1]);
-    let value = if &c[2] == SAND_CLIENT_EXISTING_MARKER {
-        "sand"
-    } else {
-        "ide"
+    let value = match &c[2] {
+        m if m == SAND_CLIENT_EXISTING_MARKER => "sand",
+        m if m == SAND_CLIENT_CLI_MARKER => "cli",
+        _ => "ide",
     };
     format!("{quote}{value}{quote}")
 }
@@ -509,9 +518,10 @@ fn kc_client_rule() -> Result<PatchRule> {
 fn client_rules() -> Result<Vec<PatchRule>> {
     let guard = re(CLIENT_MARKER_GUARD_PATTERN)?;
     let restore = re(&format!(
-        "{CLIENT_QUOTED_SAND}({}|{})",
+        "{CLIENT_QUOTED_SAND}({}|{}|{})",
         regex::escape(SAND_CLIENT_MARKER),
-        regex::escape(SAND_CLIENT_EXISTING_MARKER)
+        regex::escape(SAND_CLIENT_EXISTING_MARKER),
+        regex::escape(SAND_CLIENT_CLI_MARKER)
     ))?;
     CLIENT_CONTEXTS
         .iter()
@@ -593,15 +603,17 @@ fn eligibility_rules() -> Vec<PatchRule> {
 
 /// Python `MANAGED_LOCAL_ROUTE_ORIGINAL` / `_PATCHED`。
 const MANAGED_LOCAL_ROUTE_ORIGINAL: &str = concat!(
-    r#"if(!o)return{runtime:"connect",reason:"gate-off"};"#,
-    "const s=g(t),i=A(s,e,r);",
-    r#"return void 0!==i?f(i,s):{runtime:"managed-local",reason:"eligible"}"#,
+    r#"if(!s)return{runtime:"connect",reason:"gate-off"};"#,
+    r#"if("subscriptionNotificationAction"===t.action.action.case)return{runtime:"connect",reason:"subscription-notification-connect-routed"};"#,
+    "const o=Os(t),i=Fs(o,e);",
+    r#"return void 0!==i?Ds(i,o):{runtime:"managed-local",reason:"eligible"}"#,
 );
 fn managed_local_route_patched() -> String {
     [
         r#"if(!1)return{runtime:"connect",reason:"gate-off"};"#,
-        "const s=g(t),i=A(s,e,r);",
-        "return void 0!==i?f(i,s):",
+        r#"if("subscriptionNotificationAction"===t.action.action.case)return{runtime:"connect",reason:"subscription-notification-connect-routed"};"#,
+        "const o=Os(t),i=Fs(o,e);",
+        "return void 0!==i?Ds(i,o):",
         SAND_MANAGED_LOCAL_ROUTE_MARKER,
         r#"{runtime:"managed-local",reason:"sand-client"}"#,
     ]
@@ -609,18 +621,18 @@ fn managed_local_route_patched() -> String {
 }
 
 /// Python `LOCAL_RUNTIME_LOAD_ORIGINAL` / `_PATCHED`。
-const LOCAL_RUNTIME_LOAD_ORIGINAL: &str = "let t=!1;try{t=await r.cursor.checkFeatureGate(Ms)}";
+const LOCAL_RUNTIME_LOAD_ORIGINAL: &str = "let t=!1;try{t=await a.cursor.checkFeatureGate(vYe)}";
 fn local_runtime_load_patched() -> String {
     ["let t=!0;", SAND_LOCAL_RUNTIME_LOAD_MARKER, "try{t=!0}"].concat()
 }
 
 /// Python `AGENT_HOST_MOVE_EXEC_ORIGINAL` / `_PATCHED`。
-/// 3.19.13：`Js="cursor_agent_host_move_exec"`，紧邻的 `A` 读 `Ms="agent_host_local_loop"`，
-/// 二者以 `y=h||A` 汇合，所以把 `h` 钉成真就够了。
+/// 3.21.13：`bYe="cursor_agent_host_move_exec"` 的 gate 现在是 `const[m,f,g,…]=await Promise.all([…])`
+/// 数组的第一个元素，把它整段换成 `Promise.resolve(!0)` 即可把 `m` 钉成真。
 const AGENT_HOST_MOVE_EXEC_ORIGINAL: &str =
-    "h=await Promise.resolve(r.cursor.checkFeatureGate(Js)).catch(()=>!1)";
+    "Promise.resolve(a.cursor.checkFeatureGate(bYe)).catch(()=>!1)";
 fn agent_host_move_exec_patched() -> String {
-    ["h=!0", SAND_AGENT_HOST_MOVE_EXEC_MARKER].concat()
+    ["Promise.resolve(!0)", SAND_AGENT_HOST_MOVE_EXEC_MARKER].concat()
 }
 
 /// Python `MANAGED_SUBAGENT_ROUTE_ORIGINAL` / `_PATCHED`。
@@ -650,11 +662,11 @@ fn managed_subagent_route_patched() -> String {
 /// Python `MANAGED_ACTION_ROUTE_ORIGINAL`。
 const MANAGED_ACTION_ROUTE_ORIGINAL: &str = concat!(
     r#""backgroundTaskCompletionAction"===e.actionCase?"#,
-    r#"e.conversationMode!==o.xy.AGENT?"mode-not-supported":y(e,r):"#,
+    r#"e.conversationMode!==P.xy.AGENT?"mode-not-supported":Qs(e):"#,
     r#""userMessageAction"!==e.actionCase?"action-not-supported":"#,
-    "function(e){return e.requestedMode===o.xy.AGENT||",
-    "e.isHostedSubagentChild&&e.requestedMode===o.xy.UNSPECIFIED}(e)?",
-    r#"e.simulatedUserMessage?"simulated-message-not-supported":y(e,r):"#,
+    "function(e){if(e.requestedMode===P.xy.AGENT)return!0;return ",
+    "e.isHostedSubagentChild&&e.requestedMode===P.xy.UNSPECIFIED}(e)?",
+    r#"e.simulatedUserMessage?"simulated-message-not-supported":Qs(e):"#,
     r#""mode-not-supported""#,
 );
 
@@ -664,26 +676,26 @@ fn managed_action_route_patched(gate: ModeGate) -> String {
     let mode_fn = match gate {
         ModeGate::All => "function(e){return!0}",
         ModeGate::AgentPlan => concat!(
-            "function(e){return e.requestedMode===o.xy.AGENT||",
-            "e.requestedMode===o.xy.PLAN||",
-            "e.isHostedSubagentChild&&e.requestedMode===o.xy.UNSPECIFIED}",
+            "function(e){return e.requestedMode===P.xy.AGENT||",
+            "e.requestedMode===P.xy.PLAN||",
+            "e.isHostedSubagentChild&&e.requestedMode===P.xy.UNSPECIFIED}",
         ),
         ModeGate::Agent => concat!(
-            "function(e){return e.requestedMode===o.xy.AGENT||",
-            "e.isHostedSubagentChild&&e.requestedMode===o.xy.UNSPECIFIED}",
+            "function(e){return e.requestedMode===P.xy.AGENT||",
+            "e.isHostedSubagentChild&&e.requestedMode===P.xy.UNSPECIFIED}",
         ),
     };
     [
         SAND_MANAGED_ACTION_ROUTE_MARKER,
         concat!(
             r#""backgroundTaskCompletionAction"===e.actionCase?"#,
-            r#"e.conversationMode!==o.xy.AGENT?"mode-not-supported":y(e,r):"#,
-            r#""summarizeAction"===e.actionCase||"resumeAction"===e.actionCase?y(e,r):"#,
+            r#"e.conversationMode!==P.xy.AGENT?"mode-not-supported":Qs(e):"#,
+            r#""summarizeAction"===e.actionCase||"resumeAction"===e.actionCase?Qs(e):"#,
             r#""userMessageAction"!==e.actionCase?"action-not-supported":"#,
         ),
         mode_fn,
         concat!(
-            r#"(e)?e.simulatedUserMessage?"simulated-message-not-supported":y(e,r):"#,
+            r#"(e)?e.simulatedUserMessage?"simulated-message-not-supported":Qs(e):"#,
             r#""mode-not-supported""#,
         ),
     ]
@@ -712,22 +724,22 @@ fn managed_action_route_rule(gate: ModeGate) -> PatchRule {
 
 /// Python `SUBAGENT_RESUME_MODE_ORIGINAL` / `_PATCHED`。
 const SUBAGENT_RESUME_MODE_ORIGINAL: &str =
-    "e.resumeAgentId&&e.mode===Gn.FL.UNSPECIFIED&&!e.readonly?Ee.xy.UNSPECIFIED:";
+    "e.resumeAgentId&&e.mode===gl.FL.UNSPECIFIED&&!e.readonly?P.xy.UNSPECIFIED:";
 fn subagent_resume_mode_patched() -> String {
     [
-        "e.resumeAgentId&&e.mode===Gn.FL.UNSPECIFIED&&!e.readonly?",
+        "e.resumeAgentId&&e.mode===gl.FL.UNSPECIFIED&&!e.readonly?",
         SAND_SUBAGENT_RESUME_MODE_MARKER,
-        "Ee.xy.AGENT:",
+        "P.xy.AGENT:",
     ]
     .concat()
 }
 
 /// Python `SUBAGENT_INTERACTION_BUBBLE_ORIGINAL` / `_PATCHED`（61.js 的 `In`）。
 const SUBAGENT_INTERACTION_BUBBLE_ORIGINAL: &str =
-    "function Ar(e){return void 0===e||e===wt.w3.UNSPECIFIED?wt.w3.AUTO_REJECT:e}";
+    "function Gu(e){return void 0===e||e===h.w3.UNSPECIFIED?h.w3.AUTO_REJECT:e}";
 fn subagent_interaction_bubble_patched() -> String {
     [
-        "function Ar(e){return void 0===e||e===wt.w3.UNSPECIFIED?wt.w3.BUBBLE_TO_PARENT:e}",
+        "function Gu(e){return void 0===e||e===h.w3.UNSPECIFIED?h.w3.BUBBLE_TO_PARENT:e}",
         SAND_SUBAGENT_INTERACTION_BUBBLE_MARKER,
     ]
     .concat()
@@ -875,20 +887,20 @@ fn subagent_model_variants_rule() -> Result<PatchRule> {
 
 /// Python `MAX_TOKENS_ORIGINAL` / `_PATCHED`。
 const MAX_TOKENS_ORIGINAL: &str = concat!(
-    "t.resolveExtendedUsage({inputTokens:n.inputTokens,",
-    "outputTokens:n.outputTokens,cacheReadTokens:n.cacheReadTokens,",
-    "cacheWriteTokens:n.cacheWriteTokens,maxTokens:n.maxTokens})",
+    "t.resolveExtendedUsage({inputTokens:r.inputTokens,",
+    "outputTokens:r.outputTokens,cacheReadTokens:r.cacheReadTokens,",
+    "cacheWriteTokens:r.cacheWriteTokens,maxTokens:r.maxTokens})",
 );
 fn max_tokens_patched() -> String {
     [
         concat!(
-            "t.resolveExtendedUsage({inputTokens:n.inputTokens,",
-            "outputTokens:n.outputTokens,cacheReadTokens:n.cacheReadTokens,",
-            "cacheWriteTokens:n.cacheWriteTokens,maxTokens:(()=>{",
+            "t.resolveExtendedUsage({inputTokens:r.inputTokens,",
+            "outputTokens:r.outputTokens,cacheReadTokens:r.cacheReadTokens,",
+            "cacheWriteTokens:r.cacheWriteTokens,maxTokens:(()=>{",
             r#"const c=this.requestedModel?.parameters?.find(p=>p.id==="context")?.value;"#,
-            "if(void 0===c)return n.maxTokens;",
+            "if(void 0===c)return r.maxTokens;",
             "const s=String(c).trim().toLowerCase();const num=parseFloat(s);",
-            "if(!Number.isFinite(num)||num<=0)return n.maxTokens;",
+            "if(!Number.isFinite(num)||num<=0)return r.maxTokens;",
             r#"const mult=s.endsWith("k")?1e3:s.endsWith("m")?1e6:s.endsWith("b")?1e9:1;"#,
             "return num*mult})()})",
         ),
@@ -1009,7 +1021,7 @@ fn subagent_browser_flag_patched() -> String {
 // + `SUBAGENT_MODEL_CATALOG_JS` / `SUBAGENT_MODEL_SLUGS_V4` / `_managed_task_tool_props`。
 
 const MANAGED_TASK_TOOL_ORIGINAL: &str =
-    "isGenerateImageModelRestricted:!1,taskToolProps:Ne({parentModelId:null!=p?p:n.modelName,modelInfo:n})},resolvers:";
+    "isGenerateImageModelRestricted:!1,taskToolProps:zRe({parentModelId:null!=d?d:r.modelName,modelInfo:r})},resolvers:";
 
 /// V6：模型目录**动态**取注入点作用域里的 `e.runOptions.selectedSubagentModels` —— workbench 每轮
 /// 随请求下发的、用户在模型选择器里勾选且支持 agent 的模型（`agent.v1.RequestedModel[]`；Cursor
@@ -1124,40 +1136,35 @@ fn managed_task_tool_variant(typed_guard: bool, props: &TaskToolProps<'_>) -> St
     .concat()
 }
 
-/// V7 目录：第三把父模型键是官方 `parentModelId`（`null!=p?p:n.modelName`），不再用 `i`。
+/// V7 目录：用户在模型选择器里勾选的子代理模型（`t.runOptions.selectedSubagentModels`，
+/// 与 `subagentTypeName` / `excludeWorkspaceContext` 同属一个 runOptions 对象），
+/// 末尾补一把父模型键 `null!=d?d:r.modelName`。剔掉 `"default"`（Auto）。
+/// `modelsBySlug.keys()` 就是 `availableSubagentModelSlugs`，所以键必须是真实 slug。
 const SUBAGENT_MODEL_CATALOG_JS_V7: &str = concat!(
-    "new Map([...(e.runOptions.selectedSubagentModels??[])",
+    "new Map([...(t.runOptions.selectedSubagentModels??[])",
     ".map(m=>m.modelId).filter(m=>m&&\"default\"!==m).map(m=>[m,{slug:m}]),",
-    "[e.requestedModel.modelId,{slug:e.requestedModel.modelId}],",
-    "[null!=p?p:n.modelName,{slug:null!=p?p:n.modelName}]])"
+    "[null!=d?d:r.modelName,{slug:null!=d?d:r.modelName}]])"
 );
 
-/// 当前版（V7）：替换 3.19.7 官方 Ae() 调用点，打开目录、保留官方已开的子代理类型旗标。
+/// 当前版（V7）：3.21.13 官方 `zRe()` 已经把各类子代理旗标全开，只剩「把子代理钉死在父模型」这
+/// 一层限制（`isModelValid:e=>e===t`、`forceModelId`、`subagentModelForcePolicy:"parent_pin"`、
+/// 目录里只有父模型）。所以不再重建整个 props，而是**包一层**：拿官方对象，只翻掉这几项。
+/// 这样 `modelInfo` / `subagentModelOverrides` / 各 `enable*` 旗标都原样继承官方，少一大片
+/// 对压缩后局部符号的依赖。`getTaskToolConfig` 官方是直接 throw 的，必须换掉。
 fn managed_task_tool_patched() -> String {
     [
-        "isGenerateImageModelRestricted:!1,taskToolProps:{",
-        SAND_MANAGED_TASK_TOOL_MARKER,
-        "parentRequestedModelName:e.requestedModel.modelId,",
-        "parentModelParameters:e.requestedModel.parameters,",
-        "parentMaxMode:v,",
-        "isModelBlocked:()=>!1,",
-        "isModelValid:()=>!0,",
-        "requiresMaxMode:()=>!1,",
-        "compareModelCosts:()=>0,",
-        r#"subagentModelForcePolicy:"none","#,
-        "requireServerSideSubagent:!1,",
-        "enableExecuteHookExec:!0,",
-        "enableExploreSubagent:!0,",
-        "enableShellSubagent:!0,",
-        "enableDebugSubagent:!0,",
-        "enableBrowserSubagent:!0,",
-        "enableGrindSwarmSubagent:!0,",
-        "subagentModels:{modelsBySlug:",
+        "isGenerateImageModelRestricted:!1,taskToolProps:(()=>{const _sp=zRe({parentModelId:null!=d?d:r.modelName,modelInfo:r});",
+        "_sp.isModelBlocked=()=>!1;",
+        "_sp.isModelValid=()=>!0;",
+        "_sp.forceModelId=void 0;",
+        r#"_sp.subagentModelForcePolicy="none";"#,
+        "_sp.getTaskToolConfig=async()=>({});",
+        "_sp.subagentModels={modelsBySlug:",
         SUBAGENT_MODEL_CATALOG_JS_V7,
-        "},",
-        "normalizeCustomSubagents:e=>e,",
-        "getTaskToolConfig:async()=>({})",
-        "}},resolvers:",
+        "};",
+        "return _sp})()",
+        SAND_MANAGED_TASK_TOOL_MARKER,
+        "},resolvers:",
     ]
     .concat()
 }
@@ -1295,8 +1302,11 @@ fn agent_host_identity_patched() -> String {
 // Python `DIRECT_STREAM_ANCHOR` + `_direct_stream_injection(self_summary, context_window)`
 // + `CONTEXT_TOKENS_EXPR`。3.18.25 的 attempt 工厂叫 `gre`，会话类叫 `tre`，元数据解析叫 `are`。
 
+/// 3.21.13：attempt 工厂改名 `me` → `kRe`，转译助手也从「就地赋值 `n=this,r=void 0,s=function*(){`」
+/// 换成了 `CRe(this,void 0,void 0,function*(){…})`。旧注入体正是靠那三个 `n`/`r`/`s` 局部量做文章的，
+/// 新形态里它们不存在，见 [`direct_stream_injection_current`]。
 const DIRECT_STREAM_ANCHOR: &str =
-    "function me(e){return t=>{return n=this,r=void 0,s=function*(){";
+    "function kRe(e){return t=>CRe(this,void 0,void 0,function*(){";
 
 /// 模型参数 `context`（"200k"/"1m"/"1b" 或纯数字）→ token 数；不设则 undefined。
 const CONTEXT_TOKENS_EXPR: &str = concat!(
@@ -1442,6 +1452,7 @@ fn direct_stream_injection(self_summary: bool, context_window: bool) -> String {
     )
 }
 
+#[cfg(test)]
 fn default_resolved_log(shape: DirectShape, pin: PremiumPin) -> ResolvedLog {
     if pin != PremiumPin::Off && shape == DirectShape::Current {
         ResolvedLog::AgentHost
@@ -1450,6 +1461,7 @@ fn default_resolved_log(shape: DirectShape, pin: PremiumPin) -> ResolvedLog {
     }
 }
 
+#[cfg(test)]
 fn direct_stream_injection_impl(
     self_summary: bool,
     context_window: bool,
@@ -1831,26 +1843,29 @@ fn direct_stream_injection_legacy_glm_only(
     body
 }
 
-/// 推理引擎规则。`injection` 是当前选项的注入体（Python `_direct_stream_injection(self_summary)`），
-/// 其余 Direct 变体 + 已下线 Session 引擎的空 marker 全是 `legacy_injections`：
+/// 3.21.13 的当前注入体：**只有一个 marker，不带任何逻辑**，让 Cursor 自己的 RunInference 原样跑。
+///
+/// 旧注入体做两件事：一是把 `promptModelInfo` / `agentTokenLimit` 手工塞进请求，二是把 `modelId`
+/// 改写成 `premium` / `sand-cua` 去蹭额度。前者 3.21.13 已由服务端下发的 `promptModelMetadata`
+/// 取代，不必再补；后者那条路早前实测拿不到 Opus / Fable 这类高级模型，本来就不成立。
+/// 而它整套写法依赖旧转译形态的 `n`/`r`/`s` 三个局部量与 `J`/`oe` 等压缩符号，新形态里全没了。
+/// 所以这里退回与已下线 Session 引擎同样的做法：只留 marker，规则可装、可查、可逆。
+///
+/// 写成空块 `{marker}` 而不是裸 marker：历史注入体都是 `{marker`+逻辑，裸 marker 会是它们的
+/// 子串，legacy 识别 / 迁移 / 卸载都会互相咬；加一对花括号就互不为子串了。
+fn direct_stream_injection_current() -> String {
+    ["{", SAND_DIRECT_STREAM_MARKER, "}"].concat()
+}
+
+/// 推理引擎规则。`injection` 是当前形态（见 [`direct_stream_injection_current`]），
+/// 历史上的 Direct 变体 + 已下线 Session 引擎的空 marker 全是 `legacy_injections`：
 /// install 见到任一种就原地换成当前形态（计 migrated 不计 hits），uninstall 全部都认。
 fn inference_stream_rule(
-    self_summary: bool,
-    force_premium: bool,
-    grok45_via_cua: bool,
+    _self_summary: bool,
+    _force_premium: bool,
+    _grok45_via_cua: bool,
 ) -> PatchRule {
-    let injection = if force_premium {
-        direct_stream_injection_with_log(
-            self_summary,
-            true,
-            DirectShape::Current,
-            PremiumPin::GlmOnly,
-            ResolvedLog::AgentHost,
-            grok45_via_cua,
-        )
-    } else {
-        direct_stream_injection_impl(self_summary, true, DirectShape::Current, PremiumPin::Off)
-    };
+    let injection = direct_stream_injection_current();
     let mut legacy_injections: Vec<String> = direct_stream_variants()
         .into_iter()
         .filter(|v| v != &injection)
@@ -2656,12 +2671,12 @@ mod tests {
         .unwrap();
         let (with_agent, _) = crate::engine::apply(MANAGED_ACTION_ROUTE_ORIGINAL, &agent);
         assert!(with_agent.contains(
-            "function(e){return e.requestedMode===o.xy.AGENT||e.isHostedSubagentChild&&e.requestedMode===o.xy.UNSPECIFIED}"
+            "function(e){return e.requestedMode===P.xy.AGENT||e.isHostedSubagentChild&&e.requestedMode===P.xy.UNSPECIFIED}"
         ));
         let (with_plan, rep) = crate::engine::apply(&with_agent, &plan);
         assert_eq!(rep.migrated.managed_action_route, 1);
         assert!(with_plan.contains(
-            "function(e){return e.requestedMode===o.xy.AGENT||e.requestedMode===o.xy.PLAN||e.isHostedSubagentChild&&e.requestedMode===o.xy.UNSPECIFIED}"
+            "function(e){return e.requestedMode===P.xy.AGENT||e.requestedMode===P.xy.PLAN||e.isHostedSubagentChild&&e.requestedMode===P.xy.UNSPECIFIED}"
         ));
         let all = catalog(&InstallOptions {
             mode_gate: ModeGate::All,
@@ -2746,16 +2761,21 @@ mod tests {
     #[test]
     fn task_tool_variants_match_the_python_builders_shape() {
         let current = managed_task_tool_patched();
-        // V7：替换官方 Ae() 调用点，父模型名取客户端 id，第三把键是官方 parentModelId。
+        // V7（3.21.13）：不再重建整个 props，而是包一层官方 zRe()，只翻掉「把子代理钉死在父模型」
+        // 的那几项；各 enable* 旗标官方已经全开，继承即可。
         assert!(current.starts_with(
-            "isGenerateImageModelRestricted:!1,taskToolProps:{/*SAND_MANAGED_TASK_TOOL_V7*/parentRequestedModelName:e.requestedModel.modelId,"
+            "isGenerateImageModelRestricted:!1,taskToolProps:(()=>{const _sp=zRe({parentModelId:null!=d?d:r.modelName,modelInfo:r});"
         ));
         assert!(current.contains(
-            r#"subagentModels:{modelsBySlug:new Map([...(e.runOptions.selectedSubagentModels??[]).map(m=>m.modelId).filter(m=>m&&"default"!==m).map(m=>[m,{slug:m}]),[e.requestedModel.modelId,{slug:e.requestedModel.modelId}],[null!=p?p:n.modelName,{slug:null!=p?p:n.modelName}]])},"#
+            r#"_sp.subagentModels={modelsBySlug:new Map([...(t.runOptions.selectedSubagentModels??[]).map(m=>m.modelId).filter(m=>m&&"default"!==m).map(m=>[m,{slug:m}]),[null!=d?d:r.modelName,{slug:null!=d?d:r.modelName}]])};"#
         ));
         assert!(!current.contains("opus-5"), "V7 不该再含任何硬编码 slug");
-        assert!(current.contains("enableGrindSwarmSubagent:!0,"));
-        assert!(current.contains("isModelValid:()=>!0,"));
+        assert!(current.contains("_sp.isModelValid=()=>!0;"));
+        assert!(current.contains(r#"_sp.subagentModelForcePolicy="none";"#));
+        assert!(current.contains("_sp.forceModelId=void 0;"));
+        assert!(current.ends_with(&format!(
+            "return _sp}})(){SAND_MANAGED_TASK_TOOL_MARKER}}},resolvers:"
+        )));
         let v6 = managed_task_tool_patched_v6();
         assert!(v6.contains(
             "/*SAND_MANAGED_TASK_TOOL_V6*/parentRequestedModelName:e.requestedModel.modelId,"
@@ -2884,14 +2904,14 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+        // 3.21.13 起当前注入体是惰性空块，与自摘要 / context 等选项无关；这些选项只继续用来
+        // 识别、原地迁移盘上的历史注入体。
+        let current = direct_stream_injection_current();
         let (p_default, rep) = crate::engine::apply(&anchor_src, &direct_rules);
-        assert!(p_default.contains("supportsSelfSummary:!0,"));
-        assert!(p_default.contains("Sand direct Stream requires requestedModel"));
+        assert_eq!(p_default, format!("{DIRECT_STREAM_ANCHOR}{current}body}}"));
         assert_eq!(rep.hits.inference_stream, 1);
-        assert_eq!(installed_self_summary(&p_default), Some(true));
         let (p_off, _) = crate::engine::apply(&anchor_src, &no_summary_rules);
-        assert!(p_off.contains("supportsSelfSummary:!1,"));
-        assert_eq!(installed_self_summary(&p_off), Some(false));
+        assert_eq!(p_off, p_default);
         assert_eq!(installed_self_summary(&anchor_src), None);
         for variant in [
             &p_default,
@@ -2909,20 +2929,7 @@ mod tests {
             assert_eq!(removed.inference_stream, 1);
         }
 
-        // 盘上装着 !1（老默认）→ 用当前默认 install：原地切到 !0，不必先卸；反向同理。
-        // 早期无 agentTokenLimit 的注入也走同一条迁移路。
-        let (flipped_on, rep) = crate::engine::apply(&p_off, &direct_rules);
-        assert_eq!(flipped_on, p_default);
-        assert_eq!(
-            (rep.hits.inference_stream, rep.migrated.inference_stream),
-            (0, 1)
-        );
-        let (flipped_off, rep) = crate::engine::apply(&p_default, &no_summary_rules);
-        assert_eq!(flipped_off, p_off);
-        assert_eq!(
-            (rep.hits.inference_stream, rep.migrated.inference_stream),
-            (0, 1)
-        );
+        // 早期无 agentTokenLimit 的注入走原地迁移路，落到当前的惰性空块。
         let early = format!("{DIRECT_STREAM_ANCHOR}{off_noctx}body}}");
         let (upgraded, rep) = crate::engine::apply(&early, &direct_rules);
         assert_eq!(upgraded, p_default);
@@ -2960,7 +2967,6 @@ mod tests {
         assert!(!pre_premium.contains(r#"n.modelId="premium""#));
         let (from_old, rep) = crate::engine::apply(&pre_premium, &direct_rules);
         assert_eq!(from_old, p_default);
-        assert!(from_old.contains(r#"if(pin){n.modelId="premium""#));
         assert_eq!(
             (rep.hits.inference_stream, rep.migrated.inference_stream),
             (0, 1)
@@ -2973,14 +2979,7 @@ mod tests {
         })
         .unwrap();
         let (p_cursor, _) = crate::engine::apply(&anchor_src, &cursor_rules);
-        assert!(p_cursor.contains(r#"const d=String(n.modelId||""),i=d.toLowerCase(),"#));
-        assert!(!p_cursor.contains(r#"n.modelId="premium""#));
-        let (to_bot, rep) = crate::engine::apply(&p_cursor, &direct_rules);
-        assert_eq!(to_bot, p_default);
-        assert_eq!(
-            (rep.hits.inference_stream, rep.migrated.inference_stream),
-            (0, 1)
-        );
+        assert_eq!(p_cursor, p_default);
 
         // 最早一律钉 premium：原地改成只钉 GLM 5.2。
         let always = format!(
@@ -3011,7 +3010,6 @@ mod tests {
         assert!(console_glm.contains(r#"console.info("[nexus-sand] premium resolved""#));
         let (from_console, rep) = crate::engine::apply(&console_glm, &direct_rules);
         assert_eq!(from_console, p_default);
-        assert!(from_console.contains(r#"createOutputChannel("Cursor Agent Host""#));
         assert_eq!(
             (rep.hits.inference_stream, rep.migrated.inference_stream),
             (0, 1)
@@ -3031,7 +3029,6 @@ mod tests {
         assert!(except.contains(r#"if(!q){n.modelId="premium""#));
         let (from_except, rep) = crate::engine::apply(&except, &direct_rules);
         assert_eq!(from_except, p_default);
-        assert!(from_except.contains(r#"if(pin){n.modelId="premium""#));
         assert_eq!(
             (rep.hits.inference_stream, rep.migrated.inference_stream),
             (0, 1)
@@ -3068,22 +3065,19 @@ mod tests {
             ..InstallOptions::default()
         })
         .unwrap();
+        // 3.21.13 起这个开关不再改变装上去的东西（当前注入体是惰性空块），它只继续用于识别、
+        // 原地迁移盘上的历史注入体，所以两档装出来必须一模一样。
         let (p_off, _) = crate::engine::apply(&anchor, &rules_off);
+        let (p_on, _) = crate::engine::apply(&anchor, &rules_on);
+        assert_eq!(p_on, p_off);
         assert_eq!(installed_grok45_via_cua(&p_off), Some(false));
-        let (p_on, rep) = crate::engine::apply(&p_off, &rules_on);
-        assert_eq!(installed_grok45_via_cua(&p_on), Some(true));
-        assert!(p_on.contains(r#"g45=k.includes("grok-4.5")"#));
-        assert_eq!(
-            (rep.hits.inference_stream, rep.migrated.inference_stream),
-            (0, 1)
-        );
-        let (back, rep) = crate::engine::apply(&p_on, &rules_off);
-        assert_eq!(back, p_off);
-        assert_eq!(installed_grok45_via_cua(&back), Some(false));
-        assert_eq!(
-            (rep.hits.inference_stream, rep.migrated.inference_stream),
-            (0, 1)
-        );
+        // 盘上装着老的「4.5 走 CUA」注入体时，两档都要能原地迁成当前形态。
+        let installed_old = format!("{DIRECT_STREAM_ANCHOR}{on}body}}");
+        for rules in [&rules_off, &rules_on] {
+            let (migrated, rep) = crate::engine::apply(&installed_old, rules);
+            assert_eq!(migrated, p_off);
+            assert_eq!(rep.migrated.inference_stream, 1);
+        }
     }
 
     /// 2026-09-13 下午之前装的「4.5 走 CUA」（有 g45、没有 remap console.info）必须仍能卸 /
@@ -3122,8 +3116,15 @@ mod tests {
         .unwrap();
         let (migrated, rep) = crate::engine::apply(&installed, &rules_on);
         assert_eq!(rep.migrated.inference_stream, 1);
-        assert!(migrated.contains(r#"console.info("[nexus-sand] remap""#));
-        assert_eq!(installed_grok45_via_cua(&migrated), Some(true));
+        // 3.21.13 起当前注入体是惰性空块，迁移后旧的钉法逻辑必须整段消失。
+        assert_eq!(
+            migrated,
+            format!(
+                "{DIRECT_STREAM_ANCHOR}{}body}}",
+                direct_stream_injection_current()
+            )
+        );
+        assert_eq!(installed_grok45_via_cua(&migrated), Some(false));
     }
 
     /// 2026-09-13 之前装的 GlmOnly（只钉 GLM，没有 4.7→CUA）必须仍能卸 / 原地迁。
@@ -3154,10 +3155,13 @@ mod tests {
         assert_eq!(removed.inference_stream, 1);
         let (migrated, rep) = crate::engine::apply(&installed, &rules);
         assert_eq!(rep.migrated.inference_stream, 1);
-        assert!(migrated.contains("g47="));
-        assert!(!migrated.contains(
-            r#"pin=k.includes("glm-5.2")||k.includes("glm5.2")||k.includes("glm_5.2");if(pin)"#
-        ));
+        assert_eq!(
+            migrated,
+            format!(
+                "{DIRECT_STREAM_ANCHOR}{}body}}",
+                direct_stream_injection_current()
+            )
+        );
     }
 
     /// 已下线的 Session 引擎（v1.2.7 "session-stream" / v1.2.8 `SAND_STREAM_ENGINE=session`）

@@ -38,9 +38,6 @@ pub const TARGET_SPECS: &[(&str, Option<&str>)] = &[
         "extensions/cursor-agent-exec/dist/main.js",
         Some("cursor-agent-exec"),
     ),
-    // chunk 编号随 Cursor 版本变（3.18.25 是 61.js / 675.js，3.19.7 是 9909.js / 4883.js）；
-    // 3.19.13 把 9909.js 那一整块内联进了 agent-host 的 main.js（1.8MB → 11.7MB），只剩这一个 chunk。
-    ("extensions/cursor-agent-host/dist/4884.js", None),
 ];
 
 /// 内嵌扩展 hash 所在的文件。
@@ -234,7 +231,10 @@ mod tests {
         let app = fake_bundle(
             dir.path(),
             SUPPORTED,
-            &["out/main.js", "extensions/cursor-agent-host/dist/4884.js"],
+            &[
+                "out/main.js",
+                "out/vs/workbench/workbench.glass.main.js",
+            ],
         );
         let l = SandLayout::from_app(&app).unwrap();
         assert_eq!(l.version, SUPPORTED);
@@ -243,7 +243,7 @@ mod tests {
         assert!(l.ext_host.is_none());
         assert_eq!(
             l.relative(&l.targets[1]),
-            "extensions/cursor-agent-host/dist/4884.js"
+            "out/vs/workbench/workbench.glass.main.js"
         );
     }
 
@@ -255,18 +255,18 @@ mod tests {
             "3.18.9",
             &[
                 "extensions/cursor-agent-host/dist/main.js",
-                "extensions/cursor-agent-host/dist/4884.js",
+                "out/main.js",
             ],
         );
         let l = SandLayout::from_app(&app).unwrap();
         let main = l
             .targets
             .iter()
-            .find(|t| t.ends_with("dist/main.js"))
+            .find(|t| t.ends_with("cursor-agent-host/dist/main.js"))
             .unwrap();
-        let chunk = l.targets.iter().find(|t| t.ends_with("4884.js")).unwrap();
+        let top = l.targets.iter().find(|t| t.ends_with("out/main.js")).unwrap();
         assert_eq!(l.extension_name_of(main), Some("cursor-agent-host"));
-        assert_eq!(l.extension_name_of(chunk), None);
+        assert_eq!(l.extension_name_of(top), None);
     }
 
     #[test]

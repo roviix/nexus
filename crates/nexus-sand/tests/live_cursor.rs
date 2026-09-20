@@ -35,7 +35,7 @@ fn layout_resolves_all_expected_targets_on_this_machine() {
         eprintln!("  - {}", l.relative(t));
     }
     if l.version == SUPPORTED_CURSOR_VERSION {
-        // 适配版本上，全部目标都应存在（3.19.13 起是 10 个：9909.js 那块已并进 main.js）。
+        // 适配版本上，全部目标都应存在（3.21.13 起是 9 个：agent-host 的 4884.js chunk 也并进了 main.js）。
         assert_eq!(
             l.targets.len(),
             nexus_sand::layout::TARGET_SPECS.len(),

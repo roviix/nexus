@@ -6,12 +6,15 @@
 > **历史记录**，按当时的真实情况保留，不再对应今天的代码。今天的形态见 §13。
 > 界面上 Sand 也不再是独立一页，而是「Cursor 面板」页（原生 / CRSR / Sand）里的一档。
 >
-> 状态：**规则表已适配 Cursor 3.19.13**（2026-09-06）。官方 dmg 抽出来的 3.19.13 bundle 上
-> `profile_probe` 每类命中等于 `expected()`（端点改道给了 URL 时 2 处），10 个目标文件上 Rust apply
-> 与 Python 参考实现逐字节一致（自摘要开 / 关各比一遍）。**尚未做的是在真机上真正 `install`**
-> ——本机还停在 3.19.7（补丁装着，已把 `update.mode` 设成 `none` 免得自动升级冲掉补丁与 diff 基线）。
-> 要验收得先手动装 3.19.13。远程 `LayoutProfile::Server` 的期望值还是按 3.19.7 量的，**没在 3.19.13 的
-> remote bundle 上重量过**（数字不对的后果是拒装而不是装坏，见 §9.2）。
+> 状态：**规则表已适配 Cursor 3.21.13**（2026-09-19）。本机 `/Applications/Cursor.app`（已升到 3.21.13）上
+> `profile_probe` 每类命中等于 `expected()`、`remaining_ide` / `foreign` / `legacy` 全 0，9 个目标文件上
+> Rust apply 与 Python 参考实现逐字节一致，live 幂等 / 可逆金标准通过。**这轮不是纯改名**，有三处语义
+> 变更（Direct 注入体清空、task tool 改成包官方工厂、move_exec 的 gate 进了 `Promise.all`），见 §1.1。
+> **未验的是运行时行为**：task tool 解钉、managed-local / action route 要有 bot 账号跑真会话才能确认。
+> 远程 `LayoutProfile::Server` 的期望值还停在 3.19.7 量的，**没在 3.21.13 的 remote bundle 上重量过**
+> （数字不对的后果是拒装而不是装坏，见 §9.2）。
+>
+> 2026-09-06：适配 Cursor 3.19.13；纯压缩符号改名，10 个目标文件上 Rust 与 Python 逐字节一致。
 >
 > 2026-09-04：适配 Cursor 3.19.7；真机 11 个目标文件上 Rust 与 Python 逐字节一致。
 >
@@ -62,6 +65,33 @@ bubble `hr→Ar` / `_t.w3→wt.w3`、attempt 工厂 `ve→me`、task tool 工厂
 下一版若继续动它，`INFERENCE_TRANSPORT_ANCHOR` 一带是首要复核点。
 反过来，`sand_*` gate 集合（101 条）与签名 / 认证 / 设备指纹面**两版完全一致**，桌面端仍无任何 IAP 实现。
 
+3.19.13 → 3.21.13（2026-09-19）是**上面那个「代价小得多」的反例**：跨了两个小版本，除了全 bundle 改名，
+还有三处真语义变更，是继 3.18.25 之后第一次需要重写注入体而不只是换符号。
+
+1. **Direct 注入体清空。** 3.21.13 的 `RunInference` 直接收服务端下发的 `promptModelMetadata`，
+   旧注入体手工补的 `promptModelInfo` / `agentTokenLimit` 已被它取代；且旧写法依赖的三个局部量与
+   `J` / `oe` 等压缩符号在新转译形态里全没了（§10.5 那套逐条复核随之作废）。锚点改成新的异步生成器形态
+   `function kRe(e){return t=>CRe(this,void 0,void 0,function*(){`，注入体降为**空块**
+   `{/*SAND_DIRECT_INFERENCE_STREAM_V1*/}`，让 Cursor 自己的 `RunInference` 原样跑。
+   写成空块而不是裸 marker 是有讲究的：历史注入体都是「`{` + marker + 逻辑」，裸 marker 会成为它们的
+   子串，legacy 识别 / 迁移 / 卸载会互相咬。
+   顺带说明「改 `modelId` 去蹭高级模型额度」那条路**本来就不成立**（早前实测拿不到），不是这轮丢的。
+2. **task tool 改成包官方工厂。** 工厂 `Ne→zRe`，且 patched 体不再自己拼整个 props——改成调 `zRe()`
+   拿到官方对象后只覆盖钉模型的那几项（`isModelBlocked` / `isModelValid` / `forceModelId` /
+   `subagentModelForcePolicy` / `getTaskToolConfig` / `subagentModels`）。包一层比重写整体抗改名。
+3. **move_exec 的 gate 进了 `await Promise.all([...])` 数组**，成了解构出来的第一个元素。整段
+   `Promise.resolve(a.cursor.checkFeatureGate(bYe)).catch(()=>!1)` 换成 `Promise.resolve(!0)` 把它钉成真。
+
+另有两处结构性的：agent-host 的 `4884.js` 整块并进 `main.js`，`TARGET_SPECS` 10 → 9（**「chunk 会整块消失」
+这条第二次应验**）；client-type 的 `set_header` 多了一处三元回退，且回退值是 `"cli"` 而非 `"ide"`，
+为可逆性新增了 `SAND_CLIENT_CLI_MARKER`（这也是预检从 22/23 差一条的原因）。
+
+**`subagent route` 这条规则本版起不再新装。** 上游自己把 `subagentTypeName` / `parentAgentToolCallId`
+从 unsupported run options 里摘了出去——gate 改名 `hasUnsupportedRunOptions` → `Ns()` /
+`unsupportedRunOptionReason`，那两项转而用于算 `isHostedSubagentChild`——正是这条规则以前干的事。
+所以它在 `profile_probe` 里命中 0 是**正确状态**（`expected()` 为 `None`、不进硬校验），
+留着只为卸载 3.19.7 之前装的旧补丁。
+
 ### 1.2 为什么现在做
 
 三个变化，缺一个都不该做：
@@ -94,9 +124,9 @@ bubble `hr→Ar` / `_t.w3→wt.w3`、attempt 工厂 `ve→me`、task tool 工厂
 给本机已安装的 Cursor（`/Applications/Cursor.app` 里的 JS bundle）打一组字符串级补丁，让 IDE 的 Agent 面板
 把推理从「云端 api5 编排」改道到「本机 managed-local 本地 loop + api2 `InferenceService`」，从而走 sand/bot 额度通道。
 原理与全部补丁清单见 `docs/relay/CURSOR-FULL-ARCHITECTURE.md`；Python 参考实现是
-`gateway/scripts/sand-stream-installer.py`（v1.2.10-cursor-3.19.13 ↔ Cursor 3.19.13）。
+`gateway/scripts/sand-stream-installer.py`（v1.3.0-cursor-3.21.13 ↔ Cursor 3.21.13）。
 
-16 类补丁、10 个目标文件。用户可选三项：上下文自动摘要 / 模式放行档位（Agent · Agent+Plan · 全部）/ 完成后重启。
+16 类补丁、9 个目标文件。用户可选三项：上下文自动摘要 / 模式放行档位（Agent · Agent+Plan · 全部）/ 完成后重启。
 
 **模式放行默认「全部」**（2026-09-04 起，与上游安装器不同）。理由在补丁自身：`managed_local_route_patched`
 把「本地循环处理不了就退回云端」那条路封了（`if(!1)return{runtime:"connect"}`），所以档位拦下来的 turn

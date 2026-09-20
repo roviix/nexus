@@ -175,6 +175,7 @@ const RUST_SAND_MARKERS: &[(&str, &str)] = &[
         "SAND_CLIENT_EXISTING_MARKER",
         rules::SAND_CLIENT_EXISTING_MARKER,
     ),
+    ("SAND_CLIENT_CLI_MARKER", rules::SAND_CLIENT_CLI_MARKER),
     ("SAND_ELIGIBILITY_MARKER", rules::SAND_ELIGIBILITY_MARKER),
     (
         "SAND_MANAGED_LOCAL_ROUTE_MARKER",
@@ -428,11 +429,11 @@ fn rust_marker_table_and_rule_markers_cover_each_other() {
         table, used,
         "手抄的 marker 表与 RuleId::markers() 不一致（left = 表，right = 规则）"
     );
-    // 每个 RuleId 一个 marker，另加三处「一个 RuleId 带两个 marker」的：client-type 的
-    // 接管已有安装、端点改道的建 transport / 挂路由、Grok 鉴权的 Box Relay / 直连两种形态。
+    // 每个 RuleId 一个 marker，另加四处额外的：client-type 的接管已有安装与 3.21.13 的 `cli`
+    // 兜底、端点改道的建 transport / 挂路由、Grok 鉴权的 Box Relay / 直连两种形态。
     assert_eq!(
         RUST_SAND_MARKERS.len() + REMOTE_ONLY_MARKERS.len(),
-        RuleId::ALL.len() + 3,
+        RuleId::ALL.len() + 4,
         "marker 表条数不对：新增 RuleId 或改了 markers() 时要同步这里"
     );
     assert_eq!(
