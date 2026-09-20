@@ -191,7 +191,7 @@ export const accounts = {
   refreshAll: (ids?: string[]) =>
     call<number>("accounts_refresh_all", { ids, dayStartMs: startOfLocalDay() }),
   /**
-   * 给一个号跑一遍自动配置：换桌面 session → 铸 crsr_ Key → 开按需（不封顶）→ 刷用量。
+   * 给一个号跑一遍自动配置：铸 crsr_ Key → 换桌面 session → 开按需（不封顶）→ 开数据保留 → 刷用量。
    *
    * 不抛「配置失败」：每一步的结论都在报告里。这几步的失败多半是正当的（Apple 内购的号
    * 开不了按需、团队号只有管理员能改），要能看出是哪一步、还剩什么能用。

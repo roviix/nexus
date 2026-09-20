@@ -165,7 +165,7 @@ export function estimateTargets(
 
 /* ── 跑完怎么讲 ──────────────────────────────────────────────────────────── */
 
-/** 一个号的一行结论，如 `换 session✓ · 铸 Key✓ · 开按需✗`。全跳过时说一句「本来就配好了」。 */
+/** 一个号的一行结论，如 `铸 Key✓ · 换 session✓ · 开按需✗`。全跳过时说一句「本来就配好了」。 */
 export function reportLine(report: ProvisionReport): string {
   const parts = report.steps
     .filter((s) => s.state !== "skipped")

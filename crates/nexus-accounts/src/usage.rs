@@ -507,13 +507,18 @@ async fn ranged(
     call(http, AGGREGATED_URL, cookie, Some(body)).await
 }
 
+/// 仪表盘把「No Limit」编码成 `hardLimit = 2^31-1`（i32 最大值）。2026-09-20
+/// Spending 页勾不封顶抓到的。**省略 `hardLimit` 不等于不封顶**：Connect proto3 会把缺席
+/// 的 int32 默认成 0，Spending 页显示 Fixed $0，按需等于没开。
+pub const UNLIMITED_HARD_LIMIT_DOLLARS: i64 = i32::MAX as i64;
+
 /// 改这个号的按需计费：开/关，以及每月上限（美分；`None` = 不封顶）。
 ///
 /// 写 Spending 页的开关，权威接口是 DashboardService 的 `SetHardLimit`（Bearer JWT）。
 /// 网页那条 `set-hard-limit` 当退路。`hardLimit` 的单位是**美元整数**。关掉时必须带
-/// `hardLimit: 0`，只传 `noUsageBasedAllowed` 上游会当没改过。开启且不封顶时不传
-/// `hardLimit`（仪表盘「No Limit」）。写完再读一遍 `GetHardLimit`：usage-summary 的
-/// `onDemand.enabled` 跟这个开关不是同一份状态，拿它当回执会以为没生效。
+/// `hardLimit: 0`，只传 `noUsageBasedAllowed` 上游会当没改过。开启且不封顶时传
+/// [`UNLIMITED_HARD_LIMIT_DOLLARS`]（仪表盘「No Limit」）。写完再读一遍 `GetHardLimit`：
+/// usage-summary 的 `onDemand.enabled` 跟这个开关不是同一份状态，拿它当回执会以为没生效。
 pub async fn set_on_demand(
     http: &reqwest::Client,
     session_token: &str,
@@ -560,15 +565,43 @@ pub async fn set_on_demand(
             return Err(AppError::unauthorized("session token 已被上游拒绝。")
                 .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
         }
-        if let Some(now_enabled) = as_bool(got.get("noUsageBasedAllowed")).map(|no| !no) {
-            if now_enabled != enabled {
-                return Err(AppError::upstream("Cursor 没有接受这次按需改动。").with_hint(
-                    "Apple 内购的号开不了按需；团队号可能只有管理员能改。开启时填一个月度上限（美元整数）更稳。",
-                ));
-            }
+        if !hard_limit_stuck(got, enabled, limit_cents) {
+            return Err(AppError::upstream("Cursor 没有接受这次按需改动。").with_hint(
+                "Apple 内购的号开不了按需；团队号可能只有管理员能改。开启不封顶必须带 hardLimit=2147483647，省略会被写成 Fixed $0。",
+            ));
         }
     }
     Ok(())
+}
+
+/// 写完再读的那一问：开关对不对，不封顶有没有被写成 $0。
+fn hard_limit_stuck(got: &Value, enabled: bool, limit_cents: Option<f64>) -> bool {
+    if let Some(now_enabled) = as_bool(got.get("noUsageBasedAllowed")).map(|no| !no) {
+        if now_enabled != enabled {
+            return false;
+        }
+    }
+    if !enabled {
+        return true;
+    }
+    let asked_unlimited = limit_cents
+        .filter(|c| c.is_finite() && *c > 0.0)
+        .is_none();
+    if !asked_unlimited {
+        return true;
+    }
+    match num(got.get("hardLimit")) {
+        // 省略字段时 Connect 回 0，Spending 页就是 Fixed $0。
+        Some(d) if d <= 0.0 => false,
+        Some(d) if is_unlimited_dollars(d) => true,
+        // 回了一个普通上限：不是我们要的「不封顶」。
+        Some(_) => false,
+        None => true,
+    }
+}
+
+fn is_unlimited_dollars(dollars: f64) -> bool {
+    dollars >= UNLIMITED_HARD_LIMIT_DOLLARS as f64
 }
 
 /// Fable 5 数据保留策略里那个模型 id 与条款版本（2026-09-19 抓包）。上游会校验版本，
@@ -611,17 +644,40 @@ pub async fn set_data_retention_consent(
 }
 
 /// `set-hard-limit` / `SetHardLimit` 的请求体。单测对着形状，不打真接口。
+///
+/// 团队策略那几项（`preserveHardLimitPerUser` 等）个人号会忽略；仪表盘每次都带，
+/// 跟它对齐，免得上游把缺字段当成一次残缺的团队策略写入。
 pub(crate) fn hard_limit_body(enabled: bool, limit_cents: Option<f64>) -> Value {
+    let mut body = serde_json::Map::new();
     if !enabled {
         // 关掉必须带 hardLimit: 0。只传 noUsageBasedAllowed 上游会当没改过。
-        return serde_json::json!({ "hardLimit": 0, "noUsageBasedAllowed": true });
+        body.insert("hardLimit".into(), Value::from(0));
+        body.insert("noUsageBasedAllowed".into(), Value::Bool(true));
+    } else {
+        body.insert("noUsageBasedAllowed".into(), Value::Bool(false));
+        let dollars = match limit_cents.filter(|c| c.is_finite() && *c > 0.0) {
+            Some(cents) => {
+                let n = (cents / 100.0).round() as i64;
+                n.clamp(1, UNLIMITED_HARD_LIMIT_DOLLARS - 1)
+            }
+            // 不封顶 = i32::MAX。省略会被写成 0（Fixed $0）。
+            None => UNLIMITED_HARD_LIMIT_DOLLARS,
+        };
+        body.insert("hardLimit".into(), Value::from(dollars));
     }
-    let mut body = serde_json::Map::new();
-    body.insert("noUsageBasedAllowed".into(), Value::Bool(false));
-    if let Some(cents) = limit_cents.filter(|c| c.is_finite() && *c > 0.0) {
-        let dollars = (cents / 100.0).round() as i64;
-        body.insert("hardLimit".into(), Value::from(dollars.max(1)));
-    }
+    body.insert("preserveHardLimitPerUser".into(), Value::Bool(false));
+    body.insert("perUserMonthlyLimitDollars".into(), Value::from(0));
+    body.insert("clearPerUserMonthlyLimitDollars".into(), Value::Bool(false));
+    body.insert("isDynamicTeamLimit".into(), Value::Bool(false));
+    body.insert("clearConflictingPolicy".into(), Value::Bool(false));
+    body.insert(
+        "clearPerUserFirstPartyModelsAdditionalBudgetDollars".into(),
+        Value::Bool(false),
+    );
+    body.insert(
+        "clearPerUserFirstPartyModelsAdditionalBudgetUnlimited".into(),
+        Value::Bool(false),
+    );
     Value::Object(body)
 }
 
@@ -987,8 +1043,12 @@ fn apply_hard_limit(usage: &mut AccountUsage, json: Option<&Value>) {
         return;
     }
     usage.on_demand_limit_cents = match num(json.get("hardLimit")) {
+        Some(dollars) if is_unlimited_dollars(dollars) => Some(None),
         Some(dollars) if dollars > 0.0 => Some(Some(dollars * 100.0)),
-        _ => Some(None),
+        // 开着但上限 $0 = Spending 页的 Fixed $0，不是「不封顶」。旧实现把 0 读成
+        // 不封顶，库里那份快照会让自动配置跳过重写。
+        Some(_) => Some(Some(0.0)),
+        None => Some(None),
     };
 }
 
@@ -1306,10 +1366,12 @@ mod tests {
     }
 
     #[test]
-    fn hard_limit_body_enables_unlimited_without_a_cap() {
+    fn hard_limit_body_enables_unlimited_as_i32_max() {
         let v = hard_limit_body(true, None);
         assert_eq!(v["noUsageBasedAllowed"], false);
-        assert!(v.get("hardLimit").is_none());
+        assert_eq!(v["hardLimit"], UNLIMITED_HARD_LIMIT_DOLLARS);
+        assert_eq!(v["preserveHardLimitPerUser"], false);
+        assert_eq!(v["isDynamicTeamLimit"], false);
     }
 
     #[test]
@@ -1400,6 +1462,44 @@ mod tests {
         );
         assert_eq!(u.on_demand_enabled, Some(true));
         assert_eq!(u.on_demand_limit_cents, Some(Some(5_000.0)));
+
+        // i32::MAX = 仪表盘 No Limit，不是二十亿刀的上限。
+        apply_hard_limit(
+            &mut u,
+            Some(&json!({ "hardLimit": 2_147_483_647i64, "noUsageBasedAllowed": false })),
+        );
+        assert_eq!(u.on_demand_enabled, Some(true));
+        assert_eq!(u.on_demand_limit_cents, Some(None));
+
+        // 开着但上限 $0 = Fixed $0，不是不封顶。
+        apply_hard_limit(
+            &mut u,
+            Some(&json!({ "hardLimit": 0, "noUsageBasedAllowed": false })),
+        );
+        assert_eq!(u.on_demand_enabled, Some(true));
+        assert_eq!(u.on_demand_limit_cents, Some(Some(0.0)));
+    }
+
+    #[test]
+    fn hard_limit_stuck_rejects_a_zero_cap_when_we_asked_for_unlimited() {
+        assert!(hard_limit_stuck(
+            &json!({ "hardLimit": 2_147_483_647i64, "noUsageBasedAllowed": false }),
+            true,
+            None,
+        ));
+        assert!(
+            !hard_limit_stuck(
+                &json!({ "hardLimit": 0, "noUsageBasedAllowed": false }),
+                true,
+                None,
+            ),
+            "Fixed $0 不能当不封顶的回执"
+        );
+        assert!(!hard_limit_stuck(
+            &json!({ "hardLimit": 50, "noUsageBasedAllowed": true }),
+            true,
+            None,
+        ));
     }
 
     #[test]

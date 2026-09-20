@@ -412,7 +412,7 @@ function useBulkPane(
       </div>
 
       {/* 邮箱 + 一把 access token 的号进来时还不能用：token 是网站 web 型（切号会掉登录）、
-          没有保命的 key、按需没开、用量是空的。这四件事每次都要做，所以摆在导入这一步。 */}
+          没有保命的 key、按需没开、数据保留没同意、用量是空的。这几件事每次都要做，所以摆在导入这一步。 */}
       <label className="row items-center" style={{ gap: 8, cursor: "pointer" }}>
         <input
           type="checkbox"
@@ -423,7 +423,7 @@ function useBulkPane(
         <span className="stack" style={{ gap: 2 }}>
           <span>导入后顺手配置这一批</span>
           <span className="faint tiny">
-            换桌面 session → 铸 crsr_ Key → 按需开到不封顶 → 刷用量。先入库，配置在后台挨着跑，跑的时候看得到进度。
+            铸 crsr_ Key → 换桌面 session → 按需开到不封顶 → 开数据保留 → 刷用量。先入库，配置在后台挨着跑，跑的时候看得到进度。
           </span>
         </span>
       </label>

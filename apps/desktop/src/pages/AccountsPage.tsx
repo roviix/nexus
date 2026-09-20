@@ -540,7 +540,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
    * 给一批号跑自动配置。
    *
    * 逐个结果走 `accounts://provisioned` 事件填进弹窗（见上面那个 effect），所以这里只管起头、
-   * 收尾、和整批级别的错误（闸被占着、计划全空）。跑完统一 `reload()`：这四步改的是 has_refresh /
+   * 收尾、和整批级别的错误（闸被占着、计划全空）。跑完统一 `reload()`：这几步改的是 has_refresh /
    * has_api_key / 用量，全都是卡片上显示的东西。
    */
   async function provisionIdsNow(ids: string[], plan: ProvisionPlan) {
@@ -1299,14 +1299,14 @@ function SelectBar({
         复制…
       </button>
 
-      {/* 换 session / 铸 key / 开按需 / 刷用量四件事。哪几件在弹窗里勾：
+      {/* 铸 key / 换 session / 开按需 / 数据保留 / 刷用量。哪几件在弹窗里勾：
           这批号新旧不一，需要的步骤本来就不一样，操作条上放不下也讲不清。 */}
       <button
         type="button"
         className="btn btn-sm"
         disabled={count === 0 || busy}
         onClick={onProvision}
-        title="换桌面 session、铸 crsr_ Key、按需开到不封顶、刷用量"
+        title="铸 crsr_ Key、换桌面 session、按需开到不封顶、开数据保留、刷用量"
       >
         <Icon name="settings" size={13} />
         配置…

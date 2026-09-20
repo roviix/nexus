@@ -248,13 +248,12 @@ pub fn decide(step: ProvisionStep, account: &Account) -> std::result::Result<(),
         }
 
         // 按需是写操作，得有能打 dashboard 的会话（`crsr_` 兑出来的 api_key_token 不行）。
-        // 已经是目标状态的不重复写：这条流水线会被反复跑在同一批号上。
+        // 不根据快照跳过「已经不封顶」：旧实现省略 hardLimit 会被上游写成 Fixed $0，
+        // 同时又把 0 读成不封顶写进库。那份快照会让重跑跳过，坏状态就留下。
+        // 不封顶的写入是幂等的（hardLimit=i32::MAX），多写一次便宜。
         ProvisionStep::OnDemand => {
             if !(account.has_refresh || account.has_live_access()) {
                 return Err("此刻拿不出会话，改不了".into());
-            }
-            if already_unlimited(account) {
-                return Err("已经开着且不封顶".into());
             }
             Ok(())
         }
@@ -273,18 +272,6 @@ pub fn decide(step: ProvisionStep, account: &Account) -> std::result::Result<(),
             false => Err("没有可用于查用量的凭证".into()),
         },
     }
-}
-
-/// 按需已经开着、而且不封顶。
-///
-/// `on_demand_limit_cents` 是双层 `Option`：外层 `None` = 这次快照没读到（当作不知道，
-/// 该写一次），`Some(None)` = 上游明确说不封顶。把两者混同会让一批从没查过用量的新号
-/// 全被跳过。
-fn already_unlimited(account: &Account) -> bool {
-    let Some(usage) = account.usage.as_ref() else {
-        return false;
-    };
-    usage.on_demand_enabled == Some(true) && usage.on_demand_limit_cents == Some(None)
 }
 
 #[cfg(test)]
@@ -379,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn on_demand_is_written_unless_upstream_already_says_unlimited() {
+    fn on_demand_is_written_whenever_a_session_is_at_hand() {
         let mut a = web_only();
 
         // 从没查过用量：不知道 ≠ 已经不封顶，该写一次。
@@ -393,16 +380,13 @@ mod tests {
         });
         assert_eq!(decide(ProvisionStep::OnDemand, &a), Ok(()));
 
-        // 开着且不封顶：这才是目标状态，跳过。
+        // 快照说已经不封顶也仍要写：旧实现把 Fixed $0 读成不封顶，跳过就会留下坏状态。
         a.usage = Some(AccountUsage {
             on_demand_enabled: Some(true),
             on_demand_limit_cents: Some(None),
             ..Default::default()
         });
-        assert_eq!(
-            decide(ProvisionStep::OnDemand, &a),
-            Err("已经开着且不封顶".into())
-        );
+        assert_eq!(decide(ProvisionStep::OnDemand, &a), Ok(()));
     }
 
     #[test]
