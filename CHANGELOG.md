@@ -8,6 +8,16 @@
 
 ## [未发布]
 
+## [0.7.3] — 2026-09-21
+
+### 修复
+
+- **Windows 上热切必失败：「打开 Cursor 深链失败 (exit code: 1)」。** 登录深链的 query 里有 `&`，
+  之前经 `cmd /C start` 打开，`&` 被 cmd 当成命令分隔符——Cursor 只收到一条没带 token 的深链，
+  后半截 `accessToken=…` / `refreshToken=…` 被当成两条不存在的命令执行。与 token 是 web 还是
+  session 型无关，Windows 用户此前一次也没切成过。现在直接调 `ShellExecuteW`，URL 不再经过 shell
+  解析；协议未注册 / 被安全软件拦截时报错也分开说。
+
 ## [0.7.2] — 2026-09-20
 
 ### 修复

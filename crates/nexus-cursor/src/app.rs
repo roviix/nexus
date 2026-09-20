@@ -243,11 +243,19 @@ fn open_cursor_auth_login(access_token: &str, refresh_token: &str) -> Result<()>
 }
 
 fn open_url_scheme(url: &str) -> Result<()> {
+    // Windows 不走 `cmd /C start`：登录深链的 query 里有 `&`，Rust 只给含空格的参数加引号，
+    // 于是 cmd 把它当命令分隔符——`start` 只收到 `…?route=login`，后面的
+    // `accessToken=…` / `refreshToken=…` 被当成两条不存在的命令执行，exit code 1。
+    // Cursor 收到的是一条没有 token 的深链，什么也不做；我们这边报「打开深链失败」。
+    // ShellExecuteW 把 URL 当数据而不是命令行文本，不存在这层解析。
+    #[cfg(windows)]
+    {
+        return shell_execute_url(url);
+    }
+
+    #[allow(unreachable_code)]
     let result = if cfg!(target_os = "macos") {
         command("open").arg(url).status()
-    } else if cfg!(target_os = "windows") {
-        // `start` 把第一个引号参数当窗口标题；空标题占位，URL 作第二个参数。
-        command("cmd").args(["/C", "start", "", url]).status()
     } else if cfg!(target_os = "linux") {
         command("xdg-open").arg(url).status()
     } else {
@@ -266,6 +274,63 @@ fn open_url_scheme(url: &str) -> Result<()> {
         )
         .with_hint("确认 Cursor 已安装且 `cursor://` 协议已注册。")),
     }
+}
+
+/// 用 `ShellExecuteW(open)` 打开一个 URL scheme，等价于用户双击了这条链接。
+///
+/// 直接 `#[link]` shell32 而不是引入 windows-sys：只用这一个函数，不值得多一棵依赖树。
+#[cfg(windows)]
+fn shell_execute_url(url: &str) -> Result<()> {
+    use std::ptr::null;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            operation: *const u16,
+            file: *const u16,
+            parameters: *const u16,
+            directory: *const u16,
+            show_cmd: i32,
+        ) -> isize;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    const SW_SHOWNORMAL: i32 = 1;
+    // 返回值 > 32 表示成功；≤ 32 是错误码（Win32 约定）。
+    const SE_ERR_NOASSOC: isize = 31;
+    const SE_ERR_ACCESSDENIED: isize = 5;
+
+    let verb = wide("open");
+    let file = wide(url);
+    let code = unsafe {
+        ShellExecuteW(
+            0,
+            verb.as_ptr(),
+            file.as_ptr(),
+            null(),
+            null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if code > 32 {
+        return Ok(());
+    }
+    let hint = match code {
+        SE_ERR_NOASSOC => {
+            "这台机器没有注册 `cursor://` 协议。重装或重新打开一次 Cursor 通常会补上注册。"
+        }
+        SE_ERR_ACCESSDENIED => "系统拒绝了打开协议链接。检查是否有安全软件拦截了 `cursor://`。",
+        _ => "确认 Cursor 已安装且 `cursor://` 协议已注册。",
+    };
+    Err(AppError::new(
+        ErrorCode::CursorControl,
+        format!("打开 Cursor 深链失败（ShellExecute 返回 {code}）。"),
+    )
+    .with_hint(hint))
 }
 
 /// RFC 3986 unreserved 原样保留，其余百分号编码。JWT / refresh token 里的
