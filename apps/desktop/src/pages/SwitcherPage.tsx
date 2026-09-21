@@ -507,9 +507,7 @@ function PoolRow({
       highlighted={open}
       current={isCurrent}
       onOpen={onOpen}
-      badges={
-        isCurrent ? <Tag tone="ok">当前登录</Tag> : null
-      }
+      badges={null}
       // 备注不摆（那是私事，不是扫列表时读的）；只留问题和「上次什么时候切过」——
       // 后者是这一页专有的操作状态，决定「该轮到哪个了」。红字的样式和「账号」页一致。
       note={

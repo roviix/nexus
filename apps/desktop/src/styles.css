@@ -424,8 +424,9 @@ button {
   line-height: 1.4;
 }
 
-/* 账号页的页头没有 h1：平台页签站在标题的位置，和右边的动作按同一条中线对齐。 */
-.acct-head {
+/* 账号页的页头没有 h1：平台页签站在标题的位置，和右边的动作按同一条中线对齐。
+   必须挂在 `.page-head` 上：卡片身份行也叫 `.acct-head`，不能跟着吃这一档间距。 */
+.page-head.acct-head {
   margin-bottom: 18px;
 }
 
@@ -1902,13 +1903,15 @@ h2 {
 
 .acct-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  column-gap: 6px;
+  row-gap: 5px;
   min-width: 0;
 }
 
-/* 身份行里只有邮箱可以被压缩。徽章一旦跟着缩就会夹字，而它们本来就是定宽的几个词；
-   邮箱有 `min-width: 0`，会抢在它们之前让位。 */
+/* 徽章定宽、邮箱可截尾，但邮箱不能被挤成 0 —— 「当前登录」再加积分 / 分组 / 所在池
+   一行放不下时折到下一行，身份还在。 */
 .acct-head > *:not(.acct-identity) {
   flex: none;
 }
@@ -1952,8 +1955,8 @@ h2 {
  * 窄卡上 13.5px 的邮箱会把徽章挤出去。
  */
 .acct-identity {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 8rem;
+  min-width: 8rem;
   font-size: 12.5px;
   font-weight: 600;
   letter-spacing: -0.012em;
@@ -2338,6 +2341,12 @@ h2 {
   color: var(--warn);
   border-color: rgba(245, 158, 11, 0.28);
   background: rgba(245, 158, 11, 0.08);
+}
+
+.pill-current {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 

@@ -163,13 +163,12 @@ export function OverviewPage({ onGo }: { onGo: (r: Route) => void }) {
         ) : currentView ? (
           <AccountCard
             view={currentView}
-            highlighted
+            current
             onOpen={() => setInspectCurrent(true)}
             badges={
-              <>
-                <Tag tone="ok">当前登录</Tag>
-                {current?.subscriptionStatus && current.subscriptionStatus !== "active" ? <Tag tone="warn">{current.subscriptionStatus}</Tag> : null}
-              </>
+              current?.subscriptionStatus && current.subscriptionStatus !== "active" ? (
+                <Tag tone="warn">{current.subscriptionStatus}</Tag>
+              ) : null
             }
             note={s.overview?.machineIdShort ? <span>机器码 {s.overview.machineIdShort}</span> : null}
             actions={

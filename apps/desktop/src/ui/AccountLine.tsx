@@ -124,6 +124,11 @@ export function AccountLine({
         <span className="acct-identity truncate" title={typeof title === "string" ? title : undefined}>
           {title}
         </span>
+        {current ? (
+          <span className="pill pill-current" title="Cursor 此刻登的就是这个号">
+            当前登录
+          </span>
+        ) : null}
         {badges}
       </div>
       {quota ? <div className="acct-quota">{quota}</div> : null}

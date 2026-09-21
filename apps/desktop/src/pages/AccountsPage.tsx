@@ -79,7 +79,7 @@ import {
   type PlanFilter,
   type QuotaFilter,
 } from "../ui/accounts";
-import { Banner, Empty, ErrorNote, Icon, Picker, Tag } from "../ui/primitives";
+import { Banner, Empty, ErrorNote, Icon, Picker } from "../ui/primitives";
 import { AddAccountModal } from "./accounts/AddAccountModal";
 import { AuthorizeModal } from "./accounts/AuthorizeModal";
 import { CopySelectedModal } from "./accounts/CopySelectedModal";
@@ -1043,7 +1043,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                     onOpen={selecting ? () => toggleSelect(a.id) : () => setOpenId(a.id)}
                     badges={
                       <>
-                        {usingCursor ? <Tag tone="ok">当前登录</Tag> : null}
                         {/* 批量查找把两堆混在一列里了，归档的那几个得标出来。 */}
                         {lookup && a.archivedAt ? <span className="pill">已归档</span> : null}
                         <PoolChips membership={pools.membership(a.email)} />

@@ -1176,16 +1176,17 @@ function SecretEditor({
 const SECRET_LABEL: Record<SecretKind, string> = {
   refresh: "refresh_token",
   access: "access",
-  web: "web",
+  web: "Web 网页 token",
   cursorPassword: "Cursor 密码",
   emailPassword: "邮箱密码",
   recoveryEmail: "辅助邮箱",
   apiKey: "crsr_ API Key",
 };
 
-/** JWT `type` claim 原样当行名：session / web / api_key_token。没解析出来才退回 access。 */
+/** 凭证行名：session 仍用 claim 原词；web 写成「Web 网页 token」，免得和桌面 session 混。 */
 function accessKindLabel(type?: string | null): string {
-  if (type === "session" || type === "web" || type === "api_key_token") return type;
+  if (type === "web") return SECRET_LABEL.web;
+  if (type === "session" || type === "api_key_token") return type;
   return SECRET_LABEL.access;
 }
 
