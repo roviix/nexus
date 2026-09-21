@@ -1860,10 +1860,35 @@ h2 {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-/* 正打开 / 正在用的那一张：关掉抽屉后眼睛要能立刻找回来。 */
+/* 抽屉正开着的那一张：关掉之后眼睛要能立刻找回来。 */
 .acct.is-open {
   border-color: var(--accent-line);
   background: color-mix(in srgb, var(--accent) 3%, var(--color-surface));
+}
+
+/* Cursor 正在用的号：左缘一条品牌色、淡洗一层底。和「打开抽屉」不是一回事，
+   关掉抽屉这条还在；一屏几十张卡，扫一眼就能落到正在登的那张。 */
+.acct.is-in-use {
+  border-color: var(--accent-line);
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 58%),
+    var(--color-surface);
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 1px 0 var(--hi),
+    var(--lift-1);
+}
+
+.acct.is-in-use.is-clickable:hover {
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 58%),
+    color-mix(in srgb, var(--wash-1), var(--color-surface));
+}
+
+.acct.is-in-use.is-open {
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 58%),
+    color-mix(in srgb, var(--accent) 3%, var(--color-surface));
 }
 
 /* 失效的号压暗内容但**不隐藏**，按钮保持可读 —— 用户得看见它、还得能删它。 */

@@ -637,6 +637,8 @@ pub enum SecretKind {
     Refresh,
     /// 裸 access JWT。粘进来时接受 `user_xxx::<jwt>` 形态，落库前剥前缀（见 `put_access`）。
     Access,
+    /// 当初导入的网站会话 JWT。转成桌面 session 后单独留着。
+    Web,
     CursorPassword,
     EmailPassword,
     RecoveryEmail,
@@ -649,6 +651,7 @@ impl From<SecretKind> for AccountSecret {
         match k {
             SecretKind::Refresh => AccountSecret::Refresh,
             SecretKind::Access => AccountSecret::Access,
+            SecretKind::Web => AccountSecret::Web,
             SecretKind::CursorPassword => AccountSecret::CursorPassword,
             SecretKind::EmailPassword => AccountSecret::EmailPassword,
             SecretKind::RecoveryEmail => AccountSecret::RecoveryEmail,
@@ -751,8 +754,9 @@ pub fn accounts_set_secret(
         );
     } else {
         match kind {
-            // access 要过一遍形状检查并剥掉 `user_xxx::` 前缀，不能原样塞进去。
+            // access / web 都要过一遍形状检查并剥掉 `user_xxx::` 前缀，不能原样塞进去。
             SecretKind::Access => state.accounts.repo.put_access(&id, trimmed)?,
+            SecretKind::Web => state.accounts.repo.put_web(&id, trimmed)?,
             _ => state
                 .accounts
                 .repo

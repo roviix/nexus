@@ -53,6 +53,7 @@ export function AccountLine({
   stamp,
   dimmed,
   highlighted,
+  current,
   onOpen,
   openLabel,
 }: {
@@ -81,14 +82,17 @@ export function AccountLine({
   stamp?: ReactNode;
   /** 失效的号：压暗内容但**不隐藏**，hover 时还原 —— 用户得看见它、还得能删它。 */
   dimmed?: boolean;
-  /** 当前正打开 / 正使用的那一个。 */
+  /** 抽屉正打开、或批量里刚选中的那一张。 */
   highlighted?: boolean;
+  /** Cursor 此刻登着的就是它。和 `highlighted` 分开：关掉抽屉也还在。 */
+  current?: boolean;
   onOpen?: () => void;
   openLabel?: string;
 }) {
   const classes = ["acct", `tone-${tone}`];
   if (dimmed) classes.push("is-dead");
   if (highlighted) classes.push("is-open");
+  if (current) classes.push("is-in-use");
   if (onOpen) classes.push("is-clickable");
 
   // 「详情」不再是一枚文字键或箭头：整张卡就是那个按钮，靠指针和 hover 的一层提亮说话。
@@ -113,7 +117,7 @@ export function AccountLine({
   const hasFoot = Boolean(note || resets || spend || stamp || actions);
 
   return (
-    <article className={classes.join(" ")} {...open}>
+    <article className={classes.join(" ")} aria-current={current ? "true" : undefined} {...open}>
       <div className="acct-head">
         <span className="acct-dot" />
         {/* 窄卡上邮箱会截尾。这是收窄换来的，接受它，但全称得悬停看得到。 */}

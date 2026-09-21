@@ -187,13 +187,12 @@ export function shortDate(ms?: number | null): string {
   return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
 }
 
-/** 重置时刻，`9/9 16:00`。 */
+/** 账期 / 重置时刻，`09/30 20:05`。只给日期不够：几点重置决定今晚还能不能用。 */
 export function shortDateTime(ms?: number | null): string {
   if (ms == null || !Number.isFinite(ms)) return "—";
   const d = new Date(ms);
-  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(
-    d.getMinutes(),
-  ).padStart(2, "0")}`;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** 账期已经走过的比例，用来画那条底色进度。 */

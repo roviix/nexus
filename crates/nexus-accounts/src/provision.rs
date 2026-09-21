@@ -307,6 +307,7 @@ mod tests {
             has_email_password: false,
             has_recovery_email: false,
             has_api_key: false,
+            has_web: false,
             created_at: "2026-09-19T00:00:00Z".into(),
             updated_at: "2026-09-19T00:00:00Z".into(),
             seq: 1,

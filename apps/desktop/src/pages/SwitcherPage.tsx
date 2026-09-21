@@ -504,7 +504,8 @@ function PoolRow({
   return (
     <AccountCard
       view={switcherAccountView(entry)}
-      highlighted={isCurrent || open}
+      highlighted={open}
+      current={isCurrent}
       onOpen={onOpen}
       badges={
         isCurrent ? <Tag tone="ok">当前登录</Tag> : null

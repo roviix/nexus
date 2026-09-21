@@ -33,22 +33,24 @@ impl Accounts {
     /// `created_at` 只到秒，一批导入的几十个号同一秒；再按 rowid 排，同一批内部就是
     /// 导入清单的顺序，而不是随机 id 的顺序。
     pub fn list(&self) -> Result<Vec<Account>> {
-        self.db.with(|c| {
+        let rows = self.db.with(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE archived_at IS NULL ORDER BY created_at DESC, rowid DESC"
             ))?;
             let rows = stmt.query_map([], row_to_account)?;
-            rows.collect()
-        })
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+        Ok(rows.into_iter().map(|a| self.with_web_flag(a)).collect())
     }
 
     /// 连归档的一起列，给账号页用（它自己按 `archived_at` 分开画）。顺序同 [`Self::list`]。
     pub fn list_all(&self) -> Result<Vec<Account>> {
-        self.db.with(|c| {
+        let rows = self.db.with(|c| {
             let mut stmt = c.prepare(&format!("{SELECT} ORDER BY created_at DESC, rowid DESC"))?;
             let rows = stmt.query_map([], row_to_account)?;
-            rows.collect()
-        })
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+        Ok(rows.into_iter().map(|a| self.with_web_flag(a)).collect())
     }
 
     /// 归档 / 取消归档。只动 `archived_at` 一格：凭证、用量、备注一个字节都不碰，
@@ -71,7 +73,7 @@ impl Accounts {
 
     pub fn by_email(&self, email: &str) -> Result<Option<Account>> {
         let key = email.trim().to_ascii_lowercase();
-        self.db.with(|c| {
+        let found = self.db.with(|c| {
             c.query_row(
                 &format!("{SELECT} WHERE email = ?1"),
                 [&key],
@@ -79,7 +81,8 @@ impl Accounts {
             )
             .map(Some)
             .or_else(no_rows)
-        })
+        })?;
+        Ok(found.map(|a| self.with_web_flag(a)))
     }
 
     /// 新增或按邮箱合并。
@@ -257,14 +260,38 @@ impl Accounts {
     /// session token 的号没有别的地方能拿到它。
     pub fn put_access(&self, id: &AccountId, raw: &str) -> Result<()> {
         let (user_id, jwt) = token::normalize_access(raw)?;
+        let typ = token::jwt_type(&jwt);
         self.secrets.set(
             &account_secret(id, AccountSecret::Access),
-            &Secret::new(jwt),
+            &Secret::new(jwt.clone()),
         )?;
+        // 网站会话另存一份：转成桌面 session 后 Access 会被盖掉，凭证页还要能看见当初那把 web。
+        if typ.as_deref() == Some("web") {
+            self.secrets
+                .set(&account_secret(id, AccountSecret::Web), &Secret::new(jwt))?;
+        }
         if let Some(uid) = user_id {
             self.set_workos_user_id(id, &uid)?;
         }
         self.sync_credential_flags(id)
+    }
+
+    /// 单独存 / 改网站会话 JWT。形状检查与 `put_access` 一样，只写 Web 槽，不动当前 Access。
+    pub fn put_web(&self, id: &AccountId, raw: &str) -> Result<()> {
+        let (user_id, jwt) = token::normalize_access(raw)?;
+        self.secrets
+            .set(&account_secret(id, AccountSecret::Web), &Secret::new(jwt))?;
+        if let Some(uid) = user_id {
+            self.set_workos_user_id(id, &uid)?;
+        }
+        Ok(())
+    }
+
+    fn with_web_flag(&self, mut account: Account) -> Account {
+        account.has_web = self
+            .secrets
+            .exists(&account_secret(&account.id, AccountSecret::Web));
+        account
     }
 
     /// 把秘密存储的实际状态投影到表里的布尔列。凭证一变就调它。
@@ -450,7 +477,7 @@ impl Accounts {
     }
 
     fn find(&self, id: &AccountId) -> Result<Option<Account>> {
-        self.db.with(|c| {
+        let found = self.db.with(|c| {
             c.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 [id.as_str()],
@@ -458,7 +485,8 @@ impl Accounts {
             )
             .map(Some)
             .or_else(no_rows)
-        })
+        })?;
+        Ok(found.map(|a| self.with_web_flag(a)))
     }
 }
 
@@ -505,6 +533,7 @@ fn row_to_account(row: &Row<'_>) -> rusqlite::Result<Account> {
         seq: row.get(25)?,
         archived_at: row.get(26)?,
         access_token_type: row.get(27)?,
+        has_web: false,
         // 先占位，下面统一算：它依赖上面那几格，Rust 不允许在字面量里引用兄弟字段。
         availability: crate::model::Availability::LoggedOut,
     })
@@ -865,6 +894,45 @@ mod tests {
             "web token 绝不直接写 Cursor 登录态"
         );
         assert!(a.web_session_only(), "活着的 web-only：切号入口要先转换");
+    }
+
+    /// 导入 web token 时另存一份。之后 Access 被桌面 session 盖掉，Web 槽还在。
+    #[test]
+    fn importing_a_web_token_keeps_a_copy_after_access_is_replaced_by_session() {
+        let (accounts, secrets) = setup();
+        let far = (time::OffsetDateTime::now_utc() + time::Duration::hours(3)).unix_timestamp();
+        let web = jwt_typed(far, "web");
+        let a = accounts
+            .upsert(NewAccount {
+                email: "w@example.com".into(),
+                access_token: Some(web.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(a.has_web);
+        assert_eq!(
+            secrets
+                .get(&account_secret(&a.id, AccountSecret::Web))
+                .unwrap()
+                .unwrap()
+                .expose(),
+            web
+        );
+
+        accounts
+            .put_access(&a.id, &jwt_typed(far, "session"))
+            .unwrap();
+        let after = accounts.get(&a.id).unwrap();
+        assert!(after.has_web);
+        assert_eq!(after.access_token_type.as_deref(), Some("session"));
+        assert_eq!(
+            secrets
+                .get(&account_secret(&a.id, AccountSecret::Web))
+                .unwrap()
+                .unwrap()
+                .expose(),
+            web
+        );
     }
 
     /// v16 之前入库的老行 `access_token_type` 是 NULL；backfill 扫一遍把它补上，

@@ -35,6 +35,9 @@ pub enum AccountSecret {
     Refresh,
     /// Cursor access_token（refresh 换来的缓存，会过期）。
     Access,
+    /// 当初粘进来的网站会话 JWT（`type=web`）。转成桌面 session 后 Access 会被盖掉，
+    /// 这一份单独留着，凭证页还能看见原来那把。
+    Web,
     /// Cursor 登录密码。
     CursorPassword,
     /// 邮箱密码（少数渠道要）。
@@ -50,6 +53,7 @@ impl AccountSecret {
         match self {
             AccountSecret::Refresh => "refresh",
             AccountSecret::Access => "access",
+            AccountSecret::Web => "web",
             AccountSecret::CursorPassword => "cursor_pw",
             AccountSecret::EmailPassword => "email_pw",
             AccountSecret::RecoveryEmail => "recovery_email",
@@ -58,9 +62,10 @@ impl AccountSecret {
     }
 
     /// 全部种类，删账号时逐个清。
-    pub const ALL: [AccountSecret; 6] = [
+    pub const ALL: [AccountSecret; 7] = [
         AccountSecret::Refresh,
         AccountSecret::Access,
+        AccountSecret::Web,
         AccountSecret::CursorPassword,
         AccountSecret::EmailPassword,
         AccountSecret::RecoveryEmail,

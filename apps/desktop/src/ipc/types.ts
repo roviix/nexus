@@ -377,6 +377,8 @@ export interface Account {
   hasRecoveryEmail: boolean;
   /** 长期 `crsr_…` User API Key。不能切号，session 过期后仍能查基础用量。 */
   hasApiKey: boolean;
+  /** 另存着一把当初导入的网站会话 JWT。转成桌面 session 之后 Access 是 session，这一份还在。 */
+  hasWeb?: boolean;
   createdAt: string;
   updatedAt: string;
   /** 入库序号（rowid）。同一秒导入的一批号靠它保持导入顺序。 */
@@ -396,7 +398,14 @@ export interface Account {
  */
 export type Availability = "long_lived" | "session" | "api_key" | "logged_out" | "dead";
 
-export type SecretKind = "refresh" | "access" | "cursorPassword" | "emailPassword" | "recoveryEmail" | "apiKey";
+export type SecretKind =
+  | "refresh"
+  | "access"
+  | "web"
+  | "cursorPassword"
+  | "emailPassword"
+  | "recoveryEmail"
+  | "apiKey";
 
 /** 刚铸出来的一把 `crsr_`。不含完整钥匙——要看完整的去凭证页点「显示」。 */
 export interface MintedApiKey {

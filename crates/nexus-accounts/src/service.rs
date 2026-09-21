@@ -240,6 +240,11 @@ impl AccountsService {
 
         let tokens = crate::convert::web_to_session(&user_id, jwt).await?;
 
+        // Access 马上会被桌面 session 盖掉。网站 JWT 另存一份，凭证页还能看见当初粘进来的那把。
+        if token::jwt_type(jwt).as_deref() == Some("web") {
+            self.repo.put_secret(id, AccountSecret::Web, Some(jwt))?;
+        }
+
         // 先写 refresh 再写 access：任一步中断，下次要么当仅会话号、要么已升级，不会半吊子。
         self.repo.put_secret(
             id,

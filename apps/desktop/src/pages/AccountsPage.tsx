@@ -79,7 +79,7 @@ import {
   type PlanFilter,
   type QuotaFilter,
 } from "../ui/accounts";
-import { Banner, Empty, ErrorNote, Icon, Picker } from "../ui/primitives";
+import { Banner, Empty, ErrorNote, Icon, Picker, Tag } from "../ui/primitives";
 import { AddAccountModal } from "./accounts/AddAccountModal";
 import { AuthorizeModal } from "./accounts/AuthorizeModal";
 import { CopySelectedModal } from "./accounts/CopySelectedModal";
@@ -132,7 +132,7 @@ export function AccountsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
 
 function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
   const [list, setList] = useState<Account[]>([]);
-  /** Cursor 此刻登录的邮箱（小写），用于禁用当前账号的切号动作。 */
+  /** Cursor 此刻登录的邮箱（小写）：卡片高亮「当前登录」，抽屉里禁用切号。 */
   const [inCursor, setInCursor] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
@@ -1028,6 +1028,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
               {visible.map((a) => {
                 const refreshingAccount = refreshing.has(a.id);
                 const picked = selected.has(a.id);
+                const usingCursor = Boolean(inCursor && a.email.toLowerCase() === inCursor);
                 return (
                   <AccountCard
                     key={a.id}
@@ -1038,9 +1039,11 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                       placement: { kind: "library", label: "账号库" },
                     })}
                     highlighted={selecting ? picked : a.id === openId}
+                    current={usingCursor}
                     onOpen={selecting ? () => toggleSelect(a.id) : () => setOpenId(a.id)}
                     badges={
                       <>
+                        {usingCursor ? <Tag tone="ok">当前登录</Tag> : null}
                         {/* 批量查找把两堆混在一列里了，归档的那几个得标出来。 */}
                         {lookup && a.archivedAt ? <span className="pill">已归档</span> : null}
                         <PoolChips membership={pools.membership(a.email)} />

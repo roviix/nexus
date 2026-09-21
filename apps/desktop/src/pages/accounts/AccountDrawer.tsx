@@ -45,6 +45,7 @@ import {
   planTone,
   resetInShort,
   shortDate,
+  shortDateTime,
 } from "../../ui/usage";
 
 type Tab = "usage" | "bill" | "creds" | "grokbot";
@@ -744,7 +745,7 @@ function UsageTab({
             ) : null}
           </div>
           <span className="dqh-cycle mono">
-            {shortDate(u.cycleStart)} → {shortDate(u.cycleEnd)}
+            {shortDateTime(u.cycleStart)} → {shortDateTime(u.cycleEnd)}
           </span>
         </div>
 
@@ -1175,6 +1176,7 @@ function SecretEditor({
 const SECRET_LABEL: Record<SecretKind, string> = {
   refresh: "refresh_token",
   access: "access",
+  web: "web",
   cursorPassword: "Cursor 密码",
   emailPassword: "邮箱密码",
   recoveryEmail: "辅助邮箱",
@@ -1200,6 +1202,7 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
   const held: Array<[SecretKind, boolean]> = [
     ["refresh", account.hasRefresh],
     ...(!account.hasRefresh ? [["access", account.hasAccess] as [SecretKind, boolean]] : []),
+    ["web", account.hasWeb ?? false],
     ["cursorPassword", account.hasPassword],
     ["emailPassword", account.hasEmailPassword],
     ["recoveryEmail", account.hasRecoveryEmail],
@@ -1274,7 +1277,7 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
             }
             return (
               <div className="kv-row" key={kind}>
-                <span className={`kv-k${kind === "access" || kind === "refresh" || kind === "apiKey" ? " is-token" : ""}`}>{label}</span>
+                <span className={`kv-k${kind === "access" || kind === "web" || kind === "refresh" || kind === "apiKey" ? " is-token" : ""}`}>{label}</span>
                 <span className="kv-v">
                   {/* access 是有期限的，期限就摆在值旁边：过期了要换的就是这一行。 */}
                   {kind === "access" && has && accessExpiry != null ? (

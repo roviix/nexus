@@ -34,6 +34,7 @@ import {
   onDemandText,
   pctText,
   shortDate,
+  shortDateTime,
   spendPace,
   type SpendPace,
   bonusSpend,
@@ -197,8 +198,8 @@ function SubscriptionBill({ account, onReload }: { account: Account; onReload: (
           </div>
           <div>
             <dt>账期</dt>
-            <dd className="num" style={{ fontSize: 13 }}>
-              {shortDate(b.currentPeriodStart)} → {shortDate(b.currentPeriodEnd)}
+            <dd className="num" style={{ fontSize: 12 }}>
+              {shortDateTime(b.currentPeriodStart)} → {shortDateTime(b.currentPeriodEnd)}
             </dd>
             <small>{collectionLabel(b.collectionMethod) || "—"}</small>
           </div>
@@ -433,7 +434,7 @@ function UsageSpend({
       </>
     ) : (
       <>
-        账期 <b className="num mono">{shortDate(u.cycleStart)} → {shortDate(u.cycleEnd)}</b>
+        账期 <b className="num mono">{shortDateTime(u.cycleStart)} → {shortDateTime(u.cycleEnd)}</b>
       </>
     );
   } else {

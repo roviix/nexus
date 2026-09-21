@@ -157,6 +157,10 @@ pub struct Account {
     pub has_recovery_email: bool,
     /// 长期 `crsr_…` User API Key。不能切号，session 过期后仍能查基础用量。
     pub has_api_key: bool,
+    /// 另存着一把当初导入的网站会话 JWT。转成桌面 session 之后 Access 是 session，
+    /// 这一份还在，凭证页单独一行。
+    #[serde(default)]
+    pub has_web: bool,
     pub created_at: String,
     pub updated_at: String,
     /// 入库的先后序号（SQLite rowid）。`created_at` 只到秒，一批导入的几十个号共用一个时刻，
@@ -478,6 +482,7 @@ mod tests {
             has_email_password: false,
             has_recovery_email: false,
             has_api_key: false,
+            has_web: false,
             created_at: "2026-09-02T00:00:00Z".into(),
             updated_at: "2026-09-02T00:00:00Z".into(),
             seq: 1,
@@ -523,6 +528,7 @@ mod tests {
             has_email_password: false,
             has_recovery_email: false,
             has_api_key: false,
+            has_web: false,
             created_at: String::new(),
             updated_at: String::new(),
             seq: 0,
@@ -605,6 +611,7 @@ mod tests {
             has_email_password: false,
             has_recovery_email: false,
             has_api_key: false,
+            has_web: false,
             created_at: String::new(),
             updated_at: String::new(),
             seq: 0,
@@ -645,6 +652,7 @@ mod tests {
             has_email_password: false,
             has_recovery_email: false,
             has_api_key: false,
+            has_web: false,
             created_at: String::new(),
             updated_at: String::new(),
             seq: 0,

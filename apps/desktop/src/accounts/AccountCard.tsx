@@ -34,6 +34,8 @@ import type { AccountView } from "./model";
 export interface AccountCardProps {
   view: AccountView;
   highlighted?: boolean;
+  /** Cursor 此刻登着的就是这个号。和抽屉打开的高亮分开，关掉抽屉也还在。 */
+  current?: boolean;
   dimmed?: boolean;
   /** 场景徽章：当前登录、正在接力、接力时跳过等。档位由组件自己统一添加。 */
   badges?: ReactNode;
@@ -52,6 +54,7 @@ export interface AccountCardProps {
 export function AccountCard({
   view,
   highlighted,
+  current,
   dimmed,
   badges,
   note,
@@ -65,6 +68,7 @@ export function AccountCard({
         <CursorAccountCard
           view={view}
           highlighted={highlighted}
+          current={current}
           dimmed={dimmed}
           badges={badges}
           note={note}
@@ -77,6 +81,7 @@ export function AccountCard({
         <ChatGptAccountCard
           view={view}
           highlighted={highlighted}
+          current={current}
           dimmed={dimmed}
           badges={badges}
           note={note}
@@ -90,6 +95,7 @@ export function AccountCard({
 function CursorAccountCard({
   view,
   highlighted,
+  current,
   dimmed,
   badges,
   note,
@@ -149,6 +155,7 @@ function CursorAccountCard({
       tone={tone}
       dimmed={dimmed ?? managed?.status === "dead"}
       highlighted={highlighted}
+      current={current}
       onOpen={onOpen}
       openLabel={onOpen ? `查看 ${view.label} 的账号详情` : undefined}
       title={view.label}
@@ -207,6 +214,7 @@ function CursorAccountCard({
 function ChatGptAccountCard({
   view,
   highlighted,
+  current,
   dimmed,
   badges,
   note,
@@ -233,6 +241,7 @@ function ChatGptAccountCard({
       tone={chatgptRailTone(managed)}
       dimmed={dimmed ?? managed.status === "dead"}
       highlighted={highlighted}
+      current={current}
       onOpen={onOpen}
       openLabel={onOpen ? `查看 ${view.label} 的账号详情` : undefined}
       title={view.label}
