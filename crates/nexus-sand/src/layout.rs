@@ -231,10 +231,7 @@ mod tests {
         let app = fake_bundle(
             dir.path(),
             SUPPORTED,
-            &[
-                "out/main.js",
-                "out/vs/workbench/workbench.glass.main.js",
-            ],
+            &["out/main.js", "out/vs/workbench/workbench.glass.main.js"],
         );
         let l = SandLayout::from_app(&app).unwrap();
         assert_eq!(l.version, SUPPORTED);
@@ -253,10 +250,7 @@ mod tests {
         let app = fake_bundle(
             dir.path(),
             "3.18.9",
-            &[
-                "extensions/cursor-agent-host/dist/main.js",
-                "out/main.js",
-            ],
+            &["extensions/cursor-agent-host/dist/main.js", "out/main.js"],
         );
         let l = SandLayout::from_app(&app).unwrap();
         let main = l
@@ -264,7 +258,11 @@ mod tests {
             .iter()
             .find(|t| t.ends_with("cursor-agent-host/dist/main.js"))
             .unwrap();
-        let top = l.targets.iter().find(|t| t.ends_with("out/main.js")).unwrap();
+        let top = l
+            .targets
+            .iter()
+            .find(|t| t.ends_with("out/main.js"))
+            .unwrap();
         assert_eq!(l.extension_name_of(main), Some("cursor-agent-host"));
         assert_eq!(l.extension_name_of(top), None);
     }

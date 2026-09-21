@@ -6,7 +6,9 @@
 use crate::billing::{self, AccountBilling};
 use crate::model::{Account, NewAccount, Source};
 use crate::oauth::OauthTokens;
-use crate::provision::{self, ProvisionPlan, ProvisionReport, ProvisionStep, StepReport, StepState};
+use crate::provision::{
+    self, ProvisionPlan, ProvisionReport, ProvisionStep, StepReport, StepState,
+};
 use crate::repo::Accounts;
 use crate::token::{self, RefreshedSession};
 use crate::usage::{self, AccountUsage, UsageEventsReport};
@@ -432,7 +434,9 @@ impl AccountsService {
             .await;
         }
 
-        Err(AppError::invalid("该账号没有可用的 session token 或 API Key，无法查询调用明细。"))
+        Err(AppError::invalid(
+            "该账号没有可用的 session token 或 API Key，无法查询调用明细。",
+        ))
     }
 
     /// 改按需计费，成功后再刷一遍用量，让抽屉立刻看到新上限。

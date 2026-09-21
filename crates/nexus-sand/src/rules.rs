@@ -1305,8 +1305,7 @@ fn agent_host_identity_patched() -> String {
 /// 3.21.13：attempt 工厂改名 `me` → `kRe`，转译助手也从「就地赋值 `n=this,r=void 0,s=function*(){`」
 /// 换成了 `CRe(this,void 0,void 0,function*(){…})`。旧注入体正是靠那三个 `n`/`r`/`s` 局部量做文章的，
 /// 新形态里它们不存在，见 [`direct_stream_injection_current`]。
-const DIRECT_STREAM_ANCHOR: &str =
-    "function kRe(e){return t=>CRe(this,void 0,void 0,function*(){";
+const DIRECT_STREAM_ANCHOR: &str = "function kRe(e){return t=>CRe(this,void 0,void 0,function*(){";
 
 /// 模型参数 `context`（"200k"/"1m"/"1b" 或纯数字）→ token 数；不设则 undefined。
 const CONTEXT_TOKENS_EXPR: &str = concat!(

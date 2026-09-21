@@ -20,8 +20,7 @@ const FILTERED_EVENTS_URL: &str = "https://cursor.com/api/dashboard/get-filtered
 const SET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/set-hard-limit";
 const GET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/get-hard-limit";
 /// Fable 5 的「非零数据保留」同意开关（仪表盘 Privacy 那格）。2026-09-19 抓包实测。
-const SET_ZDR_CONSENT_URL: &str =
-    "https://cursor.com/api/dashboard/set-user-no-zdr-model-consent";
+const SET_ZDR_CONSENT_URL: &str = "https://cursor.com/api/dashboard/set-user-no-zdr-model-consent";
 const CREDIT_GRANTS_URL: &str = "https://cursor.com/api/dashboard/get-credit-grants-balance";
 const CREDIT_GRANT_LIST_URL: &str =
     "https://cursor.com/api/dashboard/get-client-visible-credit-grants";
@@ -614,9 +613,7 @@ fn hard_limit_stuck(got: &Value, enabled: bool, limit_cents: Option<f64>) -> boo
     if !enabled {
         return true;
     }
-    let asked_unlimited = limit_cents
-        .filter(|c| c.is_finite() && *c > 0.0)
-        .is_none();
+    let asked_unlimited = limit_cents.filter(|c| c.is_finite() && *c > 0.0).is_none();
     if !asked_unlimited {
         return true;
     }
@@ -883,15 +880,19 @@ async fn post_required(
                 if status == reqwest::StatusCode::UNAUTHORIZED
                     || status == reqwest::StatusCode::FORBIDDEN
                 {
-                    return Err(AppError::unauthorized(format!("Cursor 拒绝了这次{action}。"))
-                        .with_hint("会话可能过期了；到凭证页更新 session token，或授权一次。"));
+                    return Err(
+                        AppError::unauthorized(format!("Cursor 拒绝了这次{action}。"))
+                            .with_hint("会话可能过期了；到凭证页更新 session token，或授权一次。"),
+                    );
                 }
                 let text = res.text().await.unwrap_or_default();
                 if text.trim().is_empty() {
                     if status.is_success() {
                         return Ok(Value::Object(serde_json::Map::new()));
                     }
-                    return Err(AppError::upstream(format!("{action}失败（HTTP {status}）。")));
+                    return Err(AppError::upstream(format!(
+                        "{action}失败（HTTP {status}）。"
+                    )));
                 }
                 let json: Value =
                     serde_json::from_str(&text).unwrap_or(Value::String(text.clone()));
