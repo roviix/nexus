@@ -35,4 +35,4 @@ pub use repo::Accounts;
 pub use service::AccountsService;
 pub use sessions::{ActiveSession, KickOutcome};
 pub use token::{extract_user_id, refresh_to_session, MintedApiKeyInfo, RefreshedSession};
-pub use usage::{AccountUsage, BotQuota, ModelUsage};
+pub use usage::{AccountUsage, BotQuota, ModelUsage, UsageEventItem, UsageEventsReport};

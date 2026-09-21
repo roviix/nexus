@@ -27,7 +27,7 @@ import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster, usePools, type Pools } from 
 import type { Account, CrsrStatus, KickOutcome, MintedApiKey, SecretKind } from "../../ipc/types";
 import { accounts, crsr, gateway as gatewayApi, switcher as switcherApi } from "../../ipc/api";
 import { confirm } from "../../ui/confirm";
-import { Banner, CopyButton, Drawer, ErrorNote, Health, Icon, Spinner, Switch, Tag } from "../../ui/primitives";
+import { Banner, CopyButton, Drawer, ErrorNote, Health, Icon, Spinner, Switch } from "../../ui/primitives";
 import { accountSourceLabel, timeAgo, timeUntil } from "../../ui/format";
 import { canQueryUsage, canUseDashboard, hasLiveAccess, sessionOnly } from "../../ui/accounts";
 import { canAddToSwitchPool, canMintApiKey, switchNeedsWebConversion } from "../../ui/switcher";
@@ -35,12 +35,10 @@ import { GrokBotTab } from "./GrokBotTab";
 import { BillTab } from "./BillTab";
 import {
   accountProblem,
-  blockReasonText,
   bonusSpend,
   money,
   creditPoints,
   onDemandText,
-  pctText,
   planBudget,
   planLabel,
   planSpend,
@@ -793,52 +791,144 @@ function UsageTab({
           />
         </div>
 
-        {/* 免费加量条（仅当上游有补贴时优雅呈现） */}
+        {/* Auto 额度 */}
         {bonus != null ? (
           <div className="dqh-bonus-strip">
-            <span style={{ fontSize: 13 }}>🎁</span>
+            <span style={{ fontSize: 13 }}>⚡</span>
             <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
               <span>
-                厂商免费加量已享用 <b className="num">{money(bonus)}</b>
+                Auto 额外用量 <b className="num">{money(bonus)}</b>
               </span>
               <span className="faint tiny">
-                Cursor 与模型厂商补贴的额外用量，不占订阅配额，亦非按需扣费
+                由 Auto 智能调度产生的消费，不占基础额度，亦非按需扣费
               </span>
             </div>
           </div>
         ) : null}
       </div>
 
-      {/* 2. 模型调度分布（Auto 与点名 API 双色比例条） */}
+      {/* 2. 额度使用情况（各桶百分比与状态） */}
       <div className="drawer-card">
         <div className="dc-head">
-          <span className="dc-title">模型调度分布</span>
-          <span className="dc-sub faint">按调度类别分别计量</span>
+          <span className="dc-title">额度使用情况</span>
+          <span className="dc-sub faint">各通道额度与包含配额</span>
         </div>
 
-        <div className="model-ratio-track">
-          <div
-            className="mrt-seg is-auto"
-            style={{ width: `${Math.min(100, Math.max(0, u.autoPercentUsed ?? 0))}%` }}
-            title={`Auto 调度: ${pctText(u.autoPercentUsed)}`}
-          />
-          <div
-            className="mrt-seg is-api"
-            style={{ width: `${Math.min(100, Math.max(0, u.apiPercentUsed ?? 0))}%` }}
-            title={`点名 API: ${pctText(u.apiPercentUsed)}`}
-          />
-        </div>
-
-        <div className="model-ratio-legend">
-          <div className="mrl-item">
-            <i className="mrl-dot is-auto" />
-            <span className="mrl-k">Auto 调度 (Composer / Grok)</span>
-            <span className="mrl-v num">{pctText(u.autoPercentUsed)}</span>
+        <div className="quota-buckets-grid">
+          {/* 总额度 */}
+          <div className="qb-card">
+            <div className="qb-header">
+              <span className="qb-label">总包含额度</span>
+              <span className="qb-pct num">
+                {u.totalPercentUsed != null ? `${Math.round(u.totalPercentUsed)}%` : "—"}
+              </span>
+            </div>
+            <div className="qb-track">
+              <div
+                className={`qb-fill is-${pctTone}`}
+                style={{ width: `${Math.min(100, Math.max(0, u.totalPercentUsed ?? 0))}%` }}
+              />
+            </div>
+            <div className="qb-meta">
+              <span>{budget != null && spend != null ? `${money(spend)} / ${money(budget)}` : "月账期包含额度"}</span>
+            </div>
           </div>
-          <div className={`mrl-item${(u.apiPercentUsed ?? 0) >= 90 ? " is-warn" : ""}`}>
-            <i className="mrl-dot is-api" />
-            <span className="mrl-k">点名 API (Claude / GPT)</span>
-            <span className="mrl-v num">{pctText(u.apiPercentUsed)}</span>
+
+          {/* Auto 额度 */}
+          <div className="qb-card">
+            <div className="qb-header">
+              <span className="qb-label">Auto 额度</span>
+              <span className="qb-pct num">
+                {u.autoPercentUsed != null ? `${Math.round(u.autoPercentUsed)}%` : "—"}
+              </span>
+            </div>
+            <div className="qb-track">
+              <div
+                className={`qb-fill is-${
+                  u.autoPercentUsed == null
+                    ? "idle"
+                    : u.autoPercentUsed > 90
+                      ? "bad"
+                      : u.autoPercentUsed >= 70
+                        ? "warn"
+                        : "info"
+                }`}
+                style={{ width: `${Math.min(100, Math.max(0, u.autoPercentUsed ?? 0))}%` }}
+              />
+            </div>
+            <div className="qb-meta">
+              <span>Composer / Grok 等模型</span>
+            </div>
+          </div>
+
+          {/* API 额度 */}
+          <div className="qb-card">
+            <div className="qb-header">
+              <span className="qb-label">点名 API 额度</span>
+              <span className="qb-pct num">
+                {u.apiPercentUsed != null ? `${Math.round(u.apiPercentUsed)}%` : "—"}
+              </span>
+            </div>
+            <div className="qb-track">
+              <div
+                className={`qb-fill is-${
+                  u.apiPercentUsed == null
+                    ? "idle"
+                    : u.apiPercentUsed > 90
+                      ? "bad"
+                      : u.apiPercentUsed >= 70
+                        ? "warn"
+                        : "ok"
+                }`}
+                style={{ width: `${Math.min(100, Math.max(0, u.apiPercentUsed ?? 0))}%` }}
+              />
+            </div>
+            <div className="qb-meta">
+              <span>Claude / GPT 等模型</span>
+            </div>
+          </div>
+
+          {/* Bot 周额 */}
+          <div className="qb-card">
+            <div className="qb-header">
+              <span className="qb-label">Grok Bot 周额</span>
+              <span className="qb-pct num">
+                {!bot ? (
+                  "—"
+                ) : bot.access === "blocked" ? (
+                  "无权限"
+                ) : bot.hasAvailable === false ? (
+                  "已耗尽"
+                ) : (
+                  `${Math.round(bot.percentUsed ?? 0)}%`
+                )}
+              </span>
+            </div>
+            <div className="qb-track">
+              <div
+                className={`qb-fill is-${
+                  !bot || bot.hasAvailable === false || bot.access === "blocked"
+                    ? "bad"
+                    : (bot.percentUsed ?? 0) > 90
+                      ? "bad"
+                      : (bot.percentUsed ?? 0) >= 70
+                        ? "warn"
+                        : "ok"
+                }`}
+                style={{
+                  width: `${
+                    !bot
+                      ? 0
+                      : bot.hasAvailable === false
+                        ? 100
+                        : Math.min(100, Math.max(0, bot.percentUsed ?? 0))
+                  }%`,
+                }}
+              />
+            </div>
+            <div className="qb-meta">
+              <span>{bot?.resetAt ? `周额 ${resetInShort(bot.resetAt, now)}` : "按周重置"}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -895,51 +985,6 @@ function UsageTab({
 
       {/* 4. 按需计费设置 */}
       <OnDemandEditor account={account} onReload={onReload} />
-
-      {/* 5. Grok Bot 周额 */}
-      <div className="drawer-card">
-        <div className="dc-head">
-          <span className="dc-title">Grok Bot 通道</span>
-          {bot?.resetAt ? (
-            <span className="dc-sub faint mono">
-              周额 {resetInShort(bot.resetAt, now)}
-            </span>
-          ) : bot?.planLabel ? (
-            <span className="dc-sub">{bot.planLabel}</span>
-          ) : null}
-        </div>
-
-        {!bot ? (
-          <p className="sect-none">此账号未开通 Grok Bot 周额度。</p>
-        ) : bot.access === "blocked" ? (
-          <Banner
-            tone="bad"
-            title="无权限"
-            hint={bot.blockReason ? blockReasonText(bot.blockReason) : undefined}
-          />
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <span className="faint" style={{ fontSize: 12 }}>
-                本周使用比例
-              </span>
-              <span className="num font-semibold" style={{ fontSize: 13 }}>
-                {bot.hasAvailable === false ? (
-                  <Tag tone="bad">已耗尽</Tag>
-                ) : (
-                  pctText(bot.percentUsed)
-                )}
-              </span>
-            </div>
-            <div className="dqh-bar-track">
-              <div
-                className={`dqh-bar-fill${bot.hasAvailable === false ? " is-bad" : ""}`}
-                style={{ width: `${Math.min(100, Math.max(0, bot.percentUsed ?? 0))}%` }}
-              />
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -1129,12 +1174,18 @@ function SecretEditor({
 
 const SECRET_LABEL: Record<SecretKind, string> = {
   refresh: "refresh_token",
-  access: "access token",
+  access: "access",
   cursorPassword: "Cursor 密码",
   emailPassword: "邮箱密码",
   recoveryEmail: "辅助邮箱",
   apiKey: "crsr_ API Key",
 };
+
+/** JWT `type` claim 原样当行名：session / web / api_key_token。没解析出来才退回 access。 */
+function accessKindLabel(type?: string | null): string {
+  if (type === "session" || type === "web" || type === "api_key_token") return type;
+  return SECRET_LABEL.access;
+}
 
 function CredsTab({ account, onChanged }: { account: Account; onChanged: () => Promise<void> }) {
   const [revealed, setRevealed] = useState<Partial<Record<SecretKind, string>>>({});
@@ -1217,17 +1268,14 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
           </div>
           {held.map(([kind, has]) => {
             const shown = revealed[kind];
+            const label = kind === "access" ? accessKindLabel(account.accessTokenType) : SECRET_LABEL[kind];
             if (editing === kind) {
-              return <SecretEditor key={kind} label={SECRET_LABEL[kind]} current={shown ?? ""} canClear={has} onCancel={() => setEditing(null)} onSave={(v) => save(kind, v)} />;
+              return <SecretEditor key={kind} label={label} current={shown ?? ""} canClear={has} onCancel={() => setEditing(null)} onSave={(v) => save(kind, v)} />;
             }
             return (
               <div className="kv-row" key={kind}>
-                <span className="kv-k">{SECRET_LABEL[kind]}</span>
+                <span className={`kv-k${kind === "access" || kind === "refresh" || kind === "apiKey" ? " is-token" : ""}`}>{label}</span>
                 <span className="kv-v">
-                  {/* 这把 access 是哪一型，决定了它能干什么：桌面 session 能直接切号，
-                      网站 web 只能查用量和进网关（写进 Cursor 会掉登录）。差别不写出来，
-                      两个号在这一页上看着一模一样。 */}
-                  {kind === "access" && has ? <AccessTypeTag type={account.accessTokenType} /> : null}
                   {/* access 是有期限的，期限就摆在值旁边：过期了要换的就是这一行。 */}
                   {kind === "access" && has && accessExpiry != null ? (
                     <span className={accessExpiry > Date.now() + 60_000 ? "faint tiny" : "tiny"} style={accessExpiry > Date.now() + 60_000 ? undefined : { color: "var(--bad)" }}>
@@ -1266,10 +1314,11 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
               仅会话的号只在 access 还活着时能拼出来。两种都拼不出的不摆。 */}
           {canUseDashboard(account) ? (
             <div className="kv-row">
-              <span className="kv-k" title="user_xxx::<access jwt>，即 WorkosCursorSessionToken">
-                会话 cookie
+              <span className="kv-k is-token" title="user_xxx::<access jwt>">
+                WorkosCursorSessionToken
               </span>
               <span className="kv-v">
+                <TokenTypeTag type={account.accessTokenType} />
                 {session != null ? (
                   <>
                     <code className="secret selectable truncate" title={session}>
@@ -1326,32 +1375,27 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
 }
 
 /**
- * 那把 access 是桌面 session 还是网站 web token。
+ * JWT `type` claim 原样标出来：`session` / `web` / `api_key_token`。
  *
- * 这不是内部细节：批量导入进来的号拿的是网站 token，它查用量、进网关都行，但**不能**写进
- * Cursor 的登录态（Cursor 会拿它续期、服务端回 shouldLogout 把号踢掉）。同一行凭证、两种
- * 命运，界面上得能一眼分开。`null` 是老行还没解析出来，不猜。
+ * 不翻译、不加「桌面 / 网站」——那几个字才是这把票的身份。`web` 写进 Cursor 会掉登录，
+ * 用 warn 色把它和其他两型分开。没解析出来就不猜。
  */
-function AccessTypeTag({ type }: { type?: string | null }) {
-  if (type === "session") {
-    return (
-      <span className="faint tiny" title="桌面会话 token：能直接切进 Cursor，也能给别人用">
-        桌面 session
-      </span>
-    );
-  }
-  if (type === "web") {
-    return (
-      <span
-        className="tiny"
-        style={{ color: "var(--warn)" }}
-        title="网站会话 token：能查用量、能进网关，但不能直接写进 Cursor（会掉登录）。下面可以换成桌面 session。"
-      >
-        网站 web
-      </span>
-    );
-  }
-  return null;
+function TokenTypeTag({ type }: { type?: string | null }) {
+  if (!type) return null;
+  const known = type === "session" || type === "web" || type === "api_key_token";
+  const title =
+    type === "session"
+      ? "type=session：桌面会话，能切进 Cursor"
+      : type === "web"
+        ? "type=web：网站会话，写进 Cursor 会掉登录"
+        : type === "api_key_token"
+          ? "type=api_key_token：crsr_ Key 兑出来的短票，不能当会话"
+          : `type=${type}`;
+  return (
+    <span className={`token-type${type === "web" ? " is-web" : type === "api_key_token" ? " is-key" : known ? " is-session" : ""}`} title={title}>
+      {type}
+    </span>
+  );
 }
 
 /**

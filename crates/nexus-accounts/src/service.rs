@@ -9,7 +9,7 @@ use crate::oauth::OauthTokens;
 use crate::provision::{self, ProvisionPlan, ProvisionReport, ProvisionStep, StepReport, StepState};
 use crate::repo::Accounts;
 use crate::token::{self, RefreshedSession};
-use crate::usage::{self, AccountUsage};
+use crate::usage::{self, AccountUsage, UsageEventsReport};
 use nexus_core::{AccountId, AppError, ErrorCode, Result};
 use nexus_store::keys::AccountSecret;
 use nexus_store::{Db, SecretStore};
@@ -373,6 +373,66 @@ impl AccountsService {
                 Err(err)
             }
         }
+    }
+
+    /// 拉取这个号的调用明细记录（官方 `GetFilteredUsageEvents` / `get-filtered-usage-events`）。
+    pub async fn list_usage_events(
+        &self,
+        id: &AccountId,
+        page: u32,
+        page_size: u32,
+        start_ms: Option<i64>,
+        end_ms: Option<i64>,
+    ) -> Result<UsageEventsReport> {
+        let account = self.repo.get(id)?;
+        let can_session = account.has_refresh || account.has_live_access();
+
+        if can_session {
+            let page = page.max(1);
+            let page_size = page_size.clamp(1, 100);
+            let outcome = self
+                .with_session(id, |token| {
+                    let http = self.http.clone();
+                    async move {
+                        usage::fetch_filtered_events(
+                            &http, &token, page, page_size, start_ms, end_ms,
+                        )
+                        .await
+                    }
+                })
+                .await;
+
+            match outcome {
+                Ok(r) => return Ok(r),
+                Err(err) => {
+                    if !account.has_api_key {
+                        return Err(err);
+                    }
+                    tracing::info!(
+                        email = %account.email,
+                        error = %err.message,
+                        "session 调用明细失败，改走 crsr_ API Key"
+                    );
+                }
+            }
+        }
+
+        if account.has_api_key {
+            let key = self.repo.require_secret(id, AccountSecret::ApiKey)?;
+            let page = page.max(1);
+            let page_size = page_size.clamp(1, 100);
+            return usage::fetch_filtered_events_via_api_key(
+                &self.http,
+                key.expose(),
+                page,
+                page_size,
+                start_ms,
+                end_ms,
+            )
+            .await;
+        }
+
+        Err(AppError::invalid("该账号没有可用的 session token 或 API Key，无法查询调用明细。"))
     }
 
     /// 改按需计费，成功后再刷一遍用量，让抽屉立刻看到新上限。

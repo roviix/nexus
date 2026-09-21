@@ -18,13 +18,14 @@ export const COPY_FORMATS: Array<{ id: CopyFormat; label: string; sample: string
   { id: "json", label: "结构化 JSON", sample: '{ "accounts": [ … ] }' },
 ];
 
-export type CopyExtra = "api" | "on_demand" | "credits" | "resets";
+export type CopyExtra = "api" | "on_demand" | "credits" | "resets" | "bot_resets";
 
 export const COPY_EXTRAS: Array<{ id: CopyExtra; label: string; hint: string }> = [
   { id: "api", label: "API 剩余", hint: "高级模型额度还剩几成" },
   { id: "on_demand", label: "按需用量", hint: "超出订阅额度后花了多少、上限多少" },
   { id: "credits", label: "积分", hint: "Cursor 赠送的 credit grant 还剩多少" },
-  { id: "resets", label: "重置时间", hint: "月额与 Bot 周额各自哪天重置" },
+  { id: "resets", label: "重置时间", hint: "订阅额度哪天重置" },
+  { id: "bot_resets", label: "Bot 重置时间", hint: "Grok Bot 周额哪天重置" },
 ];
 
 const EXTRA_ORDER: CopyExtra[] = COPY_EXTRAS.map((e) => e.id);
@@ -77,9 +78,9 @@ function safeStorage(): Storage | null {
 /* ── 说明行 ──────────────────────────────────────────────────────────────── */
 
 /**
- * 一个号的说明行，如 `API 余 54% · 按需未开启 · 积分 100 · 月额 09/30 重置 · Bot 09/18 重置`。
+ * 一个号的说明行，如 `API 余 54% · 按需未开启 · 积分 100 · 重置时间 09/30 20:05 · Bot 重置时间 09/18 09:30`。
  * 没选附加项时返回空串（Rust 侧当没有）。没查过用量的号只说一句「未查用量」——
- * 与其四个「未知」占着行，不如一句话讲清为什么没数。
+ * 与其几个「未知」占着行，不如一句话讲清为什么没数。
  */
 export function copyInfoLine(account: Pick<Account, "usage">, extras: readonly CopyExtra[]): string {
   if (extras.length === 0) return "";
@@ -106,18 +107,20 @@ function extraText(usage: AccountUsage, extra: CopyExtra): string {
       const remaining = usage.creditGrantRemainingCents;
       return remaining != null && remaining > 0 ? `积分 ${creditPoints(remaining)}` : "无积分";
     }
-    case "resets": {
-      const items: string[] = [];
-      if (usage.cycleEnd != null && Number.isFinite(usage.cycleEnd)) items.push(`月额 ${dateMinute(usage.cycleEnd)} 重置`);
-      if (usage.bot?.resetAt != null && Number.isFinite(usage.bot.resetAt)) items.push(`Bot ${dateMinute(usage.bot.resetAt)} 重置`);
-      return items.length ? items.join(" · ") : "重置时间未知";
-    }
+    case "resets":
+      return usage.cycleEnd != null && Number.isFinite(usage.cycleEnd)
+        ? `重置时间 ${dateMinute(usage.cycleEnd)}`
+        : "重置时间未知";
+    case "bot_resets":
+      return usage.bot?.resetAt != null && Number.isFinite(usage.bot.resetAt)
+        ? `Bot 重置时间 ${dateMinute(usage.bot.resetAt)}`
+        : "Bot 重置时间未知";
   }
 }
 
 /**
  * 重置时刻到分钟，`09/30 20:00`，本地时区。卡片上写「17 天后」够了，复制出去的那行是给别人对表的：
- * 月额几点重置决定这个号今晚还能不能用，只给日期不够。
+ * 订阅几点重置决定这个号今晚还能不能用，只给日期不够。
  */
 export function dateMinute(ms: number): string {
   const d = new Date(ms);

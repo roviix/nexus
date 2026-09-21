@@ -5,8 +5,8 @@
  * 「这个账期 Auto / API 烧了多少」。混在一个大数里会把 $0 Ultra 和花了 $21
  * 的用量叠成一句糊涂话，所以分成两张卡。
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { Account, AccountBilling, BillingInvoice, ModelUsage } from "../../ipc/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { Account, AccountBilling, BillingInvoice, ModelUsage, UsageEventsReport } from "../../ipc/types";
 import { accounts } from "../../ipc/api";
 import { Banner, ErrorNote, Icon, Spinner, Tag } from "../../ui/primitives";
 import { timeAgo } from "../../ui/format";
@@ -37,6 +37,7 @@ import {
   spendPace,
   type SpendPace,
   bonusSpend,
+  startOfLocalDay,
 } from "../../ui/usage";
 
 export function BillTab({ account, onReload }: { account: Account; onReload: () => Promise<void> }) {
@@ -421,7 +422,7 @@ function UsageSpend({
         ) : null}
         {bonus != null ? (
           <>
-            <span className="bill-sub-sep">·</span>免费加量 <b className="num">{money(bonus)}</b>
+            <span className="bill-sub-sep">·</span>Auto <b className="num">{money(bonus)}</b>
           </>
         ) : null}
         {u.creditGrantRemainingCents != null ? (
@@ -482,32 +483,37 @@ function UsageSpend({
           ) : null}
         </div>
 
-        {shown === "cycle" && pace?.budget != null ? <PaceBar pace={pace} /> : null}
-
         {tierTotal > 0 ? (
           <div className="bill-split">
+            <div className="bill-split-cap">
+              <span>消费分类构成</span>
+              <span className="num faint">共 {money(tierTotal)}</span>
+            </div>
             <span className="bill-split-bar">
-              {byTier.auto > 0 ? <i className="is-auto" style={{ width: `${(byTier.auto / tierTotal) * 100}%` }} title={`Auto ${money(byTier.auto)}`} /> : null}
-              {byTier.api > 0 ? <i className="is-api" style={{ width: `${(byTier.api / tierTotal) * 100}%` }} title={`API ${money(byTier.api)}`} /> : null}
-              {byTier.other > 0 ? <i className="is-other" style={{ width: `${(byTier.other / tierTotal) * 100}%` }} title={`其他 ${money(byTier.other)}`} /> : null}
+              {byTier.auto > 0 ? <i className="is-auto" style={{ width: `${(byTier.auto / tierTotal) * 100}%` }} title={`Auto ${money(byTier.auto)} (${Math.round((byTier.auto / tierTotal) * 100)}%)`} /> : null}
+              {byTier.api > 0 ? <i className="is-api" style={{ width: `${(byTier.api / tierTotal) * 100}%` }} title={`点名 API ${money(byTier.api)} (${Math.round((byTier.api / tierTotal) * 100)}%)`} /> : null}
+              {byTier.other > 0 ? <i className="is-other" style={{ width: `${(byTier.other / tierTotal) * 100}%` }} title={`其他 ${money(byTier.other)} (${Math.round((byTier.other / tierTotal) * 100)}%)`} /> : null}
             </span>
             <span className="bill-legend">
               {byTier.auto > 0 ? (
                 <span>
                   <i className="is-auto" />
-                  Auto <b className="num">{money(byTier.auto)}</b>
+                  Auto 消费 <b className="num">{money(byTier.auto)}</b>
+                  <span className="bill-legend-pct num">({Math.round((byTier.auto / tierTotal) * 100)}%)</span>
                 </span>
               ) : null}
               {byTier.api > 0 ? (
                 <span>
                   <i className="is-api" />
-                  API <b className="num">{money(byTier.api)}</b>
+                  点名 API 消费 <b className="num">{money(byTier.api)}</b>
+                  <span className="bill-legend-pct num">({Math.round((byTier.api / tierTotal) * 100)}%)</span>
                 </span>
               ) : null}
               {byTier.other > 0 ? (
                 <span>
                   <i className="is-other" />
-                  其他 <b className="num">{money(byTier.other)}</b>
+                  其他消费 <b className="num">{money(byTier.other)}</b>
+                  <span className="bill-legend-pct num">({Math.round((byTier.other / tierTotal) * 100)}%)</span>
                 </span>
               ) : null}
             </span>
@@ -522,11 +528,16 @@ function UsageSpend({
       {shown === "cycle" && pace ? (
         <section className="sect">
           <div className="sect-cap">
-            <span>节奏</span>
+            <span>账期节奏</span>
             <span className="sect-aside num">
               账期第 {Math.ceil(pace.elapsedDays)} / {Math.round(pace.totalDays)} 天
             </span>
           </div>
+
+          <div style={{ marginBottom: 4 }}>
+            <PaceBar pace={pace} />
+          </div>
+
           <dl className="facts facts-4">
             <div>
               <dt>日均</dt>
@@ -564,8 +575,8 @@ function UsageSpend({
 
       <section className="sect">
         <div className="sect-cap">
-          <span>按模型</span>
-          <span className="sect-aside">{view.models.length ? `${view.models.length} 个模型 · 按花费` : null}</span>
+          <span>按模型消费</span>
+          <span className="sect-aside">{view.models.length ? `${view.models.length} 个模型 · 按花费排序` : null}</span>
         </div>
         {view.models.length === 0 ? (
           <p className="sect-none">{shown === "cycle" ? "这个账期还没有按模型的消费明细。" : "这段时间没有按模型的消费明细。"}</p>
@@ -577,7 +588,7 @@ function UsageSpend({
       {view.tokens.input || view.tokens.output ? (
         <section className="sect">
           <div className="sect-cap">
-            <span>Tokens</span>
+            <span>Tokens 统计</span>
             <span className="sect-aside">{RANGE_LABEL[shown]}</span>
           </div>
           <dl className="facts facts-4">
@@ -600,6 +611,8 @@ function UsageSpend({
           </dl>
         </section>
       ) : null}
+
+      <UsageEventsSection account={account} range={shown} />
     </>
   );
 }
@@ -611,17 +624,17 @@ function PaceBar({ pace }: { pace: SpendPace }) {
   const verdict = pace.remaining! <= 0 ? { tone: "is-bad", text: "额度已用完" } : ahead > 8 ? { tone: "is-warn", text: `比时间快 ${Math.round(ahead)} 个点` } : ahead < -8 ? { tone: "is-ok", text: `比时间慢 ${Math.round(-ahead)} 个点` } : { tone: "", text: "节奏正常" };
   return (
     <div className="pace">
-      <span className="pace-track" title={`已用 ${Math.round(spentPct)}% · 账期过了 ${Math.round(timePct)}%`}>
+      <span className="pace-track" title={`额度已用 ${Math.round(spentPct)}% · 账期已过 ${Math.round(timePct)}%`}>
         <i className="pace-fill" style={{ width: `${meterWidth(spentPct)}%`, background: meterColor(spentPct) }} />
         <i className="pace-tick" style={{ left: `${timePct}%` }} />
       </span>
       <span className="pace-legend num">
         <span>
-          已用 <b>{pctText(spentPct)}</b>
+          额度已用 <b>{pctText(spentPct)}</b>
         </span>
         <span className="pace-time">
           <i />
-          账期过了 <b>{Math.round(timePct)}%</b>
+          账期已过 <b>{Math.round(timePct)}%</b>
         </span>
         <span className={`pace-verdict ${verdict.tone}`}>{verdict.text}</span>
       </span>
@@ -650,5 +663,207 @@ function ModelRanking({ rows }: { rows: ModelUsage[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function formatCallTime(ts: number): { time: string; sub: string } {
+  if (!ts) return { time: "—", sub: "" };
+  const d = new Date(ts);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const h = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  const s = String(d.getSeconds()).padStart(2, "0");
+  return {
+    time: `${h}:${min}:${s}`,
+    sub: `${m}-${day}`,
+  };
+}
+
+function UsageEventsSection({
+  account,
+  range,
+}: {
+  account: Account;
+  range: BillRange;
+}) {
+  const [report, setReport] = useState<UsageEventsReport | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [page, setPage] = useState(1);
+  const can = canUseDashboard(account) || account.hasApiKey;
+  const u = account.usage;
+
+  const { startMs, endMs } = useMemo(() => {
+    const now = Date.now();
+    if (range === "today") {
+      return { startMs: startOfLocalDay(now), endMs: now };
+    }
+    if (range === "week") {
+      return { startMs: startOfLocalDay(now) - 6 * 86_400_000, endMs: now };
+    }
+    return { startMs: u?.cycleStart, endMs: u?.cycleEnd };
+  }, [range, u?.cycleStart, u?.cycleEnd]);
+
+  const loadEvents = useCallback(
+    async (targetPage = 1) => {
+      if (!can) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await accounts.listUsageEvents(account.id, {
+          page: targetPage,
+          pageSize: 25,
+          startMs,
+          endMs,
+        });
+        setReport(res);
+        setPage(targetPage);
+      } catch (err) {
+        setError(err);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [account.id, can, startMs, endMs],
+  );
+
+  useEffect(() => {
+    void loadEvents(1);
+  }, [loadEvents]);
+
+  const totalPages = report ? Math.max(1, Math.ceil(report.totalCount / report.pageSize)) : 1;
+
+  return (
+    <section className="sect">
+      <div className="sect-cap">
+        <span>调用明细</span>
+        <span className="sect-aside">
+          {report ? `共 ${report.totalCount} 次 · ${RANGE_LABEL[range]}` : RANGE_LABEL[range]}
+        </span>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+          <button
+            type="button"
+            className="btn btn-sm btn-icon btn-quiet"
+            disabled={loading || !can}
+            data-tip={loading ? "正在拉取…" : "刷新调用明细"}
+            aria-label="刷新调用明细"
+            onClick={() => void loadEvents(page)}
+          >
+            <Icon name="refresh" size={13} className={loading ? "is-spinning" : undefined} />
+          </button>
+        </div>
+      </div>
+
+      {!can ? (
+        <p className="sect-none">需要有效 session token 或 crsr_ API Key 才能查看官方每次调用明细。</p>
+      ) : error ? (
+        <div className="stack" style={{ gap: 8 }}>
+          <ErrorNote error={error} />
+          <div>
+            <button type="button" className="btn btn-sm btn-quiet" onClick={() => void loadEvents(page)}>
+              重试拉取
+            </button>
+          </div>
+        </div>
+      ) : loading && (!report || report.events.length === 0) ? (
+        <div className="call-loading">
+          <Spinner />
+          <span>正在拉取官方调用记录…</span>
+        </div>
+      ) : !report || report.events.length === 0 ? (
+        <p className="sect-none">{range === "today" ? "今天暂无调用记录。" : range === "week" ? "近 7 天暂无调用记录。" : "本账期暂无调用记录。"}</p>
+      ) : (
+        <div className="call-table">
+          <div className="call-head">
+            <span>时间</span>
+            <span>模型</span>
+            <span>类型</span>
+            <span>Tokens</span>
+            <span>费用</span>
+          </div>
+
+          <div className="call-rows">
+            {report.events.map((ev, i) => {
+              const t = formatCallTime(ev.timestamp);
+              const isCharged = ev.chargedCents > 0;
+              const isIncluded = !isCharged && (Boolean(ev.kind && /included/i.test(ev.kind)) || ev.totalCents === 0);
+              const totalTok = ev.inputTokens + ev.outputTokens;
+
+              return (
+                <div key={`${ev.timestamp}-${i}`} className="call-row">
+                  <div className="call-time" title={ev.timestamp ? new Date(ev.timestamp).toLocaleString("zh-CN") : undefined}>
+                    <span className="call-time-val num">{t.time}</span>
+                    <span className="call-time-date num">{t.sub}</span>
+                  </div>
+
+                  <div className="call-model-wrap">
+                    <span className="call-model-name mono truncate" title={ev.model}>
+                      {ev.model || "—"}
+                    </span>
+                    {ev.isHeadless ? <span className="call-headless-tag">后台</span> : null}
+                  </div>
+
+                  <div>
+                    <span className={`call-kind ${isCharged ? "is-warn" : isIncluded ? "is-included" : "is-quiet"}`}>
+                      {isCharged ? "按需计费" : isIncluded ? "额度内" : ev.kind || "标准"}
+                    </span>
+                  </div>
+
+                  <div
+                    className="call-tokens-cell"
+                    title={`输入: ${compactNumber(ev.inputTokens)} · 输出: ${compactNumber(ev.outputTokens)}${ev.cacheReadTokens ? ` · 缓存读: ${compactNumber(ev.cacheReadTokens)}` : ""}${ev.cacheWriteTokens ? ` · 缓存写: ${compactNumber(ev.cacheWriteTokens)}` : ""}`}
+                  >
+                    <span className="call-tokens-total num">{compactNumber(totalTok)}</span>
+                    <span className="call-tokens-detail faint">
+                      入 {compactNumber(ev.inputTokens)} / 出 {compactNumber(ev.outputTokens)}
+                      {ev.cacheReadTokens ? ` · 读 ${compactNumber(ev.cacheReadTokens)}` : ""}
+                    </span>
+                  </div>
+
+                  <div className="call-cost-cell">
+                    {ev.chargedCents > 0 ? (
+                      <span className="call-cost-charged num">${(ev.chargedCents / 100).toFixed(2)}</span>
+                    ) : ev.totalCents > 0 ? (
+                      <span className="call-cost-included num" title={`折算 ${money(ev.totalCents)}`}>
+                        额度扣除
+                      </span>
+                    ) : (
+                      <span className="call-cost-free faint">免费</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {totalPages > 1 || report.totalCount > report.pageSize ? (
+            <div className="call-pagination">
+              <span className="call-page-stat num faint">
+                共 <b>{report.totalCount}</b> 次调用 · 第 {report.page} / {totalPages} 页
+              </span>
+              <div className="call-page-btns">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-quiet"
+                  disabled={page <= 1 || loading}
+                  onClick={() => void loadEvents(page - 1)}
+                >
+                  ‹ 上一页
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-quiet"
+                  disabled={page >= totalPages || loading}
+                  onClick={() => void loadEvents(page + 1)}
+                >
+                  下一页 ›
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </section>
   );
 }

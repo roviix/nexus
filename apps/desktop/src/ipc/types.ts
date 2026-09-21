@@ -212,6 +212,29 @@ export interface CreditGrant {
   expiresAt?: number | null;
 }
 
+/** 单次调用的用量明细项（来自官方 GetFilteredUsageEvents）。 */
+export interface UsageEventItem {
+  timestamp: number;
+  model: string;
+  kind?: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalCents: number;
+  chargedCents: number;
+  isHeadless?: boolean;
+}
+
+/** 某段时间范围内的调用明细分页报告。 */
+export interface UsageEventsReport {
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  events: UsageEventItem[];
+}
+
 export interface AccountUsage {
   fetchedAt: string;
   email?: string;

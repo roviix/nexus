@@ -2605,14 +2605,14 @@ h2 {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: rgba(45, 212, 160, 0.06);
-  border: 1px solid rgba(45, 212, 160, 0.18);
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.22);
   color: var(--color-ink-2);
   font-size: 11.5px;
 }
 
 .dqh-bonus-strip b {
-  color: var(--accent);
+  color: var(--info);
 }
 
 /* 抽屉卡片容器 */
@@ -2645,59 +2645,84 @@ h2 {
   color: var(--color-faint);
 }
 
-/* 模型调度双色比例条 */
-.model-ratio-track {
+/* 额度卡片四宫格网格 */
+.quota-buckets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.qb-card {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--color-canvas);
+  border: 1px solid var(--color-line);
+  box-shadow: inset 0 1px 0 var(--hi);
+}
+
+.qb-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qb-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-ink-2);
+}
+
+.qb-pct {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+
+.qb-track {
   height: 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
   overflow: hidden;
-  gap: 2px;
 }
 
-.mrt-seg {
+.qb-fill {
   height: 100%;
   border-radius: 999px;
-  min-width: 2px;
-}
-.mrt-seg.is-auto { background: var(--info); }
-.mrt-seg.is-api { background: var(--accent); }
-
-.model-ratio-legend {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 16px;
+  background: var(--accent);
+  transition: width 0.3s ease;
 }
 
-.mrl-item {
+.qb-fill.is-ok {
+  background: var(--accent);
+}
+
+.qb-fill.is-info {
+  background: var(--info);
+}
+
+.qb-fill.is-warn {
+  background: var(--warn);
+}
+
+.qb-fill.is-bad {
+  background: var(--bad);
+}
+
+.qb-fill.is-idle {
+  background: var(--color-faint);
+}
+
+.qb-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-}
-
-.mrl-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-.mrl-dot.is-auto { background: var(--info); }
-.mrl-dot.is-api { background: var(--accent); }
-
-.mrl-k {
+  justify-content: space-between;
+  font-size: 11px;
   color: var(--color-muted);
-  flex: 1;
-  min-width: 0;
-}
-
-.mrl-v {
-  font-weight: 600;
-  color: var(--color-ink);
-}
-
-.mrl-item.is-warn .mrl-v {
-  color: var(--warn);
 }
 
 /* 赠送积分卡片 */
@@ -4011,7 +4036,18 @@ h2 {
 .bill-split {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.bill-split-cap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--color-faint);
 }
 
 .bill-split-bar {
@@ -4020,6 +4056,7 @@ h2 {
   height: 6px;
   border-radius: 999px;
   overflow: hidden;
+  background: var(--track);
 }
 
 .bill-split-bar > i {
@@ -4052,6 +4089,12 @@ h2 {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--color-ink-2);
+}
+
+.bill-legend-pct {
+  font-size: 10.5px;
+  color: var(--color-faint);
+  margin-left: 1px;
 }
 
 /* Auto 紫、API 薄荷：跟账单表里的芯片、用量页里的桶同一套颜色。 */
@@ -4161,6 +4204,181 @@ h2 {
   text-align: right;
   color: var(--color-muted);
   white-space: nowrap;
+}
+
+/* ── 调用明细（官方 GetFilteredUsageEvents） ────────────────────────────── */
+.call-table {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  background: var(--color-raised);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  overflow: hidden;
+}
+
+.call-head {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1.4fr) 75px minmax(0, 1.2fr) 75px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-faint);
+  background: var(--wash-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.call-head > :last-child {
+  text-align: right;
+}
+
+.call-row {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1.4fr) 75px minmax(0, 1.2fr) 75px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  transition: background 0.12s ease;
+}
+
+.call-row + .call-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.call-row:hover {
+  background: var(--wash-1);
+}
+
+.call-time {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.call-time-val {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-ink-2);
+}
+
+.call-time-date {
+  font-size: 10px;
+  color: var(--color-faint);
+}
+
+.call-model-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.call-model-name {
+  font-size: 11.5px;
+  color: var(--color-ink);
+}
+
+.call-headless-tag {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  color: var(--color-faint);
+  background: var(--wash-2);
+}
+
+.call-kind {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.call-kind.is-included {
+  color: var(--color-muted);
+  background: var(--seg-bg);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+}
+
+.call-kind.is-warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+
+.call-kind.is-quiet {
+  color: var(--color-faint);
+  background: var(--seg-bg);
+}
+
+.call-tokens-cell {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.call-tokens-total {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-ink-2);
+}
+
+.call-tokens-detail {
+  font-size: 10px;
+  color: var(--color-faint);
+}
+
+.call-cost-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.call-cost-charged {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+.call-cost-included {
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.call-cost-free {
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+.call-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--wash-1);
+  border-top: 1px solid var(--line-soft);
+  font-size: 11px;
+}
+
+.call-page-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.call-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  font-size: 12px;
+  color: var(--color-muted);
 }
 
 .facts-4 {
@@ -4298,7 +4516,7 @@ h2 {
 
 .kv-row {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-columns: 168px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
   min-height: 34px;
@@ -4313,6 +4531,45 @@ h2 {
 .kv-k {
   color: var(--color-muted);
   white-space: nowrap;
+}
+
+.kv-k.is-token {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: -0.02em;
+}
+
+.token-type {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--color-line);
+  background: var(--color-canvas);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-muted);
+  line-height: 1.4;
+}
+
+.token-type.is-session {
+  color: var(--info);
+  border-color: rgba(99, 102, 241, 0.28);
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.token-type.is-web {
+  color: var(--warn);
+  border-color: rgba(245, 158, 11, 0.32);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.token-type.is-key {
+  color: var(--color-muted);
+  border-color: var(--color-line);
 }
 
 .kv-v {

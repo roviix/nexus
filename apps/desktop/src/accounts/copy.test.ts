@@ -33,9 +33,9 @@ describe("copyInfoLine", () => {
     expect(copyInfoLine({ usage: usage() }, [])).toBe("");
   });
 
-  it("按固定顺序拼四段，中间用点隔开", () => {
-    const line = copyInfoLine({ usage: usage() }, ["resets", "api", "credits", "on_demand"]);
-    expect(line).toBe("API 余 54% · 按需 $1.20 / $20 · 积分 100 · 月额 09/30 20:05 重置 · Bot 09/18 09:30 重置");
+  it("按固定顺序拼说明，订阅重置和 Bot 重置分开写", () => {
+    const line = copyInfoLine({ usage: usage() }, ["bot_resets", "resets", "api", "credits", "on_demand"]);
+    expect(line).toBe("API 余 54% · 按需 $1.20 / $20 · 积分 100 · 重置时间 09/30 20:05 · Bot 重置时间 09/18 09:30");
   });
 
   it("只选一项就只有一段", () => {
@@ -53,7 +53,9 @@ describe("copyInfoLine", () => {
       cycleEnd: undefined,
       bot: undefined,
     });
-    expect(copyInfoLine({ usage: u }, ["on_demand", "credits", "resets"])).toBe("按需未开启 · 无积分 · 重置时间未知");
+    expect(copyInfoLine({ usage: u }, ["on_demand", "credits", "resets", "bot_resets"])).toBe(
+      "按需未开启 · 无积分 · 重置时间未知 · Bot 重置时间未知",
+    );
   });
 
   it("按需不封顶时把「不封顶」接在后面", () => {
@@ -85,9 +87,9 @@ describe("copyInfoMap", () => {
 
 describe("copy choice persistence", () => {
   it("不认识的格式回默认，附加项去重并按固定顺序", () => {
-    expect(normalizeChoice({ format: "csv", extras: ["resets", "api", "resets", "nope"] })).toEqual({
+    expect(normalizeChoice({ format: "csv", extras: ["bot_resets", "resets", "api", "resets", "nope"] })).toEqual({
       format: "email",
-      extras: ["api", "resets"],
+      extras: ["api", "resets", "bot_resets"],
     });
     expect(normalizeChoice(null)).toEqual({ format: "email", extras: [] });
   });

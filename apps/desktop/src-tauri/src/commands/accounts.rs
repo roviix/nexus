@@ -5,6 +5,7 @@ use crate::state::AppState;
 use nexus_accounts::{
     Account, AccountBilling, AccountPatch, AccountUsage, ActiveSession, KickOutcome,
     MintedApiKeyInfo, NewAccount, OauthSession, OauthState, ProvisionPlan, ProvisionReport,
+    UsageEventsReport,
 };
 use nexus_core::{AccountId, AppError, Clock, ErrorCode, Result};
 use nexus_cursor::AuthBundle;
@@ -286,6 +287,28 @@ pub async fn accounts_refresh_billing(
     state
         .accounts
         .refresh_billing(&AccountId::from_raw(id))
+        .await
+}
+
+/// 拉取这个号的单次调用明细（官方 `GetFilteredUsageEvents` / `get-filtered-usage-events`）。
+#[tauri::command]
+pub async fn accounts_list_usage_events(
+    state: State<'_, AppState>,
+    id: String,
+    page: Option<u32>,
+    page_size: Option<u32>,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+) -> Result<UsageEventsReport> {
+    state
+        .accounts
+        .list_usage_events(
+            &AccountId::from_raw(id),
+            page.unwrap_or(1),
+            page_size.unwrap_or(50),
+            start_ms,
+            end_ms,
+        )
         .await
 }
 

@@ -74,6 +74,7 @@ import type {
   SwitchProfile,
   TunnelStatus,
   SwitchProgress,
+  UsageEventsReport,
   UsageSummary,
   ZcodeClientProbe,
   ZcodeImportReport,
@@ -180,6 +181,18 @@ export const accounts = {
     call<AccountUsage>("accounts_refresh_usage", { id, dayStartMs: startOfLocalDay() }),
   /** 读这个号的 Stripe 订阅账单（标价 / 折扣 / 发票）。门户密钥不回给前端。 */
   refreshBilling: (id: string) => call<AccountBilling>("accounts_refresh_billing", { id }),
+  /** 拉取这个号的单次调用明细记录（官方 GetFilteredUsageEvents）。 */
+  listUsageEvents: (
+    id: string,
+    opts?: { page?: number; pageSize?: number; startMs?: number; endMs?: number },
+  ) =>
+    call<UsageEventsReport>("accounts_list_usage_events", {
+      id,
+      page: opts?.page,
+      pageSize: opts?.pageSize,
+      startMs: opts?.startMs,
+      endMs: opts?.endMs,
+    }),
   /** 改按需计费。`limitCents` 不传且开启 = 不封顶。成功后返回刚刷过的用量。 */
   setOnDemand: (id: string, enabled: boolean, limitCents?: number | null) =>
     call<AccountUsage>("accounts_set_on_demand", {

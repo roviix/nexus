@@ -157,6 +157,8 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   /** 多选：只在按下「选择」后出现，选完做一件事（归档 / 取回 / 刷新）就退出。 */
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** 只看已选：把列表收成选中的那几个。挑一批出来截图时，别把没选的也拍进去。 */
+  const [previewOnly, setPreviewOnly] = useState(false);
   const [archiving, setArchiving] = useState(false);
   // 复制弹窗：开着时记着上次选的格式与附加项；复制中禁掉按钮，别连点两次。
   const [copying, setCopying] = useState(false);
@@ -358,6 +360,18 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
     return lookup ? filtered : sortAccounts(filtered, sort);
   }, [searched, facets, sort, lookup]);
 
+  /**
+   * 真正铺在页面上的那几张卡。开着「只看已选」时是选中的那批，否则就是 `shown`。
+   *
+   * 这一层只管显示，`shown` 仍是「筛完之后的全集」：操作条上的 x / y、全选的目标、
+   * 以及选中集的剪枝都还照着全集算 —— 否则一开预览，count 就等于 total，「全选」当场
+   * 变成「清空」，按下去列表直接空掉。
+   */
+  const visible = useMemo(
+    () => (selecting && previewOnly ? shown.filter((a) => selected.has(a.id)) : shown),
+    [shown, selecting, previewOnly, selected],
+  );
+
   /*
    * 每个筛子上的数都是「点下去会剩几个」：其余几维照旧下上，自己那一维跳过
    * （`applyFacets` 的 except）。这排数字以前数的是搜索之后、筛子之前的底数，
@@ -436,7 +450,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
     [openAccount],
   );
   // 刷的是眼前这批：筛子 / 搜索 / 归档视图下只动看得见的号，别把别的档也带上。
-  const refreshTargets = useMemo(() => shown.filter((a) => canQueryUsage(a)).map((a) => a.id), [shown]);
+  const refreshTargets = useMemo(() => visible.filter((a) => canQueryUsage(a)).map((a) => a.id), [visible]);
   const refreshable = refreshTargets.length;
   const narrowed = query.trim() !== "" || lookup != null || !isDefaultView(spec);
 
@@ -518,6 +532,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
   function exitSelecting() {
     setSelecting(false);
     setSelected(new Set());
+    setPreviewOnly(false);
   }
   /** 归档 / 取回选中的号。当前看的是没归档的那堆就是归档，看的是已归档那堆就是取回。 */
   async function archiveSelected(toArchive: boolean) {
@@ -963,6 +978,8 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
               total={shown.length}
               archived={archived}
               busy={archiving}
+              previewOnly={previewOnly}
+              onTogglePreview={() => setPreviewOnly((v) => !v)}
               onAll={() => setSelected(new Set(shown.map((a) => a.id)))}
               onNone={() => setSelected(new Set())}
               onArchive={() => void archiveSelected(!archived)}
@@ -973,19 +990,25 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
             />
           ) : null}
 
-          {shown.length === 0 ? (
+          {visible.length === 0 ? (
             <Empty
               title={
-                lookup
-                  ? lookupResult?.found.length
-                    ? "找到的号都被筛子挡住了"
-                    : "清单上的号一个都不在库里"
-                  : archived && !narrowed
-                    ? "没有归档的账号"
-                    : "没有匹配的账号"
+                previewOnly && selecting
+                  ? "一个号都还没选"
+                  : lookup
+                    ? lookupResult?.found.length
+                      ? "找到的号都被筛子挡住了"
+                      : "清单上的号一个都不在库里"
+                    : archived && !narrowed
+                      ? "没有归档的账号"
+                      : "没有匹配的账号"
               }
               action={
-                narrowed ? (
+                previewOnly && selecting ? (
+                  <button type="button" className="btn btn-sm" onClick={() => setPreviewOnly(false)}>
+                    显示全部
+                  </button>
+                ) : narrowed ? (
                   <button
                     type="button"
                     className="btn btn-sm"
@@ -1002,7 +1025,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
             />
           ) : (
             <div className="accts">
-              {shown.map((a) => {
+              {visible.map((a) => {
                 const refreshingAccount = refreshing.has(a.id);
                 const picked = selected.has(a.id);
                 return (
@@ -1256,6 +1279,8 @@ function SelectBar({
   total,
   archived,
   busy,
+  previewOnly,
+  onTogglePreview,
   onAll,
   onNone,
   onArchive,
@@ -1268,6 +1293,8 @@ function SelectBar({
   total: number;
   archived: boolean;
   busy: boolean;
+  previewOnly: boolean;
+  onTogglePreview: () => void;
   onAll: () => void;
   onNone: () => void;
   onArchive: () => void;
@@ -1283,6 +1310,18 @@ function SelectBar({
       </span>
       <button type="button" className="btn btn-sm btn-quiet" onClick={count === total ? onNone : onAll}>
         {count === total ? "清空" : "全选"}
+      </button>
+      {/* 挑一批出来截图时，把没选中的收起来。只改显示，选中集和上面那个 x / y 都不动。 */}
+      <button
+        type="button"
+        className={`btn btn-sm ${previewOnly ? "btn-soft" : "btn-quiet"}`}
+        aria-pressed={previewOnly}
+        disabled={count === 0 && !previewOnly}
+        onClick={onTogglePreview}
+        title={previewOnly ? "把没选中的账号也显示回来" : "列表里只留下选中的账号，方便截图"}
+      >
+        <Icon name={previewOnly ? "eyeOff" : "eye"} size={13} />
+        只看已选
       </button>
 
       <span className="grow" />

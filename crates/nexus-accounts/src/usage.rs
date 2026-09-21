@@ -16,6 +16,7 @@ use std::time::Duration;
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const TIMEOUT: Duration = Duration::from_secs(20);
 const AGGREGATED_URL: &str = "https://cursor.com/api/dashboard/get-aggregated-usage-events";
+const FILTERED_EVENTS_URL: &str = "https://cursor.com/api/dashboard/get-filtered-usage-events";
 const SET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/set-hard-limit";
 const GET_HARD_LIMIT_URL: &str = "https://cursor.com/api/dashboard/get-hard-limit";
 /// Fable 5 的「非零数据保留」同意开关（仪表盘 Privacy 那格）。2026-09-19 抓包实测。
@@ -97,6 +98,35 @@ pub struct CreditGrant {
     /// 过期时刻，epoch ms。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+}
+
+/// 单次调用的用量明细项（来自官方 `GetFilteredUsageEvents` / `get-filtered-usage-events`）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageEventItem {
+    pub timestamp: i64,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub total_cents: f64,
+    pub charged_cents: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_headless: Option<bool>,
+}
+
+/// 某段时间范围内的调用明细分页报告。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageEventsReport {
+    pub total_count: i64,
+    pub page: u32,
+    pub page_size: u32,
+    pub events: Vec<UsageEventItem>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -641,6 +671,117 @@ pub async fn set_data_retention_consent(
             .with_hint("条款版本可能变了；抓一条新的 set-user-no-zdr-model-consent 更新常量。"));
     }
     Ok(())
+}
+
+/// 解析单次调用记录。
+pub fn parse_usage_event_item(row: &Value) -> Option<UsageEventItem> {
+    let tu = row.get("tokenUsage");
+    let model = text(row.get("model")).unwrap_or_default();
+    let timestamp = ts(row.get("timestamp")).unwrap_or_else(|| int(row.get("timestamp")));
+    let requests = int(row.get("requestsCosts")).max(1);
+    let charged_cents = num(row.get("chargedCents")).unwrap_or(0.0);
+    let total_cents = num(tu.and_then(|v| v.get("totalCents"))).unwrap_or(charged_cents);
+    Some(UsageEventItem {
+        timestamp,
+        model,
+        kind: text(row.get("kind")),
+        requests,
+        input_tokens: int(tu.and_then(|v| v.get("inputTokens"))),
+        output_tokens: int(tu.and_then(|v| v.get("outputTokens"))),
+        cache_read_tokens: int(tu.and_then(|v| v.get("cacheReadTokens"))),
+        cache_write_tokens: int(tu.and_then(|v| v.get("cacheWriteTokens"))),
+        total_cents,
+        charged_cents,
+        is_headless: as_bool(row.get("isHeadless")),
+    })
+}
+
+/// 把上游响应解析成分页调用明细报告。
+pub fn parse_usage_events_report(json: &Value, page: u32, page_size: u32) -> UsageEventsReport {
+    let rows = json
+        .get("usageEventsDisplay")
+        .or_else(|| json.get("usageEvents"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let events: Vec<UsageEventItem> = rows.iter().filter_map(parse_usage_event_item).collect();
+    let total_count = int(json.get("totalUsageEventsCount")).max(events.len() as i64);
+    UsageEventsReport {
+        total_count,
+        page,
+        page_size,
+        events,
+    }
+}
+
+/// 拉取某个账号的每次调用明细（官方 `GetFilteredUsageEvents` / `get-filtered-usage-events`）。
+pub async fn fetch_filtered_events(
+    http: &reqwest::Client,
+    session_token: &str,
+    page: u32,
+    page_size: u32,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+) -> Result<UsageEventsReport> {
+    let access = access_from_session(session_token);
+    let cookie = session_cookie(session_token);
+    let mut body = serde_json::json!({
+        "page": page,
+        "pageSize": page_size,
+    });
+    if let (Some(s), Some(e)) = (start_ms, end_ms) {
+        body["startDate"] = serde_json::Value::String(s.to_string());
+        body["endDate"] = serde_json::Value::String(e.to_string());
+    }
+
+    if let Some(access) = access {
+        match dashboard_call(http, access, "GetFilteredUsageEvents", &body).await {
+            Ok(json) if unauthenticated(Some(&json)) => {
+                return Err(AppError::unauthorized("session token 已被上游拒绝。")
+                    .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
+            }
+            Ok(json) => {
+                return Ok(parse_usage_events_report(&json, page, page_size));
+            }
+            Err(err) if err.code == ErrorCode::Unauthorized => return Err(err),
+            Err(_) => {}
+        }
+    }
+
+    let json = call(http, FILTERED_EVENTS_URL, &cookie, Some(body)).await;
+    if unauthenticated(json.as_ref()) {
+        return Err(AppError::unauthorized("session token 已被上游拒绝。")
+            .with_hint("到凭证页更新 session token，或授权一次重新登录。"));
+    }
+    let Some(json) = json else {
+        return Err(AppError::upstream("拉取调用明细失败（上游响应异常）。"));
+    };
+    Ok(parse_usage_events_report(&json, page, page_size))
+}
+
+/// 通过长期 crsr_ API Key 兑换 access 后拉取每次调用明细。
+pub async fn fetch_filtered_events_via_api_key(
+    http: &reqwest::Client,
+    api_key: &str,
+    page: u32,
+    page_size: u32,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
+) -> Result<UsageEventsReport> {
+    let access = crate::token::exchange_api_key(http, api_key).await?;
+    let mut body = serde_json::json!({
+        "page": page,
+        "pageSize": page_size,
+    });
+    if let (Some(s), Some(e)) = (start_ms, end_ms) {
+        body["startDate"] = serde_json::Value::String(s.to_string());
+        body["endDate"] = serde_json::Value::String(e.to_string());
+    }
+    let json = dashboard_call(http, &access, "GetFilteredUsageEvents", &body).await?;
+    if unauthenticated(Some(&json)) {
+        return Err(AppError::unauthorized("API Key 兑换的凭据已被拒绝。"));
+    }
+    Ok(parse_usage_events_report(&json, page, page_size))
 }
 
 /// `set-hard-limit` / `SetHardLimit` 的请求体。单测对着形状，不打真接口。
@@ -1746,6 +1887,64 @@ mod tests {
         // 旧快照里没有这两个字段，读回来也得成。
         let back: AccountUsage = serde_json::from_value(json!({ "fetchedAt": "x" })).unwrap();
         assert!(back.today.is_none() && back.week.is_none());
+    }
+
+    #[test]
+    fn parses_filtered_usage_events_report() {
+        let json = json!({
+            "totalUsageEventsCount": 42,
+            "usageEventsDisplay": [
+                {
+                    "timestamp": 1757404800000i64,
+                    "model": "claude-3-5-sonnet",
+                    "kind": "included",
+                    "requestsCosts": 1,
+                    "chargedCents": 0,
+                    "tokenUsage": {
+                        "inputTokens": 1200,
+                        "outputTokens": 350,
+                        "cacheReadTokens": 4000,
+                        "cacheWriteTokens": 0,
+                        "totalCents": 3.5
+                    },
+                    "isHeadless": false
+                },
+                {
+                    "timestamp": "1757404900000",
+                    "model": "gpt-4o",
+                    "kind": "usage-based",
+                    "requestsCosts": 1,
+                    "chargedCents": 12.0,
+                    "tokenUsage": {
+                        "inputTokens": 5000,
+                        "outputTokens": 800,
+                        "totalCents": 12.0
+                    },
+                    "isHeadless": true
+                }
+            ]
+        });
+
+        let report = parse_usage_events_report(&json, 1, 20);
+        assert_eq!(report.total_count, 42);
+        assert_eq!(report.page, 1);
+        assert_eq!(report.page_size, 20);
+        assert_eq!(report.events.len(), 2);
+
+        let e0 = &report.events[0];
+        assert_eq!(e0.model, "claude-3-5-sonnet");
+        assert_eq!(e0.kind.as_deref(), Some("included"));
+        assert_eq!(e0.input_tokens, 1200);
+        assert_eq!(e0.output_tokens, 350);
+        assert_eq!(e0.cache_read_tokens, 4000);
+        assert_eq!(e0.charged_cents, 0.0);
+        assert_eq!(e0.total_cents, 3.5);
+        assert_eq!(e0.is_headless, Some(false));
+
+        let e1 = &report.events[1];
+        assert_eq!(e1.model, "gpt-4o");
+        assert_eq!(e1.charged_cents, 12.0);
+        assert_eq!(e1.is_headless, Some(true));
     }
 
     #[test]

@@ -179,6 +179,7 @@ pub fn run() {
             commands::accounts::accounts_remove,
             commands::accounts::accounts_refresh_usage,
             commands::accounts::accounts_refresh_billing,
+            commands::accounts::accounts_list_usage_events,
             commands::accounts::accounts_set_on_demand,
             commands::accounts::accounts_refresh_all,
             commands::accounts::accounts_provision,
