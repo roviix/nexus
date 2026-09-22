@@ -48,6 +48,13 @@ export interface SchemaCheck {
   tablePresent: boolean;
   presentKeys: string[];
   missingKeys: string[];
+  /** 库里有、Cursor 3.21 已知键表之外的 `cursorAuth/*` 键。多出来不等于改名。 */
+  unknownAuthKeys: string[];
+  /**
+   * 其中像是把 token 改了名的键（名字里带 token，或值是 JWT）。
+   * 没有必需 token 时，`writable` 只看它。界面照读 `writable`，不要自己再用这张表判一遍。
+   */
+  driftAuthKeys: string[];
   cursorVersion?: string | null;
   /**
    * 能不能写 Cursor 的登录态。**Rust 算好的，界面照读。**

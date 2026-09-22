@@ -243,7 +243,9 @@ impl Switcher {
                     .explain()
                     .unwrap_or_else(|| "Cursor 状态库不可写。".into()),
             )
-            .with_hint("切号已降级为只读，避免写坏你的登录态。"));
+            // 提示不重复 `explain()` 已经说过的那句「降级为只读」—— 它俩会被界面前后
+            // 贴在一起显示，同一句话说两遍读起来像是出了两个错。这里只补下一步。
+            .with_hint("在适配之前，可以直接在 Cursor 里手动登录这个号。"));
         }
 
         progress(SwitchProgress::Started {

@@ -23,6 +23,7 @@
  */
 import { useEffect, useState, type ReactNode } from "react";
 import type { AccountPlacement } from "../../accounts/model";
+import { bareAccessJwt, flycursorHint } from "../../accounts/tokenPaste";
 import { GATEWAY_MEMBERSHIP_LABEL, inGatewayRoster, usePools, type Pools } from "../../accounts/pools";
 import type { Account, CrsrStatus, KickOutcome, MintedApiKey, SecretKind } from "../../ipc/types";
 import { accounts, crsr, gateway as gatewayApi, switcher as switcherApi } from "../../ipc/api";
@@ -1253,6 +1254,9 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
     }
   }
 
+  const bare = session != null ? bareAccessJwt(session) : null;
+  const pasteHint = flycursorHint(account.accessTokenType);
+
   return (
     <div className="stack" style={{ gap: 20 }}>
       <ErrorNote error={error} />
@@ -1318,7 +1322,7 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
               仅会话的号只在 access 还活着时能拼出来。两种都拼不出的不摆。 */}
           {canUseDashboard(account) ? (
             <div className="kv-row">
-              <span className="kv-k is-token" title="user_xxx::<access jwt>">
+              <span className="kv-k is-token" title="user_xxx::<access jwt>，网站 cookie。FlyCursor 的 access token 框不收这一整段。">
                 WorkosCursorSessionToken
               </span>
               <span className="kv-v">
@@ -1328,7 +1332,14 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
                     <code className="secret selectable truncate" title={session}>
                       {session}
                     </code>
-                    <CopyButton value={session} icon />
+                    <CopyButton
+                      value={session}
+                      icon
+                      label={account.accessTokenType === "session" && bare && bare !== session ? "复制 cookie" : "复制"}
+                    />
+                    {account.accessTokenType === "session" && bare && bare !== session ? (
+                      <CopyButton value={bare} icon label="复制 access token" />
+                    ) : null}
                     <button type="button" className="btn btn-sm btn-icon btn-quiet" onClick={() => setSession(null)} title="隐藏" aria-label="隐藏">
                       <Icon name="eyeOff" size={13} />
                     </button>
@@ -1352,6 +1363,11 @@ function CredsTab({ account, onChanged }: { account: Account; onChanged: () => P
             </div>
           ) : null}
         </div>
+        {canUseDashboard(account) && pasteHint ? (
+          <p className="sect-none" style={{ marginTop: 8 }}>
+            {pasteHint}
+          </p>
+        ) : null}
       </section>
 
       {switchNeedsWebConversion(account) ? <ConvertSessionRow account={account} onChanged={onChanged} /> : null}

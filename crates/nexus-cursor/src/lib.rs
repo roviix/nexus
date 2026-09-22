@@ -16,8 +16,8 @@ pub use app::{CursorControl, QuitOutcome, SystemCursor};
 pub use locate::{is_cursor_install, normalize_app_dir, normalize_user_dir, CursorPaths};
 pub use machine::MachineIds;
 pub use state_db::{
-    AuthBundle, AuthSummary, SchemaCheck, SchemaCheckWire, StateDb, AUTH_KEYS, IDENTITY_KEYS,
-    REQUIRED_KEYS,
+    AuthBundle, AuthSummary, SchemaCheck, SchemaCheckWire, StateDb, AUTH_KEYS, AUTH_PREFIX,
+    IDENTITY_KEYS, KNOWN_AUTH_KEYS, REQUIRED_KEYS,
 };
 
 use nexus_core::Result;

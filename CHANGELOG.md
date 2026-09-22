@@ -8,6 +8,8 @@
 
 ## [未发布]
 
+## [0.7.4] — 2026-09-22
+
 ### 新增
 
 - **账单页能看官方逐次调用明细。** 本账期 / 近 7 天 / 今天，带模型、类型、tokens 和费用，可翻页。
@@ -16,6 +18,10 @@
 
 - **复制说明把订阅重置和 Bot 周额拆开。** 订阅侧写「重置时间 09/30 20:05」，不再用「月额」；Bot 单独一项「Bot 重置时间」。
 - **凭证页用 JWT type 原名标这一行是什么票。** access 行直接叫 `session` / `web` / `api_key_token`；拼出来的 cookie 行叫 `WorkosCursorSessionToken`，旁边一枚 type 徽章。
+- **凭证页说明 FlyCursor 该贴哪一串。** access token 框要 `eyJ` 开头、且 `type=session` 的裸 JWT；
+  `user_xxx::…` 是网站 cookie，整段贴进去或再点「获取 accessToken」会 404 / 401。
+  `type=web` 先换成桌面 session 再复制。有 refresh 的号以前不展示裸 JWT，显示 cookie 之后多一个
+  「复制 access token」。
 - **切号会入池这件事不再藏着。** 账号还不在切号池里时，抽屉上的主键写「加入切号池并切号」而不是「切号」；
   进了池随时可在「所在池」那一行或切号页移出。
 - **删除账号连带移出切号池。** 以前删了账号，池里会留一个「已不在账号中」的孤儿档，得再去切号页删一遍。
@@ -23,6 +29,23 @@
 
 ### 修复
 
+- **Windows 上切号又一次被误判成只读：「Cursor 登着号，却读不到 cursorAuth/accessToken…」。**
+  自检此前拿「有身份键却缺 token」推断 Cursor 改了键名，而这假定登出会把 `cachedEmail` /
+  `cachedScopedProfile` 一并清干净——那取决于 Cursor 那一版 `logout` 清了什么，同一个假设已经连着
+  误判两次。`cachedUserId` 在 3.21 里已经不再读写、登出也不清，升级后的登出机器上它会单独留下，
+  不能再拿来当「登着号」的证据。
+  判据收成实证里更窄的一种：陌生的 `cursorAuth/*` 键**名字里带 token，或者值是一把 JWT**。
+  3.21 本来就有的 BYOK 钥匙、`teamId`、`stripeCustomerId`、`cachedTeam`、引导日期不算改名，
+  没 token 的机器照常放行。真被拦住时，提示里列出那几把键和 Cursor 版本。
+- **热切确认在 Windows 上看不见刚写进 WAL 的 token。** 读 `state.vscdb` 以前用只读打开。WAL 的
+  `-shm` 在 Windows 上往往要写权限才映射得了，映射失败就只剩上次 checkpoint：身份键在主库、
+  token 在 WAL，读出来又像「登着号却没有 token」，轮询也等不到深链写进去的新 token。
+  现在读写打开再钉 `query_only`，看得见最新的提交，改不了任何一行。
+- **切号会清掉上一个号的 `cachedTeam`。** 3.21 把团队名缓存在这把键里，深链登录不碰它，
+  不清的话菜单里还是上一个号的团队。
+- 登录态的值按 BLOB 存也能读出来。`value` 列声明的就是 `BLOB`，此前只认 text，一旦 Cursor 改用
+  字节写入，整次读取都会失败，而读失败在自检里会被当成「没登录」——那会让我们往一台登着号的机器上写。
+- 切号被降级只读时，错误正文和下方提示不再把「切号已降级为只读」说两遍。
 - **macOS 上所有「确认？」的按钮都是哑的。** 「移出切号池」「移出网关」「删除备份」「还原备份」「换口令」、
   开了同步机器码时的冷切确认……点了没反应、也不报错。原因是 Tauri 在 mac 的 WKWebView 里没接 JS 对话框，
   `window.confirm` 不弹窗直接回 `false`，每个守在它后面的动作第一行就退出了（Windows 的 WebView2 会弹
@@ -399,7 +422,9 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.7.0...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/roviix/nexus/releases/tag/v0.7.4
+[0.7.3]: https://github.com/roviix/nexus/releases/tag/v0.7.3
 [0.7.0]: https://github.com/roviix/nexus/releases/tag/v0.7.0
 [0.6.6]: https://github.com/roviix/nexus/releases/tag/v0.6.6
 [0.6.5]: https://github.com/roviix/nexus/releases/tag/v0.6.5

@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 ///
 /// 缺 membership / signupType 那几个，Cursor 界面会显示上一个号的订阅档 —— 这不是
 /// 美观问题，是用户会据此以为切错了号。
-pub const AUTH_KEYS: [&str; 10] = [
+pub const AUTH_KEYS: [&str; 11] = [
     "cursorAuth/accessToken",
     "cursorAuth/refreshToken",
     "cursorAuth/cachedEmail",
@@ -33,6 +33,7 @@ pub const AUTH_KEYS: [&str; 10] = [
     "cursorAuth/stripeSubscriptionStatus",
     "cursorAuth/stripeMembershipAuthId",
     "cursorAuth/cachedScopedProfile",
+    "cursorAuth/cachedTeam",
     "cursorAuth/cachedUserId",
     "cursorAuth/onboardingDate",
 ];
@@ -40,17 +41,52 @@ pub const AUTH_KEYS: [&str; 10] = [
 /// 没有这两个就切不进去 —— 其余键缺了只是显示不全。
 pub const REQUIRED_KEYS: [&str; 2] = ["cursorAuth/accessToken", "cursorAuth/refreshToken"];
 
-/// 「此刻真的登着号」只能由这几把键回答：它们是登出时确实会被清掉的那些。
+/// 「此刻真的登着号」只能由这几把键回答。
 ///
 /// 这一条是 Windows 上踩出来的。`cursorAuth/*` 不是一起生灭的：用户登出之后，
 /// `stripeMembershipType` / `cachedSignUpType` / `onboardingDate` 会**留在库里**，
-/// 而 token、邮箱、userId、scopedProfile 被清掉。于是「库里还有 auth 键」被当成了
-/// 「登着号」，再一看必需的 token 不在 —— 判成键名漂移，切号降级只读。用户手里是一台
-/// 刚装好、还没登录的 Cursor，最该往里写的时候反倒被拦住了。
-pub const IDENTITY_KEYS: [&str; 3] = [
+/// 而 token 和邮箱被清掉。于是「库里还有 auth 键」被当成了「登着号」，再一看必需的
+/// token 不在 —— 判成键名漂移，切号降级只读。
+///
+/// `cachedUserId` **不在这张表里**。Cursor 3.21.13 的 bundle 已经不再读写它，
+/// `logout` 也不清它；升级过的机器上它会作为旧版本的残留单独留下。把它当成登录证据，
+/// 就是把一台已经登出的机器说成「登着号」。
+///
+/// **这张表只是启发式，不是拦不拦的依据**（见 [`SchemaCheck::writable`]）。
+/// 它现在只用来给提示文案措辞。
+pub const IDENTITY_KEYS: [&str; 2] = ["cursorAuth/cachedEmail", "cursorAuth/cachedScopedProfile"];
+
+/// 库里所有登录态键的公共前缀。用来找出已知键表**之外**的 `cursorAuth/*` 键。
+pub const AUTH_PREFIX: &str = "cursorAuth/";
+
+/// Cursor 3.21.13 的 `workbench.desktop.main.js` 里出现过的全部 `cursorAuth/*` 键，
+/// 加上 `cachedUserId`（这个版本已经不读写它，但旧版本会把它留在盘上）。
+///
+/// 这不是写入白名单。[`AUTH_KEYS`] 才是切号会写、会清的那几把。BYOK 钥匙、团队 id、
+/// 引导日期留在这里，是为了让一台登出后还留着它们的机器**不要**被当成「键名改了」。
+/// 对照来源是本机 Cursor 3.21.13（`e44a49c17e33`）的 bundle 字符串，不是猜测。
+pub const KNOWN_AUTH_KEYS: [&str; 21] = [
+    "cursorAuth/accessToken",
+    "cursorAuth/refreshToken",
     "cursorAuth/cachedEmail",
-    "cursorAuth/cachedUserId",
+    "cursorAuth/cachedSignUpType",
+    "cursorAuth/stripeMembershipType",
+    "cursorAuth/stripeSubscriptionStatus",
+    "cursorAuth/stripeMembershipAuthId",
     "cursorAuth/cachedScopedProfile",
+    "cursorAuth/cachedTeam",
+    "cursorAuth/cachedUserId",
+    "cursorAuth/onboardingDate",
+    "cursorAuth/stripeCustomerId",
+    "cursorAuth/teamId",
+    "cursorAuth/workspaceOpenedDate",
+    "cursorAuth/changeManagementCodeSnippets",
+    "cursorAuth/openAIKey",
+    "cursorAuth/claudeKey",
+    "cursorAuth/googleKey",
+    "cursorAuth/azureApiKey",
+    "cursorAuth/bedrockAccessKey",
+    "cursorAuth/bedrockSecretKey",
 ];
 
 /// 热切之后要**补写**的那几个键：账号在界面上「叫什么、什么档」的缓存。
@@ -69,13 +105,14 @@ pub const IDENTITY_KEYS: [&str; 3] = [
 ///
 /// `accessToken` / `refreshToken` 不在这里：那两把是 Cursor 自己刚写的、内存里也是新的，我们再
 /// 写一遍没意义；机器码更不碰（热切的前提就是不换指纹）。
-pub const DISPLAY_KEYS: [&str; 6] = [
+pub const DISPLAY_KEYS: [&str; 7] = [
     "cursorAuth/cachedEmail",
     "cursorAuth/cachedSignUpType",
     "cursorAuth/stripeMembershipType",
     "cursorAuth/stripeSubscriptionStatus",
     "cursorAuth/stripeMembershipAuthId",
     "cursorAuth/cachedScopedProfile",
+    "cursorAuth/cachedTeam",
 ];
 
 const KEY_EMAIL: &str = "cursorAuth/cachedEmail";
@@ -200,6 +237,17 @@ pub struct SchemaCheck {
     pub present_keys: Vec<String>,
     /// 预期有、实际没有的键。
     pub missing_keys: Vec<String>,
+    /// 库里有、[`KNOWN_AUTH_KEYS`] 里没有的 `cursorAuth/*` 键。
+    ///
+    /// 多出来不等于改了名：Cursor 加字段是常态。拦不拦看 [`Self::drift_auth_keys`]。
+    #[serde(default)]
+    pub unknown_auth_keys: Vec<String>,
+    /// 陌生键里**像是把 token 改了名**的那些：名字里带 `token`，或者值是一把 JWT。
+    ///
+    /// 没有必需 token 时，只有这张表非空才停手。`openAIKey` / `teamId` / `cachedTeam`
+    /// 这类已知键，以及 `someNewFlag` 这种不像 token 的新键，都不在这里。
+    #[serde(default)]
+    pub drift_auth_keys: Vec<String>,
     /// Cursor 版本，用于「未在此版本验证过」的提示。
     pub cursor_version: Option<String>,
 }
@@ -216,6 +264,10 @@ pub struct SchemaCheckWire {
     pub table_present: bool,
     pub present_keys: Vec<String>,
     pub missing_keys: Vec<String>,
+    #[serde(default)]
+    pub unknown_auth_keys: Vec<String>,
+    #[serde(default)]
+    pub drift_auth_keys: Vec<String>,
     pub cursor_version: Option<String>,
     /// [`SchemaCheck::writable`] 的结果。
     pub writable: bool,
@@ -232,6 +284,8 @@ impl From<SchemaCheck> for SchemaCheckWire {
             table_present: c.table_present,
             present_keys: c.present_keys,
             missing_keys: c.missing_keys,
+            unknown_auth_keys: c.unknown_auth_keys,
+            drift_auth_keys: c.drift_auth_keys,
             cursor_version: c.cursor_version,
             writable,
             blocked_reason,
@@ -247,6 +301,8 @@ impl From<SchemaCheckWire> for SchemaCheck {
             table_present: w.table_present,
             present_keys: w.present_keys,
             missing_keys: w.missing_keys,
+            unknown_auth_keys: w.unknown_auth_keys,
+            drift_auth_keys: w.drift_auth_keys,
             cursor_version: w.cursor_version,
         }
     }
@@ -257,39 +313,53 @@ impl SchemaCheck {
     ///
     /// 只看身份键（[`IDENTITY_KEYS`]）。「库里有 auth 键」是个不能用的判据 ——
     /// 登出会留下几把非身份键，那不叫登着号。
+    ///
+    /// 这只是个**近似**，所以 [`writable`](Self::writable) 不用它：反过来，登出留下了
+    /// 身份键也不叫登着号，而哪几把会被留下我们管不着。
     pub fn logged_in(&self) -> bool {
         self.present_keys
             .iter()
             .any(|k| IDENTITY_KEYS.contains(&k.as_str()))
     }
 
-    /// 能不能安全地写。
-    ///
-    /// 关键的区分：**「没人登着」和「有人登着但必需的键不见了」是两回事。**
-    ///   - 没人登着 = Cursor 从没登录过，或用户登出了（库里可能还剩几把非身份键）。
-    ///     往里写正是我们要做的事，不该拦 —— 拦了的话「买号 → 切入」在干净机器上
-    ///     根本走不通（§2.4）。
-    ///   - 有人登着、却缺了必需的 token = 键名可能变了。这才是该降级只读的情形（§11）。
-    ///
-    /// 漏网之鱼是「Cursor 把十个键全改了名」：那时身份键也读不到，我们会照旧写老键名。
-    /// 写进去是无害的（Cursor 忽略不认识的键），用户会看到它依然未登录
-    /// ——比一上来就把功能锁死好。
-    pub fn writable(&self) -> bool {
-        if !self.db_present || !self.table_present {
-            return false;
-        }
-        if !self.logged_in() {
-            return true;
-        }
+    /// 必需的 token 在不在。
+    fn has_tokens(&self) -> bool {
         REQUIRED_KEYS
             .iter()
             .all(|k| self.present_keys.iter().any(|p| p == k))
     }
 
+    /// 能不能安全地写。
+    ///
+    /// 只有**拿得出 token 被改名的实证**时才停手。实证是 [`Self::drift_auth_keys`]：
+    /// 陌生的 `cursorAuth/*` 键，并且名字里带 `token`，或者值本身是一把 JWT。
+    ///
+    /// 「库里有任何白名单之外的 `cursorAuth/*` 键」不够格。Cursor 3.21 的 bundle 里
+    /// 就有 `openAIKey`、`claudeKey`、`teamId`、`stripeCustomerId`、`cachedTeam`、
+    /// 引导日期这十几把，登出不会把它们清干净。把它们当成改名，等于在用户最该往里写的
+    /// 时候再锁一次 —— 和 Windows 上已经发生过的两次误判是同一类错。
+    ///
+    /// 更早的判据「有身份键却缺 token = 改名了」也废了：它假定登出会把
+    /// `cachedEmail` / `cachedScopedProfile` 一并清干净，而这取决于那一版 `logout`
+    /// 清了什么。
+    ///
+    /// 真正要防的是：token 键改了名，我们照旧写老名字，Cursor 仍登着旧号，而界面报
+    /// 「切换成功」。那种新名字要么还叫 token，要么里面躺着一把 JWT。
+    pub fn writable(&self) -> bool {
+        if !self.db_present || !self.table_present {
+            return false;
+        }
+        if self.has_tokens() {
+            return true;
+        }
+        self.drift_auth_keys.is_empty()
+    }
+
     /// 不通过时给用户的一句话。
     ///
-    /// 只点名**必需的**那几把缺了的键。十把键全列出来是一屏键名，用户读完仍然不知道
-    /// 该干什么；真正卡住切号的只有 token 那两把。
+    /// 只点名**必需的**那几把缺了的键，外加那几把陌生键 —— 后者就是判断的依据，
+    /// 也是我们适配新版本时唯一需要的信息，所以要让用户能直接抄走。
+    /// 十把键全列出来是一屏键名，用户读完仍然不知道该干什么。
     pub fn explain(&self) -> Option<String> {
         if self.writable() {
             return None;
@@ -306,10 +376,29 @@ impl SchemaCheck {
             .filter(|k| !self.present_keys.iter().any(|p| p == k))
             .collect();
         Some(format!(
-            "Cursor 登着号，却读不到 {}。它可能升级后改了存储结构；\
-             切号已降级为只读，避免写坏你的登录态。",
-            missing.join("、")
+            "Cursor 读不到 {}，库里却有{}这样没见过的键 —— 它升级后改了键名。\
+             照旧写老键名的话，Cursor 会仍然登着原来的号，而这边报「切换成功」，\
+             所以切号先降级为只读。把这句话连同 Cursor 版本（{}）报给我们即可适配。",
+            missing.join("、"),
+            preview(&self.drift_auth_keys),
+            self.cursor_version.as_deref().unwrap_or("未知")
         ))
+    }
+}
+
+/// 陌生键太多时只列前几把。它是给人看的，不是给机器解析的。
+fn preview(keys: &[String]) -> String {
+    const SHOWN: usize = 3;
+    let head = keys
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("、");
+    if keys.len() > SHOWN {
+        format!("{head} 等 {} 把", keys.len())
+    } else {
+        head
     }
 }
 
@@ -341,11 +430,30 @@ impl StateDb {
             )
             .with_hint("确认 Cursor 已安装并至少登录过一次。"));
         }
+        // 读也用读写方式打开，再立刻钉上 `query_only`。
+        //
+        // `state.vscdb` 是 WAL。`SQLITE_OPEN_READ_ONLY` 在 Windows 上经常映射不了
+        // `-shm`（共享内存要写权限），于是连接退回去只看见上次 checkpoint 的主库：
+        // 身份键在主库里、token 还在 WAL 里，读出来就是「登着号却没有 token」。
+        // 热切的确认轮询也走这条读路径，Cursor 还开着、刚把新 token 写进 WAL 的时候
+        // 最容易踩中。读写打开才能加入 WAL 索引；`query_only` 保证这条连接改不了任何一行。
+        // 文件本身不可写时退回只读，总比完全读不到强。
+        if read_only {
+            if let Ok(conn) = self.open_flags(OpenFlags::SQLITE_OPEN_READ_WRITE) {
+                if conn.pragma_update(None, "query_only", true).is_ok() {
+                    return Ok(conn);
+                }
+            }
+        }
         let flags = if read_only {
             OpenFlags::SQLITE_OPEN_READ_ONLY
         } else {
             OpenFlags::SQLITE_OPEN_READ_WRITE
         };
+        self.open_flags(flags)
+    }
+
+    fn open_flags(&self, flags: OpenFlags) -> Result<Connection> {
         let conn = Connection::open_with_flags(&self.path, flags).map_err(|err| {
             AppError::new(
                 ErrorCode::Database,
@@ -368,7 +476,7 @@ impl StateDb {
         let mut bundle = AuthBundle::new();
         for key in AUTH_KEYS {
             let value: Option<String> = stmt
-                .query_row([key], |row| row.get::<_, Option<String>>(0))
+                .query_row([key], |row| row.get_ref(0).map(text_of))
                 .or_else(|err| match err {
                     rusqlite::Error::QueryReturnedNoRows => Ok(None),
                     other => Err(other),
@@ -394,6 +502,8 @@ impl StateDb {
             table_present: false,
             present_keys: Vec::new(),
             missing_keys: AUTH_KEYS.iter().map(|k| k.to_string()).collect(),
+            unknown_auth_keys: Vec::new(),
+            drift_auth_keys: Vec::new(),
             cursor_version,
         };
         if !check.db_present {
@@ -420,6 +530,9 @@ impl StateDb {
                 .map(|k| k.to_string())
                 .collect();
         }
+        let (unknown, drift) = classify_auth_keys(&conn);
+        check.unknown_auth_keys = unknown;
+        check.drift_auth_keys = drift;
         check
     }
 
@@ -522,6 +635,77 @@ impl StateDb {
     }
 }
 
+/// 已知键表之外的 `cursorAuth/*` 键，以及其中像是「token 被改了名」的子集。
+///
+/// 查不动时两边都是空的：**拿不到实证就不拦**。
+fn classify_auth_keys(conn: &Connection) -> (Vec<String>, Vec<String>) {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT key, value FROM ItemTable WHERE key LIKE ?1 ORDER BY key")
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    // `/` 在 LIKE 里没有特殊含义，前缀里也没有 `%` / `_`，不需要 ESCAPE。
+    let pattern = format!("{AUTH_PREFIX}%");
+    let Ok(rows) = stmt.query_map([pattern], |row| {
+        let key: String = row.get(0)?;
+        let value = row.get_ref(1).map(text_of)?;
+        Ok((key, value))
+    }) else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut unknown = Vec::new();
+    let mut drift = Vec::new();
+    for row in rows.flatten() {
+        let (key, value) = row;
+        if KNOWN_AUTH_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        if is_renamed_token_key(&key, value.as_deref()) {
+            drift.push(key.clone());
+        }
+        unknown.push(key);
+    }
+    (unknown, drift)
+}
+
+/// 这把陌生键是不是「token 换了个名字」。
+///
+/// 两种样子都算：名字里还有 `token`（`accessTokenV2`），或者值是一把 JWT
+/// （`eyJ…` 三段）。`openAIKey`、`teamId`、`someNewFlag=1` 都不是。
+fn is_renamed_token_key(key: &str, value: Option<&str>) -> bool {
+    if key.to_ascii_lowercase().contains("token") {
+        return true;
+    }
+    value.is_some_and(looks_like_jwt)
+}
+
+/// 三段、头一段以 `eyJ` 开头。不验签名，只用来认出「这格里躺着一把 JWT」。
+fn looks_like_jwt(value: &str) -> bool {
+    let value = value.trim();
+    let mut parts = value.split('.');
+    let (Some(header), Some(payload), Some(sig), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    header.starts_with("eyJ") && !payload.is_empty() && !sig.is_empty()
+}
+
+/// 把一格取成字符串。
+///
+/// `ItemTable` 的 `value` 列声明的是 `BLOB`，sqlite 的列类型只是建议，一格存什么类型
+/// 由写它的人决定。本机实测 Cursor 写的是 text，但只认 text 的话，哪天它改用字节写入，
+/// **整次读取**就会失败 —— 而读取失败在 [`StateDb::check`] 里会被当成「没登录」，
+/// 于是我们会兴高采烈地往一台其实登着号的机器上写。宁可多认一种存法。
+fn text_of(value: rusqlite::types::ValueRef<'_>) -> Option<String> {
+    use rusqlite::types::ValueRef;
+    match value {
+        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => String::from_utf8(bytes.to_vec()).ok(),
+        // token 不可能是数字或 NULL。真碰上就是「这一格不是我们要的东西」，当作没有。
+        _ => None,
+    }
+}
+
 /// 库结构不对时给一个能行动的错误，而不是把 sqlite 的原文丢给用户。
 fn schema_error(err: rusqlite::Error, path: &Path) -> AppError {
     let text = err.to_string();
@@ -573,6 +757,16 @@ mod tests {
         }
         b.insert("cursorAuth/cachedEmail", email);
         b
+    }
+
+    #[test]
+    fn the_write_whitelist_is_inside_the_known_key_table() {
+        for key in AUTH_KEYS {
+            assert!(
+                KNOWN_AUTH_KEYS.contains(&key),
+                "{key} 会写入，却不在已知键表里，登出后会被当成改名"
+            );
+        }
     }
 
     #[test]
@@ -646,7 +840,7 @@ mod tests {
     fn debug_never_prints_token_values() {
         let b = full_bundle("a@example.com");
         let printed = format!("{b:?}");
-        assert!(printed.contains("10 keys"));
+        assert!(printed.contains(&format!("{} keys", AUTH_KEYS.len())));
         assert!(!printed.contains("accessToken-value"));
     }
 
@@ -706,8 +900,9 @@ mod tests {
 
         let (written, removed) = db.write_display_keys(&target).unwrap();
         assert_eq!(written, 2);
-        // 6 把展示键里 4 把目标号没有：signUpType / subscriptionStatus / membershipAuthId / scopedProfile。
-        assert_eq!(removed, 4);
+        // 7 把展示键里 5 把目标号没有：signUpType / subscriptionStatus / membershipAuthId /
+        // scopedProfile / cachedTeam。留下上一个号的团队名，菜单会显示成切错了号。
+        assert_eq!(removed, 5);
 
         let read = db.read_auth().unwrap();
         assert_eq!(read.email().unwrap(), "new@example.com");
@@ -778,6 +973,17 @@ mod tests {
         assert!(check.explain().is_none());
     }
 
+    /// 往库里塞一把我们不认识的 `cursorAuth/*` 键，模拟 Cursor 改名。
+    fn put_raw(db: &StateDb, key: &str, value: &str) {
+        Connection::open(db.path())
+            .unwrap()
+            .execute(
+                "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, value],
+            )
+            .unwrap();
+    }
+
     /// 结论只在 Rust 这边算一次，序列化时一起交给界面。
     #[test]
     fn the_wire_shape_carries_the_verdict_so_the_ui_never_re_derives_it() {
@@ -785,8 +991,9 @@ mod tests {
         let mut partial = AuthBundle::new();
         partial.insert("cursorAuth/cachedEmail", "a@example.com");
         db.write_auth(&partial, false).unwrap();
+        put_raw(&db, "cursorAuth/accessTokenV2", "new-name");
 
-        let json = serde_json::to_value(db.check(None)).unwrap();
+        let json = serde_json::to_value(db.check(Some("9.9.9".into()))).unwrap();
         assert_eq!(json["writable"], serde_json::json!(false));
         let reason = json["blockedReason"].as_str().unwrap();
         assert!(reason.contains("降级为只读"));
@@ -796,21 +1003,178 @@ mod tests {
             !reason.contains("onboardingDate"),
             "别把不相干的键也列上：{reason}"
         );
+        // 判断的依据和适配要用的信息都得能直接抄走。
+        assert!(reason.contains("cursorAuth/accessTokenV2"), "{reason}");
+        assert!(reason.contains("9.9.9"), "{reason}");
+        assert_eq!(
+            json["unknownAuthKeys"],
+            serde_json::json!(["cursorAuth/accessTokenV2"])
+        );
+        assert_eq!(
+            json["driftAuthKeys"],
+            serde_json::json!(["cursorAuth/accessTokenV2"])
+        );
     }
 
+    /// 真的改名了：新名字就在库里摆着。这一种有实证，该停手（§11）。
     #[test]
     fn a_renamed_key_degrades_to_read_only() {
-        // 有几个 auth 键、却缺了必需的 —— 这才是键名漂移，该停手（§11）。
         let (_dir, db) = fixture();
         let mut partial = AuthBundle::new();
         partial.insert("cursorAuth/cachedEmail", "a@example.com");
         partial.insert("cursorAuth/stripeMembershipType", "ultra");
         db.write_auth(&partial, false).unwrap();
+        put_raw(&db, "cursorAuth/accessTokenV2", "header.payload.sig");
+        put_raw(&db, "cursorAuth/refreshTokenV2", "header.payload.sig");
 
         let check = db.check(None);
-        assert!(check.logged_in());
+        assert_eq!(
+            check.unknown_auth_keys,
+            vec![
+                "cursorAuth/accessTokenV2".to_string(),
+                "cursorAuth/refreshTokenV2".to_string()
+            ]
+        );
         assert!(!check.writable());
         assert!(check.explain().unwrap().contains("降级为只读"));
+    }
+
+    /// Windows 实测（第二次）：库里剩着身份键、却没有 token，而**没有任何**陌生的
+    /// `cursorAuth/*` 键。上一版把这一种也当成改名，于是那台机器上切号整块锁死。
+    /// 没有实证就不该拦 —— 何况读不到 token 本来就意味着没有登录态可写坏。
+    #[test]
+    fn leftover_identity_keys_without_evidence_of_a_rename_still_allow_writing() {
+        let (_dir, db) = fixture();
+        let mut leftovers = AuthBundle::new();
+        leftovers.insert("cursorAuth/cachedEmail", "a@example.com");
+        leftovers.insert("cursorAuth/cachedUserId", "auth0|user_01");
+        leftovers.insert("cursorAuth/stripeMembershipType", "pro");
+        db.write_auth(&leftovers, false).unwrap();
+
+        let check = db.check(None);
+        assert!(check.logged_in(), "身份键确实在库里");
+        assert!(check.unknown_auth_keys.is_empty(), "但没有任何改名的迹象");
+        assert!(check.writable(), "没有实证就不该把切号锁死");
+        assert!(check.explain().is_none());
+    }
+
+    /// token 齐全时，多出几把没见过的键不算事：Cursor 加字段是常态，
+    /// 我们要写的那几把都在原处。
+    #[test]
+    fn extra_keys_alongside_working_tokens_are_not_a_block() {
+        let (_dir, db) = fixture();
+        db.write_auth(&full_bundle("a@example.com"), true).unwrap();
+        put_raw(&db, "cursorAuth/someNewFlag", "1");
+
+        let check = db.check(None);
+        assert_eq!(check.unknown_auth_keys, vec!["cursorAuth/someNewFlag"]);
+        assert!(check.writable());
+        assert!(check.explain().is_none());
+    }
+
+    /// Cursor 3.21 登出后仍可能留着的键：BYOK、团队、账单客户、引导日期。
+    /// 它们在 bundle 里，不是 token 改名。没 token 的机器必须还能写。
+    #[test]
+    fn known_extra_keys_on_a_logged_out_database_do_not_block() {
+        let (_dir, db) = fixture();
+        for key in [
+            "cursorAuth/openAIKey",
+            "cursorAuth/claudeKey",
+            "cursorAuth/googleKey",
+            "cursorAuth/azureApiKey",
+            "cursorAuth/bedrockAccessKey",
+            "cursorAuth/bedrockSecretKey",
+            "cursorAuth/stripeCustomerId",
+            "cursorAuth/cachedTeam",
+            "cursorAuth/teamId",
+            "cursorAuth/workspaceOpenedDate",
+            "cursorAuth/changeManagementCodeSnippets",
+            "cursorAuth/cachedUserId",
+        ] {
+            put_raw(&db, key, "leftover");
+        }
+        let check = db.check(None);
+        assert!(
+            check.unknown_auth_keys.is_empty(),
+            "{:?}",
+            check.unknown_auth_keys
+        );
+        assert!(check.drift_auth_keys.is_empty());
+        assert!(!check.logged_in(), "cachedUserId 单独留下不算登着号");
+        assert!(check.writable());
+        assert!(check.explain().is_none());
+    }
+
+    /// 没见过、但也不像 token 的新键，缺 token 时仍然放行。
+    /// 上一版把「任何陌生 cursorAuth/*」都当成改名，这一种会被锁死。
+    #[test]
+    fn an_unrecognized_flag_without_tokens_still_allows_writing() {
+        let (_dir, db) = fixture();
+        put_raw(&db, "cursorAuth/someNewFlag", "1");
+        let check = db.check(None);
+        assert_eq!(check.unknown_auth_keys, vec!["cursorAuth/someNewFlag"]);
+        assert!(check.drift_auth_keys.is_empty());
+        assert!(check.writable());
+        assert!(check.explain().is_none());
+    }
+
+    /// 新键的名字不带 token，但值是一把 JWT：token 被挪走了，照旧写老名字会报成功、号却没换。
+    #[test]
+    fn an_unknown_key_holding_a_jwt_is_a_rename() {
+        let (_dir, db) = fixture();
+        put_raw(
+            &db,
+            "cursorAuth/sessionBlob",
+            "eyJhbGciOiJIUzI1NiJ9.eyJ0eXBlIjoic2Vzc2lvbiJ9.sig",
+        );
+        let check = db.check(None);
+        assert_eq!(check.drift_auth_keys, vec!["cursorAuth/sessionBlob"]);
+        assert!(!check.writable());
+        assert!(check.explain().unwrap().contains("cursorAuth/sessionBlob"));
+    }
+
+    /// 另一个连接已经提交、还没 checkpoint 的写入，读路径必须看得见。
+    /// 热切确认轮询靠的就是这个：Cursor 还开着，新 token 在 WAL 里。
+    #[test]
+    fn a_live_writers_commit_is_visible() {
+        let (_dir, db) = fixture();
+        db.write_auth(&full_bundle("a@example.com"), true).unwrap();
+        let writer = Connection::open(db.path()).unwrap();
+        writer
+            .execute(
+                "UPDATE ItemTable SET value = 'from-wal' WHERE key = 'cursorAuth/accessToken'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(db.read_auth().unwrap().access_token(), Some("from-wal"));
+        // 写者还活着：读路径没有把这格盖掉。
+        let still: String = writer
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = 'cursorAuth/accessToken'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(still, "from-wal");
+    }
+
+    /// `value` 列声明的是 BLOB。哪天 Cursor 真按字节写，也不能让**整次读取**失败 ——
+    /// 那会在 `check` 里被当成「没登录」，然后往一台登着号的机器上写。
+    #[test]
+    fn a_token_stored_as_bytes_is_still_read() {
+        let (_dir, db) = fixture();
+        db.write_auth(&full_bundle("a@example.com"), true).unwrap();
+        Connection::open(db.path())
+            .unwrap()
+            .execute(
+                "UPDATE ItemTable SET value = ?1 WHERE key = 'cursorAuth/accessToken'",
+                rusqlite::params![b"blob-access".to_vec()],
+            )
+            .unwrap();
+
+        let read = db.read_auth().unwrap();
+        assert_eq!(read.access_token(), Some("blob-access"));
+        assert!(db.check(None).writable());
     }
 
     #[test]

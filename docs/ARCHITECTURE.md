@@ -220,7 +220,7 @@ Rust 侧只要一个 `reqwest`。
 |---|---|
 | 登录态库 | macOS `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`；Windows `%APPDATA%\Cursor\…`。SQLite，WAL |
 | 表结构 | `ItemTable(key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)`，值是 text |
-| auth 键 | `cursorAuth/accessToken`、`refreshToken`、`cachedEmail`、`cachedSignUpType`、`stripeMembershipType`、`stripeSubscriptionStatus`、`stripeMembershipAuthId`、`cachedScopedProfile`、`cachedUserId`、`onboardingDate`（写入白名单） |
+| auth 键 | `cursorAuth/accessToken`、`refreshToken`、`cachedEmail`、`cachedSignUpType`、`stripeMembershipType`、`stripeSubscriptionStatus`、`stripeMembershipAuthId`、`cachedScopedProfile`、`cachedTeam`、`cachedUserId`、`onboardingDate`（写入白名单） |
 | 机器码 | `User/globalStorage/storage.json` 里的 `telemetry.machineId` / `macMachineId` / `devDeviceId` / `sqmId`，外加 `<Cursor>/machineid` 文件 |
 | 版本 | `Cursor.app/Contents/Resources/app/product.json` |
 
