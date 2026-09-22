@@ -8,6 +8,12 @@
 
 ## [未发布]
 
+## [0.7.5] — 2026-09-22
+
+### 修复
+
+- **ChatGPT 桌面端连本地网关拉不到模型。** `/v1/models` 以前只回 OpenAI 的 `{ "object": "list", "data": [...] }`。ChatGPT / Codex 的模型管理器要顶层 `models`（每条是 `slug`），缺了就报 `missing field models`，连接在发对话之前断开。现在同一份响应里两条都给：OpenAI 客户端继续读 `data`，ChatGPT 桌面端读 `models`。不用重新登录 ChatGPT，Nexus 里已有的订阅号照旧出站。
+
 ## [0.7.4] — 2026-09-22
 
 ### 新增
@@ -422,7 +428,8 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.7.4...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/roviix/nexus/releases/tag/v0.7.5
 [0.7.4]: https://github.com/roviix/nexus/releases/tag/v0.7.4
 [0.7.3]: https://github.com/roviix/nexus/releases/tag/v0.7.3
 [0.7.0]: https://github.com/roviix/nexus/releases/tag/v0.7.0

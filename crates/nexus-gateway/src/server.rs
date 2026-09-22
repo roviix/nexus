@@ -715,7 +715,46 @@ async fn models(State(gw): State<Shared>, headers: HeaderMap) -> Response {
             }
         }
     }
-    Json(json!({ "object": "list", "data": data })).into_response()
+    // OpenAI 客户端认 `data`。ChatGPT 桌面端 / Codex 的模型管理器认顶层 `models`
+    // （`codex_protocol::openai_models::ModelsResponse`），缺了这个字段连接直接失败，
+    // 对话还没发出去。两条都给，互不覆盖。
+    let count = data.len() as i64;
+    let models: Vec<Value> = data
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| {
+            let slug = item.get("id")?.as_str()?;
+            let display_name = item
+                .get("display_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(slug);
+            Some(codex_catalog_model(slug, display_name, count - i as i64))
+        })
+        .collect();
+    Json(json!({ "object": "list", "data": data, "models": models })).into_response()
+}
+
+/// Codex `/models` 目录里一条模型。字段按 ChatGPT.app 里那份 `ModelInfo` 的必填项给齐，
+/// 没给的可选字段用 serde 默认。`slug` 用 `通道/模型`，客户端原样送回来才能路由。
+fn codex_catalog_model(slug: &str, display_name: &str, priority: i64) -> Value {
+    json!({
+        "slug": slug,
+        "display_name": display_name,
+        "description": null,
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": [{ "effort": "medium", "description": "Medium" }],
+        "shell_type": "unified_exec",
+        "visibility": "list",
+        "supported_in_api": true,
+        "priority": priority,
+        "availability_nux": null,
+        "upgrade": null,
+        "support_verbosity": false,
+        "default_verbosity": null,
+        "apply_patch_tool_type": null,
+        "truncation_policy": { "mode": "tokens", "limit": 200_000 },
+        "experimental_supported_tools": [],
+    })
 }
 
 // ---------- 生视频（异步任务）----------
@@ -2021,6 +2060,15 @@ mod tests {
                     .all(|m| m["id"].as_str().is_some_and(|id| id.contains('/'))),
                 "目录只报 通道/模型，不列裸名"
             );
+            let codex = body["models"].as_array().expect("Codex 要顶层 models");
+            assert_eq!(codex.len(), body["data"].as_array().unwrap().len());
+            assert!(codex.iter().any(|m| m["slug"] == "cursor/auto"));
+            assert!(codex.iter().all(|m| {
+                m["visibility"] == "list"
+                    && m["shell_type"] == "unified_exec"
+                    && m["truncation_policy"]["mode"] == "tokens"
+                    && m["supported_reasoning_levels"][0]["effort"] == "medium"
+            }));
         }
         let res = http()
             .post(format!("{base}/v1/messages/count_tokens"))
