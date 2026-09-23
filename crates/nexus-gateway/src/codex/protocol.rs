@@ -43,6 +43,9 @@ pub const REJECTED_FIELDS: &[&str] = &[
     "previous_response_id",
     "generate",
     "background",
+    // ChatGPT 桌面端每个请求都带。Codex 订阅接口不认，原话是
+    // `Unsupported parameter: personality`，整段对话 400。
+    "personality",
 ];
 
 /// 上游对 call_id 的长度限制。
@@ -887,7 +890,8 @@ pub fn build_passthrough_body(raw: &Json, opts: &PrepareOptions<'_>) -> Prepared
         .get("tools")
         .and_then(|t| t.as_array())
         .is_some_and(|a| !a.is_empty());
-    if !has_tools {
+    // 显式的 false 要留着：Codex 的 Responses-Lite 头要求它为 false，删掉上游就按默认 true 拒收。
+    if !has_tools && body.get("parallel_tool_calls") != Some(&Value::Bool(false)) {
         body.remove("parallel_tool_calls");
     }
     let tool_aliases = alias_reserved_tool_names(&mut body);
@@ -901,11 +905,26 @@ pub fn build_passthrough_body(raw: &Json, opts: &PrepareOptions<'_>) -> Prepared
         from_body,
         opts.identity_mode,
     );
+    clamp_unsupported_effort(&mut body);
     Prepared {
         body,
         headers,
         tool_aliases,
         model,
+    }
+}
+
+/// 目录里写着 `ultra`，推理接口却不认，原话是只支持到 `max`。
+/// ChatGPT 桌面端把档位存成 ultra 时，每个请求都会 400。
+fn clamp_unsupported_effort(body: &mut Json) {
+    let Some(Value::Object(reasoning)) = body.get_mut("reasoning") else {
+        return;
+    };
+    let Some(effort) = reasoning.get("effort").and_then(|v| v.as_str()) else {
+        return;
+    };
+    if effort.eq_ignore_ascii_case("ultra") {
+        reasoning.insert("effort".into(), Value::String("max".into()));
     }
 }
 
@@ -1026,6 +1045,7 @@ pub fn build_bridge_body(request: &ChatRequest, opts: &PrepareOptions<'_>) -> Pr
         HashMap::new(),
         opts.identity_mode,
     );
+    clamp_unsupported_effort(&mut body);
     Prepared {
         body,
         headers,
@@ -1901,6 +1921,7 @@ mod tests {
             "tool_choice": { "type": "function", "name": "python" },
             "include": ["reasoning.encrypted_content"],
             "service_tier": "priority",
+            "personality": "friendly",
         })
         .as_object()
         .unwrap()
@@ -1911,6 +1932,23 @@ mod tests {
         assert_eq!(b["stream"], true);
         assert_eq!(b["store"], false);
         assert!(b.get("temperature").is_none() && b.get("max_output_tokens").is_none());
+        assert!(
+            b.get("personality").is_none(),
+            "桌面端的 personality 上游不认"
+        );
+        let ultra: Json = json!({
+            "model": "gpt-6-astra",
+            "instructions": "x",
+            "input": [],
+            "reasoning": { "effort": "ultra" },
+            "personality": "friendly",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let clamped = build_passthrough_body(&ultra, &opts("gpt-6-astra", &HashMap::new()));
+        assert_eq!(clamped.body["reasoning"]["effort"], "max");
+        assert!(clamped.body.get("personality").is_none());
         assert_eq!(b["service_tier"], "priority", "Fast 模式保留");
         assert_eq!(b["include"][0], "reasoning.encrypted_content");
         assert_eq!(b["instructions"], DEFAULT_INSTRUCTIONS);
@@ -1942,6 +1980,23 @@ mod tests {
         let again = build_passthrough_body(&raw, &opts("chatgpt/gpt-5.4-high", &HashMap::new()));
         assert_eq!(again.body["prompt_cache_key"], expected_key, "确定性");
         assert_eq!(p.headers["x-codex-beta-features"], "remote_compaction_v2");
+        assert!(p.body.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn passthrough_keeps_explicit_false_parallel_tool_calls_without_tools() {
+        let raw = json!({ "input": "hi", "parallel_tool_calls": false })
+            .as_object()
+            .unwrap()
+            .clone();
+        let p = build_passthrough_body(&raw, &opts("gpt-6-astra", &HashMap::new()));
+        assert_eq!(p.body["parallel_tool_calls"], false);
+
+        let raw = json!({ "input": "hi", "parallel_tool_calls": true })
+            .as_object()
+            .unwrap()
+            .clone();
+        let p = build_passthrough_body(&raw, &opts("gpt-6-astra", &HashMap::new()));
         assert!(p.body.get("parallel_tool_calls").is_none());
     }
 

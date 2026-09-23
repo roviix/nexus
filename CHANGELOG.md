@@ -8,6 +8,14 @@
 
 ## [未发布]
 
+## [0.7.6] — 2026-09-23
+
+### 修复
+
+- **ChatGPT 桌面端走本地网关一直 `response.failed`。** 新版 Codex 每个请求都带 `X-OpenAI-Internal-Codex-Responses-Lite`，这个模式要求 `parallel_tool_calls` 必须是 `false`；网关以前在没有工具时把这个字段整个删掉，上游按默认 `true` 处理，回 400。现在客户端显式给的 `false` 原样转发。
+- **ChatGPT 桌面端选了 `ultra` 档位就 400。** 推理接口只认到 `max`，网关把 `ultra` 收到 `max` 再发。
+- **ChatGPT 桌面端带的 `personality` 字段上游不认。** 转发前去掉，不再整段对话 400。
+
 ## [0.7.5] — 2026-09-22
 
 ### 修复
