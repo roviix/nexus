@@ -20,7 +20,7 @@ tokio = { workspace = true, features = ["rt"] }
 prost = "0.14.3"
 # Grok Bot（Electron safeStorage）在 macOS 上的加密形态：pbkdf2-sha1(1003) → AES-128-CBC，
 # IV 是 16 个空格。全部纯 Rust，去掉对 node 的运行时依赖（GUI 应用拿不到 shell 的 PATH）。
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 sha1 = "0.10"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
