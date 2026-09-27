@@ -32,7 +32,8 @@
 //!   ├─ upstream   推理后端 trait + CursorUpstream（server 用假后端可不联网全测）
 //!   ├─ codex      第二个后端：ChatGPT 订阅号直连 chatgpt.com/backend-api/codex/responses
 //!   │             （Responses 入站原样透传，其余方言桥接；协议纯函数在 codex::protocol）
-//!   ├─ grok / kiro 另两个订阅后端
+//!   ├─ grok / kiro / zcode / qoder  另几个订阅后端。Qoder 出站是 COSY 签名的 SSE，
+//!   │             不经过 qodercli
 //!   ├─ inference  InferenceService/Stream 客户端：请求构造 + Collector 流驱动 + 错误映射
 //!   ├─ images     AiService/RunGenerateImage 客户端：一次一张的生图 + OpenAI images 形状
 //!   ├─ media      异步媒体任务（生视频）登记簿
@@ -53,6 +54,7 @@
 //! Anthropic user 消息里的 tool_result 在解析层拆成独立 tool 消息（JS 那边会把它们丢掉）。
 
 pub mod channel;
+pub mod claude;
 pub mod codex;
 pub mod connect;
 pub mod error;
@@ -72,6 +74,12 @@ pub mod playground;
 pub mod proto;
 #[cfg(test)]
 mod proto_tests;
+pub mod provider;
+pub mod qoder;
+pub mod reqlog;
+pub mod routes;
+#[cfg(test)]
+mod scope_tests;
 pub mod server;
 pub mod service;
 pub mod sse;

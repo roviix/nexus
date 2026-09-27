@@ -40,6 +40,7 @@ pub struct KiroAccount {
     pub enabled: bool,
     pub note: Option<String>,
     pub auth_method: Option<String>,
+    pub profile_arn: Option<String>,
     pub last_checked_at: Option<String>,
     pub last_error: Option<String>,
     pub has_refresh: bool,

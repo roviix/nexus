@@ -99,6 +99,43 @@ pub fn status() -> AppStatus {
     }
 }
 
+/// 退出 Grok Bot，并等到主进程结束。没在跑就是成功。
+///
+/// 写 `sand-secrets.json` 必须等它退出之后：进程退出前会把内存里的旧账号表写回磁盘。
+pub fn quit_if_running() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if !status().running {
+            return Ok(());
+        }
+        let out = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", r#"tell application "Grok Bot" to quit"#])
+            .output()?;
+        if !out.status.success() && status().running {
+            return Err(AppError::new(
+                nexus_core::ErrorCode::CursorNotFound,
+                "没能退出 Grok Bot。",
+            )
+            .with_hint("先手动退出 Grok Bot，再切一次。"));
+        }
+        for _ in 0..40 {
+            if !status().running {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        return Err(
+            AppError::new(nexus_core::ErrorCode::CursorNotFound, "Grok Bot 还没退出。")
+                .with_hint("先手动退出 Grok Bot，再切一次。"),
+        );
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = status();
+        Err(AppError::unsupported_platform("退出 Grok Bot"))
+    }
+}
+
 /// 拉起 Grok Bot（已在跑就只是前置窗口）。
 pub fn launch() -> Result<()> {
     #[cfg(target_os = "macos")]

@@ -815,6 +815,7 @@ pub fn parse_request(
             // 由 server 决定要不要附原始体（只有 ChatGPT 通道的 Responses 请求要）与客户端头。
             raw_responses: None,
             client_headers: Default::default(),
+            raw_inbound: None,
         },
         stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false),
     })

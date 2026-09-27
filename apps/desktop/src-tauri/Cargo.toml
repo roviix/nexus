@@ -25,6 +25,8 @@ nexus-chatgpt.workspace = true
 nexus-grok.workspace = true
 nexus-kiro.workspace = true
 nexus-zcode.workspace = true
+nexus-qoder.workspace = true
+nexus-claude.workspace = true
 nexus-sand.workspace = true
 nexus-crsr.workspace = true
 nexus-grokbot.workspace = true
@@ -39,6 +41,7 @@ tauri-plugin-log = "2"
 
 serde.workspace = true
 serde_json.workspace = true
+reqwest.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 log = "0.4.34"

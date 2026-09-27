@@ -75,8 +75,8 @@ impl KiroAccounts {
                 let id = KiroAccountId::new();
                 self.db.with(|c| {
                     c.execute(
-                        "INSERT INTO kiro_accounts (id, account_ref, email, status, enabled, note, auth_method, created_at, updated_at)
-                         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?7)",
+                        "INSERT INTO kiro_accounts (id, account_ref, email, status, enabled, note, auth_method, profile_arn, created_at, updated_at)
+                         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?8)",
                         rusqlite::params![
                             id.as_str(),
                             account_ref,
@@ -84,6 +84,7 @@ impl KiroAccounts {
                             KiroStatus::NeedsLogin.as_str(),
                             note,
                             identity.auth_method.as_deref(),
+                            identity.profile_arn.as_deref(),
                             &now,
                         ],
                     )
@@ -98,13 +99,15 @@ impl KiroAccounts {
                    email = COALESCE(?2, email),
                    note = COALESCE(?3, note),
                    auth_method = COALESCE(?4, auth_method),
-                   updated_at = ?5
+                   profile_arn = COALESCE(?5, profile_arn),
+                   updated_at = ?6
                  WHERE id = ?1",
                 rusqlite::params![
                     id.as_str(),
                     email.as_deref(),
                     note,
                     identity.auth_method.as_deref(),
+                    identity.profile_arn.as_deref(),
                     &now
                 ],
             )
@@ -244,7 +247,8 @@ impl KiroAccounts {
 }
 
 const SELECT: &str = "SELECT id, account_ref, email, plan_type, status, enabled, note, auth_method,
-        last_checked_at, last_error, has_refresh, access_expires_at, created_at, updated_at
+        last_checked_at, last_error, has_refresh, access_expires_at, created_at, updated_at,
+        profile_arn
  FROM kiro_accounts";
 
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<KiroAccount> {
@@ -258,6 +262,7 @@ fn row_to_account(row: &Row<'_>) -> rusqlite::Result<KiroAccount> {
         enabled: row.get::<_, i64>(5)? != 0,
         note: row.get(6)?,
         auth_method: row.get(7)?,
+        profile_arn: row.get(14)?,
         last_checked_at: row.get(8)?,
         last_error: row.get(9)?,
         has_refresh: row.get::<_, i64>(10)? != 0,
@@ -313,6 +318,7 @@ mod tests {
                     subject: "user/a".into(),
                     email: Some("A@X.com".into()),
                     auth_method: Some("builder-id".into()),
+                    profile_arn: None,
                 },
                 &tokens("at-1", Some("rt-1")),
                 None,

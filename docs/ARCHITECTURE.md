@@ -140,8 +140,9 @@ Rust 侧只要一个 `reqwest`。
 | `nexus-chatgpt` | ChatGPT 订阅号：登录、刷 token、Codex 后端协议。 |
 | `nexus-grok` / `nexus-kiro` | 对应平台的账号、OAuth、协议、额度。 |
 | `nexus-zcode` | ZCode（智谱 GLM 编码套餐）账号。没有 OAuth 也没有刷新——凭证从官方客户端的加密 JSON 导入，失效就重新导。 |
+| `nexus-qoder` | Qoder 账号与聊天协议：PAT 换短命 job token，COSY 签名直连国际版 / 国内版网关，不经过 `qodercli`。 |
 | `nexus-grokbot` | Grok Bot 额度凭证的获取与维护。 |
-| `nexus-gateway` | 本地网关：方言口、通道注册表、额度接力、账本。 |
+| `nexus-gateway` | 本地网关：方言口、通道注册表、额度接力、供应商通道、按客户端路由、账本与最近请求。 |
 | `nexus-playground` | 游乐场的线程 / 消息 / 图片 / 视频存储与编排。 |
 | `nexus-connect` | 一键接入：改 Claude Code / Codex / OpenCode / Grok CLI 的配置文件。 |
 | `nexus-sand` | Sand 补丁引擎（本机 + 远程 SSH）。 |
@@ -386,22 +387,24 @@ Claude Code、Codex 这类会自己跑很久的客户端，一个号被它悄悄
 ### 6.1 数据流
 
 ```
-客户端（Claude Code / Codex / SDK / curl）
+客户端（Claude Code / Codex / OpenCode / Grok CLI / SDK / curl）
    │  OpenAI Chat Completions · Anthropic Messages · OpenAI Responses · OpenAI Images
    ▼
-server        127.0.0.1 HTTP，校验本地口令
+server        127.0.0.1 HTTP，校验本地口令；/client/{id}/v1 带上客户端作用域（§6.8）
    ▼
 inbound       各方言 → 统一中间表示（按 Anthropic Messages 建模）
    ▼
+routes        有作用域时先按这个客户端的路由改写模型名（§6.8）
+   ▼
 channel       通道注册表选路（§6.2）
    ▼
-lane          额度接力挑号（§6.3）
+lane          额度接力挑号 / 挑供应商（§6.3、§6.7）
    ▼
-upstream      Cursor InferenceService/Stream · ChatGPT Codex · Grok · Kiro · ZCode
+upstream      Cursor InferenceService/Stream · ChatGPT Codex · Grok · Kiro · ZCode · Qoder · 供应商
    ▼
-inbound       统一表示 → 客户端方言的 SSE（流式原样支持）
+inbound       统一表示 → 客户端方言的 SSE（流式原样支持；供应商同协议时原样透传）
    ▼
-ledger        记一行账（§6.5）
+ledger        记一行账、一条最近请求（§6.5）
 ```
 
 入站先归一再桥接，而不是每种方言各写一条到每个上游的路——四种方言乘四个上游是十六条路，
@@ -427,6 +430,13 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 早先还有中间一条「无前缀时按『声明拥有该模型且此刻有号』反推归属」。它猜错的时候没法解释：
 同一个模型名在两条通道上都有，请求落到哪条取决于哪条恰好还有号，用户看到的是「昨天还好好的，
 今天换了个上游」。现在归属写在名字里，默认通道写在设置里，两处都是用户能看见、能改的。
+
+两条规则之外有两处例外，都不靠猜，依据都是用户亲手写下的名字：
+
+- **供应商通道认裸名**（`ChannelGate::claims_bare`）。它的模型清单是用户自己填的（§6.7），裸名对上
+  清单就是在指它，而且和此刻有没有可用的供应商无关。别的通道一律不认裸名。
+- **按客户端的作用域**（§6.8）。从 `/client/{id}/v1` 进来的请求先按这个客户端的路由改写模型名，
+  改写之后才进上面这套规则；不分客户端的 `/v1` 不受影响。
 
 默认通道和注册表分开一把锁（`share_default`）：改设置不用重建通道，也不用重启网关，
 正在听的那一发下一次就照新的走。
@@ -472,6 +482,12 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 
 这是**本地**账本，不上报任何地方。
 
+账本回答「用了多少」，回答不了「这一条为什么没走我以为的那条路」：它按号记，连号都没拿到的
+请求——口令不对、请求体坏了、号池空或全在冷却——在账本里没有位置。所以另有一份**最近请求**
+（`reqlog`）：内存里的环形缓冲，300 条，每次尝试一行（接力换号就是两行），记客户端、要的模型、
+改写后的模型、落到的通道和号、首字与总耗时，失败的留上游原话。它不进库：排障看的是刚才，
+重启之后的旧明细没人看，还要为它加一张表、一次迁移。
+
 ### 6.6 ZCode：导入来的凭证，两档套餐只做一档
 
 ZCode（智谱 GLM 编码套餐）是第五条通道，也是唯一一条**没有授权流程**的：它的官方客户端把凭证
@@ -496,6 +512,57 @@ Tauri 的 WebView 理论上能做，但那是每请求一次的开销和一条�
 
 出站一律用 Anthropic Messages 方言，客户端讲 OpenAI 也照样翻过去——这是上游的形状，不是选择。
 
+### 6.7 供应商：一把 API Key 也是一条通道
+
+供应商（DeepSeek、Kimi、OpenRouter 或任意 OpenAI / Anthropic 兼容地址）是另一种号源：没有订阅，
+只有一把按量计费的 API Key。最省事的接法是把供应商地址直接写进客户端，但那样网关看不见它——出错
+不接力、不进账本、换一家就得重写配置。所以它是注册表里的第七条通道 `provider/`，和订阅号走同一套
+Channel = 前缀 + Lane + Upstream + Gate：
+
+- **门禁**是几家模型清单的并集。清单是用户写的（从对方 `/models` 勾，或手填），不是我们猜的，
+  所以裸名对上清单也归它（§6.2）。
+- **Lane 里的「号」是一家家供应商。** 同一个模型几家都声明时，按模型粘住上次成功的那家，出错才
+  换下一家，顺序就是列表顺序（「优先用它」把一家挪到最前）。冷却按错误类别分粒度：钥匙被拒整家
+  停 10 分钟，余额没了整家停到上游给的重置时间（没给就 30 分钟），限流只冷「这家 × 这个模型」
+  60 秒，模型不认 30 分钟，连不上 / 5xx 30 秒。
+- **上游故障也换。** 订阅号的 Lane 遇到 5xx 不换号——号换了上游还是那一个，换了也白换；供应商
+  换一家就是换一个上游，所以 `Lane::switch_helps_on_upstream_error` 在这里是 `true`。
+- **协议一致就原样透传。** 方言口把原始请求体挂在 `ChatRequest::raw_inbound` 上；客户端方言和
+  供应商的 API 格式一致时，出站只换 `model`（流式再补 `stream_options.include_usage`，好记账），
+  响应帧原样回。经过中间表示走一圈，`cache_control`、`thinking` 块、`anthropic-beta` 这类
+  中间表示没建模的东西就丢了——对 Claude Code 接 Anthropic 兼容的供应商，丢的正是缓存命中。
+  方言不一致才翻译。
+- **地址规范化。** 用户贴的常常是完整端点：`…/chat/completions`、`…/v1/messages` 一律剥掉；
+  OpenAI 格式没有版本段就补 `/v1`，有（智谱的 `/api/paas/v4`）就照用；Anthropic 格式只要根地址。
+
+表是 `key_providers`（v18），钥匙在 `secrets`，业务行只留尾号。`models_json` 装清单和停用标记，
+不为停用单开一列；它最早的形状是按 Claude Code 四档各存一个模型，读老行时收成清单，写的时候仍把
+第一个模型镜像进 `sonnet`，同一个库给没升级的构建读也不会读坏。
+
+### 6.8 按客户端路由
+
+接入以前把**裸模型名**写进客户端配置，请求一律落到全局默认通道。于是「Claude Code 走 Cursor、
+Codex 走 ChatGPT」不能同时成立；而且换模型就得重写配置、重启客户端。
+
+现在一键接入写的地址带着客户端名：`http://127.0.0.1:8787/client/claude`，下面挂着和 `/v1` 完全
+相同的一套方言口。每个客户端一条 `ClientRoute`（主模型、Claude 另外三档、1M 开关、写进过配置的
+旧名字），存在设置 `gateway.client_routes` 里。模型名按下面的顺序改写，第一条命中就停：
+
+1. 带通道前缀——客户端里手动指名的，原样尊重；
+2. Claude Code 的档名——换成这一档配的模型，没单独配的档跟主模型；
+3. 空名字，或是接入时写进过这个客户端配置的名字——主模型。路由改了、客户端还没重开，它发来的
+   仍是旧名字，照样跟着新路由走；
+4. 路由所在的那条通道认识这个裸名（Codex 里 `/model` 换了一个）——在这条通道上跑它；
+5. 其余走主模型。
+
+Claude Code 能「改了就生效」靠的是四档别名：配置里写的是固定的官方档名（`claude-sonnet-4-6`、
+`claude-opus-4-8`、`claude-haiku-4-5`、`claude-fable-5`，1M 时带 `[1M]`），真实模型名只写进
+`*_MODEL_NAME` 给 `/model` 菜单显示。`ANTHROPIC_MODEL` 不写：它会把四档压成一个，`/model` 切档
+就失效了。档名里认 sonnet / opus / haiku / fable，顺序照 Claude Code 自己的分类器。
+
+改写只动模型名，改完照旧进 §6.2 的选路；作用域外的 `/v1` 行为不变，SDK、`curl` 和
+「其他客户端」的片段用的还是它——那里模型名的通道前缀就是选路本身，片段里原样保留。
+
 ---
 
 ## 7. 其余模块
@@ -510,7 +577,24 @@ Tauri 的 WebView 理论上能做，但那是每请求一次的开销和一条�
 - **动之前先备份**到 `~/.roviix/backups/clients/<tool>/` 并记一份清单；
 - **可撤销**：按清单把备份拷回去；文件是我们建的就删掉；清单丢了就退回「只删我们的键」。
 
-它只认三个字串——地址、钥匙、模型。从哪个号源来是 Tauri 层的事，这个 crate 不依赖 gateway。
+它只认几个字串——地址、钥匙、模型，Claude Code 多一组四档别名。从哪个号源来是 Tauri 层的事，
+这个 crate 不依赖 gateway。
+
+「写完就能用」比「写对了」多几件事，都在 `connect_apply` 里按顺序做：
+
+1. 先把路由存进网关（§6.8），再写配置——反过来的话，客户端可能在路由还没到时就发了第一条；
+2. 网关没开就开，并设成随 Nexus 启动：配置写好了、网关却没在听，是接入失败里最常见的一种；
+3. 地址写 `{网关}/client/{tool}`；
+4. Claude Code 额外把 `~/.claude.json` 的 `hasCompletedOnboarding` 置上，不然第一次打开会先卡在
+   官方的登录引导里。
+
+接入页读回来的不只是「写没写过」：配置里的钥匙和端口跟网关此刻的对不对得上（改过口令、换过端口
+之后客户端会 401 或连不上，页上标「修复接入」）；shell 启动文件和进程环境里有没有会盖过配置文件的
+变量（`ANTHROPIC_BASE_URL`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`OPENCODE_CONFIG`、`GROK_HOME`……），
+有就说是哪个文件设的、会造成什么后果。钥匙只在 Rust 里比对，不过 IPC。
+
+「测一下」按客户端自己的路径（`/client/{tool}/v1`、它自己的方言）发一条真请求，再从最近请求（§6.5）
+里取这一条落到的通道和号——测的是和客户端完全相同的那条路，不是一条旁路。
 
 ### 7.2 游乐场
 
@@ -583,7 +667,7 @@ CREATE TABLE activity (id INTEGER PRIMARY KEY, at TEXT, level TEXT, scope TEXT, 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
 ```
 
-另有各平台账号表、网关账本、游乐场的线程 / 消息 / 图片表。以实际迁移为准——迁移文件才是 schema
+另有各平台账号表、供应商表、网关账本、游乐场的线程 / 消息 / 图片表。以实际迁移为准——迁移文件才是 schema
 的唯一真相，这里只画个轮廓。
 
 机器码（`MachineProfile`）**不是秘密**：它们是随机数，泄露了换一套就行，所以直接进业务表，

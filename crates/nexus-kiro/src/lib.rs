@@ -14,4 +14,4 @@ pub use model::{KiroAccount, KiroStatus};
 pub use oauth::{Identity, TokenSet};
 pub use protocol::{is_kiro_model, split_route_prefix, upstream_model, KIRO_MODELS, REFRESH_AHEAD};
 pub use repo::{KiroAccounts, Upserted};
-pub use service::{parse_import_text, KiroService, LoginHandle, LoginState};
+pub use service::{parse_import_text, KiroOutbound, KiroService, LoginHandle, LoginState};

@@ -10,6 +10,8 @@ members = [
     "crates/nexus-grok",
     "crates/nexus-kiro",
     "crates/nexus-zcode",
+    "crates/nexus-qoder",
+    "crates/nexus-claude",
     "crates/nexus-sand",
     "crates/nexus-crsr",
     "crates/nexus-grokbot",
@@ -20,9 +22,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.6"
+version = "0.8.0"
 edition = "2021"
-rust-version = "1.82"
+# Claude 通道直接用 boring2（BoringSSL）写 HTTP/1.1。wreq 0.15 写不出头的大小写。
+rust-version = "1.85"
 license = "MIT"
 publish = false
 
@@ -36,6 +39,8 @@ nexus-chatgpt = { path = "crates/nexus-chatgpt" }
 nexus-grok = { path = "crates/nexus-grok" }
 nexus-kiro = { path = "crates/nexus-kiro" }
 nexus-zcode = { path = "crates/nexus-zcode" }
+nexus-qoder = { path = "crates/nexus-qoder" }
+nexus-claude = { path = "crates/nexus-claude" }
 nexus-sand = { path = "crates/nexus-sand" }
 nexus-crsr = { path = "crates/nexus-crsr" }
 nexus-grokbot = { path = "crates/nexus-grokbot" }

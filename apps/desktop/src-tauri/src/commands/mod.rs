@@ -11,14 +11,17 @@ pub mod accounts;
 pub mod app;
 pub mod backup;
 pub mod chatgpt;
+pub mod claude;
 pub mod connect;
 pub mod crsr;
 pub mod gateway;
 pub mod grok;
 pub mod grokbot;
+pub mod key_providers;
 pub mod kiro;
 pub mod perms;
 pub mod playground;
+pub mod qoder;
 pub mod sand;
 pub mod sand_remote;
 pub mod switcher;
@@ -32,6 +35,8 @@ pub mod events {
     pub const OAUTH_STATE: &str = "oauth://state";
     /// ChatGPT 授权（等本机 1455 回调）的状态。载荷是 `nexus_chatgpt::LoginState`。
     pub const CHATGPT_LOGIN: &str = "chatgpt://login";
+    /// Claude 授权（等本机 54545 回调）的状态。载荷是 `nexus_claude::LoginState`。
+    pub const CLAUDE_LOGIN: &str = "claude://login";
     pub const GROK_LOGIN: &str = "grok://login";
     pub const KIRO_LOGIN: &str = "kiro://login";
     /// 批量刷用量的逐个结果。

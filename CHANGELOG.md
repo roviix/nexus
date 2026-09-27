@@ -8,6 +8,66 @@
 
 ## [未发布]
 
+## [0.8.0] — 2026-09-27
+
+### 新增
+
+- **每个客户端各有一条自己的路由。** 接入页给 Claude Code / Codex CLI / OpenCode / Grok CLI 分别选通道和模型，
+  配置里写的是这个客户端专属的地址 `http://127.0.0.1:8787/client/{客户端}`。之后在接入页改通道、改模型，
+  下一条请求就按新的走——不用再改配置文件，也不用重启客户端。以前配置里写的是裸模型名，一律落到全局默认通道，
+  给一个客户端换通道就得动全部。
+- **Claude Code 的 Sonnet / Opus / Haiku / Fable 四档能分别指到不同模型，可以跨通道**，比如主力走
+  `cursor/claude-sonnet-5`、Haiku 走便宜的供应商。可选 1M 上下文。
+- **供应商：用 API Key 接入，是网关里的一条通道 `provider/`。** DeepSeek、Kimi、智谱、OpenRouter、硅基流动、
+  通义千问、Anthropic、OpenAI 有预设，其他 OpenAI / Anthropic 兼容的地址也能填。每家一张模型清单
+  （最多 300 个）：从对方 `/models` 拉下来勾，或者手动加。同一个模型几家都有时按列表顺序接力——钥匙被拒、
+  余额不足、限流、连不上，下一条请求自动换下一家，冷却到点再回来。每家能单独停用、测一下、看冷却状态、
+  「优先用它」。贴进来的地址带着 `/chat/completions`、`/v1/messages` 这类后缀时自动去掉；OpenAI 格式
+  没写版本段会补 `/v1`。
+- **协议相同就原样透传。** 客户端讲的方言和供应商一致时（例如 Claude Code 对 Anthropic 兼容的供应商），
+  请求体只换模型名，`cache_control`、`thinking`、`anthropic-beta` 这些不再在中转时丢掉；方言不同才互转。
+- **Qoder 通道（`qoder/`、`qoder-cn/`）。** 账号页新增 Qoder 页签，一行一个 PAT 批量导入，国际版 / 国内版
+  各走各的网关。
+- **网关页「最近请求」。** 最近 300 次尝试：哪个客户端、要的模型、实际落到哪条通道哪个号、token、首字与总耗时，
+  失败的点开看上游原话。口令不对（401）、请求体坏了、号池空或全在冷却这类没拿到号的请求也在里面。
+  只存在内存里，重启清空。
+- **接入页「测一下」。** 按这个客户端自己的地址发一条真请求，回报走了哪条通道、哪个号、用了多久。
+- **接入页查环境变量冲突。** shell 里设了 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`CLAUDE_CONFIG_DIR`、
+  `CODEX_HOME`、`OPENCODE_CONFIG`、`GROK_HOME` 这类会盖过配置文件的变量时，直接说是哪个文件设的、会造成什么后果。
+
+### 变更
+
+- **Kiro 通道按 Amazon Q 的协议代理。** 请求翻成 `conversationState`（system 单独成一轮、图片、
+  采样、嵌套工具 schema、对不齐的工具调用会丢掉，历史里用过但本轮没声明的工具补占位）。
+  相邻的同角色消息会合成一条。流里的 `<thinking>` 拆成思考块，并带上正文的签名，Claude Code 才肯收下。
+  正文里的 `[Called …]` 会拆成工具调用；没写完、或 Write / Bash / Edit 缺了必填字段的调用不下发。
+  社交登录才带 `profileArn`。账号页可以导入 sub2api 的 `accounts` 导出。开着的号自动进队：
+  401 / 403 换下一个号，429 只对这个模型绕行。
+- **Claude 订阅通道按官方 Claude Code 的指纹出站。** OAuth / setup-token 补齐计费头、身份句、
+  按请求拼的 `anthropic-beta`、TitleCase 工具名（含历史里的 `tool_use`）和 `metadata.user_id`。
+  认不出的第三方工具不带去上游。计费指纹按最终发出去的第一条用户消息、用 UTF-16 下标计算。
+  OpenCode、SDK 走订阅号时用量记在套餐额度里。真实 Claude Code 自己已经带齐的，只换认证和账号身份。
+  `count_tokens` 落到这条通道时按同一份请求体问 `api.anthropic.com`，不再拿本地估算当上下文预算。
+- **从本机导入 Claude Code 时会读 macOS 钥匙串。** 凭证文件里没有 token 时，再读登录钥匙串的
+  「Claude Code-credentials」。文件里已经有登录态就不去碰钥匙串。
+- **Claude 推理请求补上会话号和单次请求号。** `X-Claude-Code-Session-Id` 与 `metadata.user_id` 里的 session 是同一个；每次请求另带 `x-client-request-id`。`count_tokens` 不再带 `X-Stainless-Timeout`。换票成功后会再查一次 CLI 角色，查不到不影响登录。
+- **Claude 打到 `api.anthropic.com` 时换一套 TLS 握手。** 对齐 Claude Code 的 Node/OpenSSL
+  ClientHello（密码套件、曲线、签名算法，只协商 HTTP/1.1，关掉 GREASE）。换票和读资料不带 ALPN。
+  请求头按 Claude Code 的大小写和顺序写。中转供应商、Cursor、Codex 这些通道仍用原来的客户端。
+- **第三方请求的 system 补上 Claude Code 的静态段。** 计费头、身份句、然后是官方 intro / system /
+  doing tasks / tone / output efficiency 拼成的第三块，不带 cache_control。调用方自己的说明挪到
+  最前面的对话里。Fable 仍只发前两块。换票、读资料、读额度按 axios 的头发。
+- **Claude 授权登录改成和 Claude Code 一样收回调。** 浏览器同意后跳到 `localhost:54545/callback`，
+  Nexus 在这个口上听，不用再把地址栏贴回来。54545 被占时仍可以手贴。换票的请求体字段顺序和
+  Claude Code 打到 `platform.claude.com` 的一致。
+- **接入页改成先看客户端。** 顶上一排客户端卡片，每张写着它现在指向哪里（Nexus / 官方 / 旧版接入 / 没配置）、
+  走的哪个模型；口令或端口和网关对不上时标出来，一键修复。
+- **一键接入会先把网关开起来，并设成随 Nexus 启动。** 以前网关没开时接入，客户端写好了却连不上。
+- **Claude Code 接入不再写 `ANTHROPIC_MODEL`。** 四档写成固定的别名（`claude-sonnet-4-6` 等），
+  `/model` 菜单里显示的是真实模型名，切档照常能用。同时把 `~/.claude.json` 的 `hasCompletedOnboarding` 置上，
+  第一次打开不会卡在官方登录引导。
+- **Codex CLI 第一次接入默认走 ChatGPT 通道，Grok CLI 默认走 Grok 通道**（有号的话）。
+
 ## [0.7.6] — 2026-09-23
 
 ### 修复

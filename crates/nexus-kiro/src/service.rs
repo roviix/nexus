@@ -73,12 +73,29 @@ pub struct Imported {
     pub profile_arn: Option<String>,
     pub auth_method: Option<String>,
     pub expires_at: Option<String>,
+    /// 导出里的名字或备注。用户没另写备注时用它。
+    pub note: Option<String>,
 }
 
 impl Imported {
     fn is_empty(&self) -> bool {
         self.access_token.is_none() && self.refresh_token.is_none()
     }
+}
+
+/// 粘贴导入的汇总。命令层只把最后一个号回给界面，列表刷新后其余的也在。
+pub struct ImportReport {
+    pub account: KiroAccount,
+    pub created: bool,
+    pub accepted: u32,
+    pub failed: u32,
+    pub errors: Vec<String>,
+}
+
+fn import_unrecognized() -> AppError {
+    AppError::invalid("认不出这段内容。").with_hint(
+        "支持 kiro-auth-token.json、sub2api 的账号导出（accounts 里 platform 为 kiro 的 credentials）、CLIProxyAPI JSON，或 `access----refresh`。",
+    )
 }
 
 fn looks_like_opaque_token(s: &str) -> bool {
@@ -88,40 +105,191 @@ fn looks_like_opaque_token(s: &str) -> bool {
         })
 }
 
-/// 认 `kiro-auth-token.json`（camelCase）、CLIProxyAPI JSON、`access----refresh`。
+/// 只取第一份。本机 `kiro-auth-token.json` 走这条。
 pub fn parse_import_text(text: &str) -> Option<Imported> {
+    parse_import_entries(text).into_iter().next()
+}
+
+/// 一份粘贴可能是一个号，也可能是 sub2api 一次导出的一打。
+///
+/// 认这些写法：
+/// - `kiro-auth-token.json`（camelCase），或 CLIProxyAPI 摊平的 JSON；
+/// - `{accounts:[{platform,credentials}]}`，`credentials` 是对象或 JSON 字符串都认，别的平台跳过；
+/// - JSON 数组、`{items|contents|data.items}` 包一层、NDJSON；
+/// - `access----refresh`，一行一个，`#` 当注释。
+pub fn parse_import_entries(text: &str) -> Vec<Imported> {
     let raw = text.trim();
-    if raw.is_empty() || raw.starts_with('#') {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    if looks_like_json(raw) {
+        let (values, rest) = take_json_values(raw);
+        let mut out = Vec::new();
+        for v in values {
+            out.extend(entries_from_value(v));
+        }
+        if !rest.is_empty() {
+            out.extend(parse_import_lines(rest));
+        }
+        return out;
+    }
+    parse_import_lines(raw)
+}
+
+fn looks_like_json(s: &str) -> bool {
+    matches!(s.as_bytes().first(), Some(b'{' | b'['))
+}
+
+fn take_json_values(raw: &str) -> (Vec<serde_json::Value>, &str) {
+    let mut stream = serde_json::Deserializer::from_str(raw).into_iter::<serde_json::Value>();
+    let mut values = Vec::new();
+    loop {
+        match stream.next() {
+            Some(Ok(v)) => values.push(v),
+            Some(Err(_)) | None => {
+                let offset = stream.byte_offset().min(raw.len());
+                return (values, raw[offset..].trim());
+            }
+        }
+    }
+}
+
+fn parse_import_lines(text: &str) -> Vec<Imported> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if looks_like_json(line) {
+            let (values, _) = take_json_values(line);
+            for v in values {
+                out.extend(entries_from_value(v));
+            }
+        } else if let Some(imported) = parse_dashed(line) {
+            out.push(imported);
+        }
+    }
+    out
+}
+
+fn entries_from_value(v: serde_json::Value) -> Vec<Imported> {
+    match v {
+        serde_json::Value::Array(items) => items.into_iter().flat_map(entries_from_value).collect(),
+        serde_json::Value::String(s) => parse_import_entries(&s),
+        serde_json::Value::Object(_) => {
+            for key in ["accounts", "items", "contents"] {
+                if let Some(serde_json::Value::Array(items)) = v.get(key).cloned() {
+                    return items.into_iter().flat_map(entries_from_value).collect();
+                }
+            }
+            if let Some(data) = v.get("data").cloned() {
+                if data.get("items").is_some() || data.get("accounts").is_some() {
+                    return entries_from_value(data);
+                }
+            }
+            if rejected_platform(&v) {
+                return Vec::new();
+            }
+            imported_from_object(&v).into_iter().collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// 导出里混着别的平台时整条跳过。没有 platform / type 就当 Kiro。
+fn rejected_platform(v: &serde_json::Value) -> bool {
+    let Some(platform) = pick_str(v, &["platform", "type"]).map(|s| s.to_ascii_lowercase()) else {
+        return false;
+    };
+    !matches!(
+        platform.as_str(),
+        "kiro" | "amazon-q" | "amazonq" | "codewhisperer" | "aws"
+    )
+}
+
+fn pick_str(obj: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| {
+        obj.get(*k)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn object_field(v: &serde_json::Value, key: &str) -> Option<serde_json::Value> {
+    let field = v.get(key)?;
+    if field.is_object() {
+        return Some(field.clone());
+    }
+    let raw = field.as_str()?.trim();
+    if !raw.starts_with('{') {
         return None;
     }
-    if raw.starts_with('{') {
-        let v: serde_json::Value = serde_json::from_str(raw).ok()?;
-        let obj = v
-            .get("tokens")
-            .filter(|t| t.is_object())
-            .or_else(|| v.get("attributes"))
-            .unwrap_or(&v);
-        let pick = |keys: &[&str]| {
-            keys.iter().find_map(|k| {
-                obj.get(*k)
-                    .or_else(|| v.get(*k))
-                    .and_then(|x| x.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            })
-        };
-        let out = Imported {
-            access_token: pick(&["accessToken", "access_token"]),
-            refresh_token: pick(&["refreshToken", "refresh_token"]),
-            client_id: pick(&["clientId", "client_id"]),
-            client_secret: pick(&["clientSecret", "client_secret"]),
-            profile_arn: pick(&["profileArn", "profile_arn"]),
-            auth_method: pick(&["authMethod", "auth_method", "provider"]),
-            expires_at: pick(&["expiresAt", "expires_at"]),
-        };
-        return (!out.is_empty()).then_some(out);
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .filter(|p| p.is_object())
+}
+
+fn fill_imported(into: &mut Imported, from: Imported) {
+    if into.access_token.is_none() {
+        into.access_token = from.access_token;
     }
+    if into.refresh_token.is_none() {
+        into.refresh_token = from.refresh_token;
+    }
+    if into.client_id.is_none() {
+        into.client_id = from.client_id;
+    }
+    if into.client_secret.is_none() {
+        into.client_secret = from.client_secret;
+    }
+    if into.profile_arn.is_none() {
+        into.profile_arn = from.profile_arn;
+    }
+    if into.auth_method.is_none() {
+        into.auth_method = from.auth_method;
+    }
+    if into.expires_at.is_none() {
+        into.expires_at = from.expires_at;
+    }
+    if into.note.is_none() {
+        into.note = from.note;
+    }
+}
+
+fn tokens_from_obj(obj: &serde_json::Value) -> Imported {
+    let auth_method = pick_str(obj, &["authMethod", "auth_method", "provider"]).filter(|s| {
+        !matches!(
+            s.to_ascii_lowercase().as_str(),
+            "kiro" | "amazon-q" | "amazonq" | "codewhisperer" | "aws"
+        )
+    });
+    Imported {
+        access_token: pick_str(obj, &["accessToken", "access_token"]),
+        refresh_token: pick_str(obj, &["refreshToken", "refresh_token"]),
+        client_id: pick_str(obj, &["clientId", "client_id"]),
+        client_secret: pick_str(obj, &["clientSecret", "client_secret"]),
+        profile_arn: pick_str(obj, &["profileArn", "profile_arn"]),
+        auth_method,
+        expires_at: pick_str(obj, &["expiresAt", "expires_at"]),
+        note: pick_str(obj, &["notes", "note", "name"]),
+    }
+}
+
+fn imported_from_object(v: &serde_json::Value) -> Option<Imported> {
+    let mut out = Imported::default();
+    for key in ["credentials", "tokens", "attributes"] {
+        if let Some(obj) = object_field(v, key) {
+            fill_imported(&mut out, tokens_from_obj(&obj));
+        }
+    }
+    fill_imported(&mut out, tokens_from_obj(v));
+    (!out.is_empty()).then_some(out)
+}
+
+fn parse_dashed(raw: &str) -> Option<Imported> {
     let mut out = Imported::default();
     for part in raw.split("----").map(str::trim).filter(|p| !p.is_empty()) {
         if part.contains('@') || part.contains(char::is_whitespace) {
@@ -134,6 +302,11 @@ pub fn parse_import_text(text: &str) -> Option<Imported> {
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+pub struct KiroOutbound {
+    pub machine_id: String,
+    pub profile_arn: Option<String>,
 }
 
 pub struct KiroService {
@@ -166,6 +339,50 @@ impl KiroService {
             .iter()
             .map(|(ext, _)| (*ext).to_string())
             .collect()
+    }
+
+    /// 出站要用的机器码和社交登录的 profileArn。对不上账号时机器码按标签派生。
+    pub fn outbound_for(&self, label: &str) -> KiroOutbound {
+        let key = label.trim();
+        let found = self.list().ok().and_then(|list| {
+            list.into_iter()
+                .find(|a| a.label().eq_ignore_ascii_case(key))
+        });
+        let Some(account) = found else {
+            return KiroOutbound {
+                machine_id: crate::protocol::machine_id(None, key),
+                profile_arn: None,
+            };
+        };
+        let refresh = self
+            .repo
+            .secret(&account.id, KiroSecret::Refresh)
+            .ok()
+            .flatten();
+        let machine_id =
+            crate::protocol::machine_id(refresh.as_ref().map(|s| s.expose()), &account.label());
+        let builder = account
+            .auth_method
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("builder-id"));
+        let profile_arn = if builder {
+            None
+        } else {
+            account
+                .profile_arn
+                .clone()
+                .filter(|s| s.starts_with("arn:"))
+                .or_else(|| {
+                    account
+                        .account_ref
+                        .starts_with("arn:")
+                        .then(|| account.account_ref.clone())
+                })
+        };
+        KiroOutbound {
+            machine_id,
+            profile_arn,
+        }
     }
 
     pub fn list(&self) -> Result<Vec<KiroAccount>> {
@@ -334,11 +551,53 @@ impl KiroService {
     }
 
     pub async fn import_text(&self, text: &str, note: Option<&str>) -> Result<Upserted> {
-        let imported = parse_import_text(text).ok_or_else(|| {
-            AppError::invalid("认不出这段内容。").with_hint(
-                "支持 ~/.aws/sso/cache/kiro-auth-token.json 原文，或 `access----refresh`。",
-            )
-        })?;
+        let imported = parse_import_text(text).ok_or_else(|| import_unrecognized())?;
+        self.import_one(imported, note).await
+    }
+
+    /// 一次贴多个号。能进的先进，一条坏的不把整份退掉。
+    pub async fn import_dump(&self, text: &str, note: Option<&str>) -> Result<ImportReport> {
+        let entries = parse_import_entries(text);
+        if entries.is_empty() {
+            return Err(import_unrecognized());
+        }
+        let mut last = None;
+        let mut accepted = 0u32;
+        let mut failed = 0u32;
+        let mut errors = Vec::new();
+        for imported in entries {
+            let item_note = note.map(str::to_string).or_else(|| imported.note.clone());
+            match self.import_one(imported, item_note.as_deref()).await {
+                Ok(up) => {
+                    accepted += 1;
+                    last = Some(up);
+                }
+                Err(err) => {
+                    failed += 1;
+                    if errors.len() < 5 {
+                        errors.push(err.message);
+                    }
+                }
+            }
+        }
+        let Some(up) = last else {
+            let detail = errors
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "没有可用的凭证。".into());
+            return Err(AppError::invalid(format!("一个都没导进去。{detail}"))
+                .with_hint("检查 refresh token 和 profileArn。别的平台的账号会被跳过。"));
+        };
+        Ok(ImportReport {
+            account: up.account,
+            created: up.created,
+            accepted,
+            failed,
+            errors,
+        })
+    }
+
+    async fn import_one(&self, imported: Imported, note: Option<&str>) -> Result<Upserted> {
         let tokens = match (&imported.access_token, &imported.refresh_token) {
             (Some(access), refresh) => TokenSet {
                 expires_at: imported
@@ -518,6 +777,56 @@ mod tests {
         assert_eq!(
             p.profile_arn.as_deref(),
             Some("arn:aws:codewhisperer:us-east-1:1:profile/default")
+        );
+    }
+
+    #[test]
+    fn parse_sub2api_account_export_and_skips_other_platforms() {
+        let json = r#"{
+            "accounts": [
+                {
+                    "platform": "openai",
+                    "credentials": { "refresh_token": "rt_not_kiro_xxxxxxxxxxxx" }
+                },
+                {
+                    "name": "desk",
+                    "platform": "kiro",
+                    "credentials": {
+                        "access_token": "at_abcdefghijklmnopqrst",
+                        "refresh_token": "rt_abcdefghijklmnopqrst",
+                        "profile_arn": "arn:aws:codewhisperer:us-east-1:1:profile/desk",
+                        "auth_method": "social"
+                    }
+                },
+                {
+                    "platform": "kiro",
+                    "notes": "stringified",
+                    "credentials": "{\"refresh_token\":\"rt_stringified_token_xx\",\"access_token\":\"at_stringified_token_xx\"}"
+                }
+            ]
+        }"#;
+        let all = parse_import_entries(json);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].note.as_deref(), Some("desk"));
+        assert_eq!(all[0].auth_method.as_deref(), Some("social"));
+        assert_eq!(
+            all[0].profile_arn.as_deref(),
+            Some("arn:aws:codewhisperer:us-east-1:1:profile/desk")
+        );
+        assert_eq!(all[1].note.as_deref(), Some("stringified"));
+        assert_eq!(
+            all[1].refresh_token.as_deref(),
+            Some("rt_stringified_token_xx")
+        );
+
+        let flat = parse_import_text(
+            r#"{"type":"kiro","access_token":"at_abcdefghijklmnopqrst","refresh_token":"rt_abcdefghijklmnopqrst"}"#,
+        )
+        .unwrap();
+        assert!(flat.auth_method.is_none());
+        assert_eq!(
+            flat.refresh_token.as_deref(),
+            Some("rt_abcdefghijklmnopqrst")
         );
     }
 }

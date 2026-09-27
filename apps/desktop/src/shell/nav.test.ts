@@ -96,6 +96,18 @@ describe("route ⇄ hash", () => {
     expect(parseRoute("#accounts/kiro")).toEqual({ section: "accounts", platform: "kiro" });
     expect(routeHash(go("accounts", { platform: "zcode" }))).toBe("#accounts/zcode");
     expect(parseRoute("#accounts/zcode")).toEqual({ section: "accounts", platform: "zcode" });
+    expect(routeHash(go("accounts", { platform: "provider" }))).toBe("#accounts/provider");
+    expect(parseRoute("#accounts/provider")).toEqual({ section: "accounts", platform: "provider" });
+    expect(routeHash(go("accounts", { platform: "qoder" }))).toBe("#accounts/qoder");
+    expect(parseRoute("#accounts/qoder")).toEqual({ section: "accounts", platform: "qoder" });
+    expect(routeHash(go("accounts", { platform: "claude" }))).toBe("#accounts/claude");
+    expect(parseRoute("#accounts/claude")).toEqual({ section: "accounts", platform: "claude" });
+    // 接入页带客户端；上一版的 `?provider=` 落到供应商通道。
+    expect(routeHash(go("connect", { client: "codex", channel: "chatgpt" }))).toBe("#connect?client=codex&channel=chatgpt");
+    expect(parseRoute("#connect?client=codex&channel=chatgpt")).toEqual({ section: "connect", client: "codex", channel: "chatgpt" });
+    expect(parseRoute("#connect?client=nope")).toEqual({ section: "connect" });
+    expect(parseRoute("#connect?provider=abc")).toEqual({ section: "connect", channel: "provider" });
+    expect(go("models", { client: "claude" })).toEqual({ section: "models" });
     // 没写平台 = Cursor（页面自己取默认），地址保持最短。
     expect(routeHash(go("accounts"))).toBe("#accounts");
     expect(parseRoute("#accounts/nope")).toEqual({ section: "accounts" });

@@ -15,6 +15,7 @@ rusqlite.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 base64.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 time.workspace = true
 tracing.workspace = true

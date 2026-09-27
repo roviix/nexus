@@ -73,6 +73,14 @@ id_type!(
     "一个 ZCode（智谱 GLM 编码套餐）账号的 id。同一个邮箱下的个人版 / 团队版 / 体验套餐是三条账号——\
      它们各有各的凭证和额度。"
 );
+id_type!(
+    QoderAccountId,
+    "一个 Qoder 账号的 id。国际版和国内版是两条账号：上游地址、模型目录和 PAT 都不共用。"
+);
+id_type!(
+    ClaudeAccountId,
+    "一个 Claude 订阅账号的 id。OAuth、setup-token 和 Console API Key 是三种凭证，分表存放。"
+);
 
 #[cfg(test)]
 mod tests {

@@ -8,6 +8,7 @@ use crate::state::AppState;
 use nexus_core::{AppError, Result};
 use nexus_gateway::models::CatalogEntry;
 use nexus_gateway::playground::{self, TryEvent};
+use nexus_gateway::reqlog::LogEntry;
 use nexus_gateway::{GatewaySettings, GatewayStatus, MediaJob, SettingsPatch, UsageSummary};
 use nexus_playground::Endpoint;
 use nexus_store::activity;
@@ -144,6 +145,17 @@ pub fn gateway_channel_reset_lane(
 #[tauri::command(async)]
 pub fn gateway_media_jobs(state: State<'_, AppState>, limit: Option<usize>) -> Vec<MediaJob> {
     state.gateway.media_jobs(limit.unwrap_or(20))
+}
+
+/// 最近请求的明细（只在内存里，新的在前）。
+#[tauri::command(async)]
+pub fn gateway_requests(state: State<'_, AppState>, limit: Option<usize>) -> Vec<LogEntry> {
+    state.gateway.requests(limit.unwrap_or(100))
+}
+
+#[tauri::command(async)]
+pub fn gateway_clear_requests(state: State<'_, AppState>) {
+    state.gateway.clear_requests();
 }
 
 /// 秘密的唯一 IPC 出口。它是本机回环口令，不是上游凭证，但同样只在用户显式点「显示」时给。

@@ -17,11 +17,17 @@ import type {
   ChatGptAccount,
   ChatGptBilling,
   ChatGptUsage,
+  ChannelSnapshot,
+  ClientRoute,
+  ClientState,
   CursorRelease,
+  DeviceAccount,
   GatewayCandidate,
   GatewayLane,
   GatewayStatus,
+  KeyProvider,
   LocalBackup,
+  RequestLogEntry,
   Overview,
   RemoteOverview,
   SandStatus,
@@ -541,9 +547,142 @@ const GATEWAY: GatewayStatus = {
       videoModels: [],
       prefixes: ["kiro/"],
     },
+    {
+      id: "qoder",
+      label: "Qoder",
+      vendor: "qoder",
+      ready: false,
+      mediaReady: false,
+      lane: { current: null, candidates: [], missing: [], available: [] },
+      chatModels: [],
+      imageModels: [],
+      videoModels: [],
+      prefixes: ["qoder/", "qoder-cn/"],
+    },
+    {
+      id: "claude",
+      label: "Claude",
+      vendor: "anthropic",
+      ready: false,
+      mediaReady: false,
+      lane: { current: null, candidates: [], missing: [], available: [] },
+      chatModels: [
+        "claude/claude-opus-4-6",
+        "claude/claude-sonnet-4-6",
+        "claude/claude-haiku-4-5",
+      ],
+      imageModels: [],
+      videoModels: [],
+      prefixes: ["claude/"],
+    },
   ],
   mediaJobs: [],
+  routes: EMPTY
+    ? {}
+    : {
+        claude: { model: "cursor/claude-sonnet-5", opus: "cursor/claude-opus-5", haiku: "provider/deepseek-v4-flash" },
+        opencode: { model: "cursor/gpt-5.6-sol" },
+      },
 };
+
+// ── 供应商（API Key）───────────────────────────────────────────────────────
+
+const PROVIDERS: KeyProvider[] = EMPTY
+  ? []
+  : [
+      {
+        id: "p-deepseek",
+        name: "DeepSeek",
+        website: "https://api-docs.deepseek.com",
+        baseUrl: "https://api.deepseek.com/anthropic",
+        apiFormat: "anthropic",
+        authField: "auth_token",
+        models: ["deepseek-v4-pro", "deepseek-v4-flash"],
+        enabled: true,
+        keyTail: "3f9a",
+        createdAt: iso(3 * D),
+        updatedAt: iso(3 * D),
+      },
+      {
+        id: "p-wasu",
+        name: "Wasu",
+        website: null,
+        baseUrl: "https://token.wasu.cn/v1",
+        apiFormat: "openai_chat",
+        authField: "auth_token",
+        models: ["deepseek-v4-flash", "kimi-k3", "qwen3.8-max", "glm-5.2"],
+        enabled: true,
+        keyTail: "a1b2",
+        createdAt: iso(2 * D),
+        updatedAt: iso(2 * D),
+      },
+    ];
+
+const PROVIDER_STATE: Record<string, GatewayCandidate["state"]> = {
+  DeepSeek: { kind: "current" },
+  Wasu: { kind: "cooled", models: ["deepseek-v4-flash"], secsLeft: 42 },
+};
+
+function providerChannel(): ChannelSnapshot {
+  const on = PROVIDERS.filter((p) => p.enabled);
+  const models = [...new Set(on.flatMap((p) => p.models))];
+  return {
+    id: "provider",
+    label: "供应商",
+    vendor: "provider",
+    ready: on.length > 0,
+    mediaReady: false,
+    lane: {
+      current: on.some((p) => p.name === "DeepSeek") ? "DeepSeek" : null,
+      candidates: on.map((p) => ({ label: p.name, source: "provider", pinned: false, storedId: p.id, percentUsed: null, state: PROVIDER_STATE[p.name] ?? { kind: "ready" as const } })),
+      missing: [],
+      available: PROVIDERS.filter((p) => !p.enabled).map((p) => ({ label: p.name, source: "provider", pinned: false, percentUsed: null })),
+    },
+    chatModels: models.map((m) => `provider/${m}`),
+    imageModels: [],
+    videoModels: [],
+    prefixes: ["provider/"],
+  };
+}
+
+function gatewayStatus(): GatewayStatus {
+  return { ...GATEWAY, lane: laneSnapshot(), channels: [...GATEWAY.channels, providerChannel()] };
+}
+
+/** 最近请求明细：一次按路由换了模型的 Claude Code、一次供应商接力、一次口令不对的 Codex。 */
+const REQUESTS: RequestLogEntry[] = EMPTY
+  ? []
+  : [
+      { id: 9, at: iso(40_000), client: "claude", dialect: "anthropic", stream: true, requested: "claude-sonnet-4-6", target: "cursor/claude-sonnet-5", channel: "cursor", account: "arvid.pfeffer@outlook.com", routed: "claude-sonnet-5", ok: true, status: 200, kind: null, error: null, inputTokens: 18_420, outputTokens: 912, cacheReadTokens: 16_004, ttftMs: 910, durationMs: 8_120, attempt: 1 },
+      { id: 8, at: iso(95_000), client: "claude", dialect: "anthropic", stream: true, requested: "claude-haiku-4-5", target: "provider/deepseek-v4-flash", channel: "provider", account: "DeepSeek", routed: "deepseek-v4-flash", ok: true, status: 200, kind: null, error: null, inputTokens: 1_220, outputTokens: 36, cacheReadTokens: 0, ttftMs: 420, durationMs: 690, attempt: 2 },
+      { id: 7, at: iso(96_000), client: "claude", dialect: "anthropic", stream: true, requested: "claude-haiku-4-5", target: "provider/deepseek-v4-flash", channel: "provider", account: "Wasu", routed: null, ok: false, status: 429, kind: "rate_limit", error: "供应商「Wasu」回了 429：Rate limit reached for deepseek-v4-flash", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, ttftMs: null, durationMs: 180, attempt: 1 },
+      { id: 6, at: iso(6 * 60_000), client: "codex", dialect: "responses", stream: true, requested: "gpt-5.4", target: null, channel: null, account: null, routed: null, ok: false, status: 401, kind: "auth", error: "口令不对：客户端配置里的 key 和网关现在的口令不一致（换过口令的话要重新接入）", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, ttftMs: null, durationMs: 0, attempt: 1 },
+      { id: 5, at: iso(14 * 60_000), client: "opencode", dialect: "openai", stream: true, requested: "gpt-5.6-sol", target: "cursor/gpt-5.6-sol", channel: "cursor", account: "arvid.pfeffer@outlook.com", routed: "gpt-5.6-sol", ok: true, status: 200, kind: null, error: null, inputTokens: 6_310, outputTokens: 1_422, cacheReadTokens: 0, ttftMs: 1_300, durationMs: 11_800, attempt: 1 },
+      { id: 4, at: iso(31 * 60_000), client: null, dialect: "openai", stream: false, requested: "claude-opus-5", target: null, channel: "cursor", account: "mara.quill@outlook.com", routed: null, ok: false, status: 402, kind: "quota", error: "You've hit your usage limit for claude-opus-5.", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, ttftMs: null, durationMs: 340, attempt: 1 },
+    ];
+
+const QODER_ACCOUNTS: DeviceAccount[] = EMPTY
+  ? []
+  : [
+      {
+        id: "q1",
+        accountRef: "global:10086",
+        email: "ada@example.com",
+        planType: "Qoder 国际版",
+        status: "active",
+        enabled: true,
+        note: null,
+        lastCheckedAt: iso(30 * 60_000),
+        lastError: null,
+        accessExpiresAt: new Date(NOW + 20 * H).toISOString(),
+        label: "ada@example.com · 国际版",
+        hasToken: true,
+        backend: "global",
+        keyHint: "pt-8f2c",
+        createdAt: iso(D),
+        updatedAt: iso(30 * 60_000),
+      },
+    ];
 
 // ── 本地用量（网关请求账本）────────────────────────────────────────────────
 
@@ -616,13 +755,37 @@ function usageSummary(days: number): UsageSummary {
 
 // ── 一键接入 / 权限预检 ──────────────────────────────────────────────────────
 
-/** 预览里的「客户端配置」状态：Claude Code 已接到本地网关，Codex 还没接。接入 / 撤销会改它。 */
-const CLIENTS: Record<string, { path: string; exists: boolean; baseUrl: string | null; model: string | null; revertible: boolean; appliedAt: string | null; pointsTo: "local" | "other" | "none" }> = {
-  claude: EMPTY
-    ? { path: "/Users/me/.claude/settings.json", exists: false, baseUrl: null, model: null, revertible: false, appliedAt: null, pointsTo: "none" }
-    : { path: "/Users/me/.claude/settings.json", exists: true, baseUrl: "http://127.0.0.1:8787", model: "claude-sonnet-5", revertible: true, appliedAt: iso(2 * H), pointsTo: "local" },
-  codex: { path: "/Users/me/.codex/config.toml", exists: !EMPTY, baseUrl: EMPTY ? null : "https://api.openai.com/v1", model: EMPTY ? null : "gpt-5-codex", revertible: false, appliedAt: null, pointsTo: EMPTY ? "none" : "other" },
-};
+/**
+ * 预览里的「客户端配置」状态：Claude Code 按客户端路由接好了（终端里还残留一把 ANTHROPIC_API_KEY），
+ * Codex 指着官方，OpenCode 是旧版接入（全局 /v1），Grok CLI 没配。接入 / 撤销会改它。
+ */
+const none = (tool: ClientState["tool"], path: string): ClientState => ({ tool, path, exists: false, baseUrl: null, model: null, revertible: false, appliedAt: null, pointsTo: "none", scoped: false, keyOk: null, portOk: null, env: [] });
+const CLIENTS: Record<string, ClientState> = EMPTY
+  ? {
+      claude: none("claude", "/Users/me/.claude/settings.json"),
+      codex: none("codex", "/Users/me/.codex/config.toml"),
+      opencode: none("opencode", "/Users/me/.config/opencode/opencode.json"),
+      grok: none("grok", "/Users/me/.grok/config.toml"),
+    }
+  : {
+      claude: {
+        tool: "claude",
+        path: "/Users/me/.claude/settings.json",
+        exists: true,
+        baseUrl: "http://127.0.0.1:8787/client/claude",
+        model: "cursor/claude-sonnet-5",
+        revertible: true,
+        appliedAt: iso(2 * H),
+        pointsTo: "local",
+        scoped: true,
+        keyOk: true,
+        portOk: true,
+        env: [{ name: "ANTHROPIC_API_KEY", value: "sk-ant…", source: "~/.zshrc:14", effect: "和配置里的口令同时在时，Claude Code 可能拿它认证，或者弹窗问用哪一把。" }],
+      },
+      codex: { tool: "codex", path: "/Users/me/.codex/config.toml", exists: true, baseUrl: "https://api.openai.com/v1", model: "gpt-5-codex", revertible: false, appliedAt: null, pointsTo: "other", scoped: false, keyOk: null, portOk: null, env: [] },
+      opencode: { tool: "opencode", path: "/Users/me/.config/opencode/opencode.json", exists: true, baseUrl: "http://127.0.0.1:8787/v1", model: "gpt-5.6-sol", revertible: true, appliedAt: iso(5 * D), pointsTo: "local", scoped: false, keyOk: true, portOk: true, env: [] },
+      grok: none("grok", "/Users/me/.grok/config.toml"),
+    };
 
 /** 权限：macOS 上两项系统弹窗类还没申请过；两项探针类已通过。`&denied=1` 看被拒的样子。 */
 const DENIED = q.get("denied") === "1";
@@ -834,8 +997,15 @@ const LOCAL_MODELS: LocalModel[] = [
   local("cursor/grok-4.5", "cursor/grok-4.5", "standard", "xai", "xAI"),
   local("cursor/gemini-3.7-flash", "cursor/gemini-3.7-flash", "standard", "google", "Google", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5", "gemini-"]),
   { ...local("cursor/nano-banana-2", "cursor/nano-banana-2", "standard", "google", "Google", ["gemini-3.1-flash-image"], "经 Cursor 出图，固定 1536×1024；账号需要 Developer 或 Sand 计划的生图权限。"), modality: "image" },
+  local("chatgpt/gpt-5.4", "chatgpt/gpt-5.4", "standard", "openai", "OpenAI"),
+  local("chatgpt/gpt-5.5", "chatgpt/gpt-5.5", "standard", "openai", "OpenAI"),
+  local("chatgpt/gpt-5.6-sol", "chatgpt/gpt-5.6-sol", "standard", "openai", "OpenAI"),
   local("grok/grok-4.6", "grok/grok-4.6", "standard", "xai", "xAI"),
   local("grok/grok-4.5", "grok/grok-4.5", "standard", "xai", "xAI"),
+  local("provider/deepseek-v4-pro", "provider/deepseek-v4-pro", "standard", "provider", "供应商"),
+  local("provider/deepseek-v4-flash", "provider/deepseek-v4-flash", "standard", "provider", "供应商"),
+  local("provider/kimi-k3", "provider/kimi-k3", "standard", "provider", "供应商"),
+  local("provider/qwen3.8-max", "provider/qwen3.8-max", "standard", "provider", "供应商"),
   { ...local("grok/grok-imagine-image", "grok/grok-imagine-image", "standard", "xai", "xAI", [], "经 Grok 订阅号出图。"), modality: "image" },
 ];
 
@@ -1135,21 +1305,30 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     case "gateway_status":
     case "gateway_set_current":
     case "gateway_reset_lane":
-      return v({ ...GATEWAY, lane: laneSnapshot() });
+    case "gateway_channel_set_current":
+      return v(gatewayStatus());
+    case "gateway_channel_reset_lane":
+      if (args?.channel === "provider") for (const k of Object.keys(PROVIDER_STATE)) if (PROVIDER_STATE[k]?.kind !== "current") delete PROVIDER_STATE[k];
+      return v(gatewayStatus());
     case "gateway_start":
       GATEWAY.running = { addr: "127.0.0.1:8787", baseUrl: "http://127.0.0.1:8787", startedAt: new Date().toISOString() };
-      return delay({ ...GATEWAY, lane: laneSnapshot() } as T, 400);
+      return delay(gatewayStatus() as T, 400);
     case "gateway_stop":
       GATEWAY.running = null;
-      return delay({ ...GATEWAY, lane: laneSnapshot() } as T, 300);
+      return delay(gatewayStatus() as T, 300);
     case "gateway_usage":
       return delay(usageSummary(Number(args?.days ?? 7)) as T, 260);
     case "gateway_enroll":
       for (const l of (args?.labels as string[]) ?? []) ROSTER.add(l.toLowerCase());
-      return delay({ ...GATEWAY, lane: laneSnapshot() } as T, 400);
+      return delay(gatewayStatus() as T, 400);
     case "gateway_unenroll":
       ROSTER.delete(String(args?.label ?? "").toLowerCase());
-      return delay({ ...GATEWAY, lane: laneSnapshot() } as T, 300);
+      return delay(gatewayStatus() as T, 300);
+    case "gateway_requests":
+      return v(REQUESTS.slice(0, Number(args?.limit ?? 100)));
+    case "gateway_clear_requests":
+      REQUESTS.splice(0);
+      return v(undefined);
     case "gateway_update_settings": {
       const patch = (args?.patch ?? {}) as Partial<GatewayStatus["settings"]>;
       Object.assign(GATEWAY.settings, Object.fromEntries(Object.entries(patch).filter(([, val]) => val !== undefined)));
@@ -1169,24 +1348,116 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
 
     case "connect_inspect":
       return v(CLIENTS[String(args?.tool)]);
+    case "connect_inspect_all":
+      return delay(Object.values(CLIENTS) as T, 200);
     case "connect_apply": {
-      const a = args as { tool: string; model: string };
+      const a = args as { tool: string; route: ClientRoute };
       const c = CLIENTS[a.tool];
       if (!c) throw { code: "invalid_input", message: `「${a.tool}」没有可以直接写的配置文件。` };
+      if (!a.route?.model) throw { code: "invalid_input", message: "先选一个模型。" };
       const created = !c.exists;
       const backup = created || c.revertible ? null : `/Users/me/.roviix/backups/clients/${a.tool}/${c.path.split("/").pop()}.20260903T090000Z`;
-      Object.assign(c, { exists: true, baseUrl: "http://127.0.0.1:8787", model: a.model, revertible: true, appliedAt: new Date().toISOString(), pointsTo: "local" });
+      const gatewayStarted = !GATEWAY.running;
+      if (gatewayStarted) GATEWAY.running = { addr: "127.0.0.1:8787", baseUrl: "http://127.0.0.1:8787", startedAt: new Date().toISOString() };
+      const autostartEnabled = !GATEWAY.settings.autostart;
+      GATEWAY.settings.autostart = true;
+      GATEWAY.routes[a.tool] = a.route;
+      const baseUrl = `http://127.0.0.1:8787/client/${a.tool}`;
+      Object.assign(c, { exists: true, baseUrl: a.tool === "claude" ? baseUrl : `${baseUrl}/v1`, model: a.route.model, revertible: true, appliedAt: new Date().toISOString(), pointsTo: "local", scoped: true, keyOk: true, portOk: true });
       const files = [{ path: c.path, created, backup }];
       if (a.tool === "codex") files.push({ path: "/Users/me/.codex/auth.json", created: true, backup: null });
-      return delay({ files } as T, 600);
+      return delay({ files, gatewayStarted, autostartEnabled, onboarded: a.tool === "claude" && created, baseUrl } as T, 600);
     }
     case "connect_revert": {
       const c = CLIENTS[String(args?.tool)];
       if (!c) throw { code: "invalid_input", message: "没有这个工具。" };
       const restored = c.revertible && c.pointsTo !== "none" ? [c.path] : [];
-      Object.assign(c, { exists: false, baseUrl: null, model: null, revertible: false, appliedAt: null, pointsTo: "none" });
+      Object.assign(c, { exists: false, baseUrl: null, model: null, revertible: false, appliedAt: null, pointsTo: "none", scoped: false, keyOk: null, portOk: null });
       return delay({ restored, removed: restored.length ? [] : [c.path], stripped: [] } as T, 400);
     }
+    case "connect_test": {
+      const tool = String(args?.tool);
+      const route = GATEWAY.routes[tool];
+      const requested = tool === "claude" ? "claude-sonnet-4-6" : (route?.model.split("/").slice(1).join("/") ?? "");
+      return delay(
+        {
+          ok: true,
+          text: "我是经本地网关转过来的模型，这条链路是通的。",
+          requested,
+          target: route?.model ?? null,
+          channel: route?.model.split("/")[0] ?? null,
+          account: route?.model.startsWith("provider/") ? "DeepSeek" : "arvid.pfeffer@outlook.com",
+          durationMs: 1840,
+          error: null,
+        } as T,
+        1200,
+      );
+    }
+
+    case "key_providers_list":
+      return delay(PROVIDERS.map((p) => ({ ...p })) as T, 160);
+    case "key_providers_save": {
+      const input = (args?.input ?? {}) as Partial<KeyProvider> & { apiKey?: string | null };
+      const now = new Date().toISOString();
+      const existing = PROVIDERS.find((p) => p.id === input.id);
+      if (existing) {
+        Object.assign(existing, { ...input, id: existing.id, updatedAt: now, keyTail: input.apiKey ? input.apiKey.slice(-4) : existing.keyTail });
+        return delay({ ...existing } as T, 300);
+      }
+      const created: KeyProvider = {
+        id: `p-${Math.random().toString(36).slice(2, 8)}`,
+        name: input.name ?? "新供应商",
+        website: input.website ?? null,
+        baseUrl: input.baseUrl ?? "",
+        apiFormat: input.apiFormat ?? "openai_chat",
+        authField: input.authField ?? "auth_token",
+        models: input.models ?? [],
+        enabled: true,
+        keyTail: input.apiKey ? input.apiKey.slice(-4) : "",
+        createdAt: now,
+        updatedAt: now,
+      };
+      PROVIDERS.push(created);
+      return delay(created as T, 300);
+    }
+    case "key_providers_set_enabled": {
+      const p = PROVIDERS.find((x) => x.id === args?.id);
+      if (p) p.enabled = Boolean(args?.enabled);
+      return delay({ ...p } as T, 200);
+    }
+    case "key_providers_delete": {
+      const i = PROVIDERS.findIndex((x) => x.id === args?.id);
+      if (i >= 0) PROVIDERS.splice(i, 1);
+      return delay(undefined as T, 200);
+    }
+    case "key_providers_reveal":
+      return v("sk-preview-0000-3f9a");
+    case "key_providers_models":
+      return delay(["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-reasoner", "kimi-k3", "kimi-k3-turbo", "qwen3.8-max", "qwen3.8-coder", "glm-5.2", "glm-5.2-air"] as T, 700);
+    case "key_providers_ping": {
+      const q = (args?.query ?? {}) as { providerId: string; model?: string | null };
+      const p = PROVIDERS.find((x) => x.id === q.providerId);
+      if (p?.name === "Wasu") throw { code: "upstream", message: "上游 403：积分余额不足，请充值或联系管理员处理", hint: null };
+      return delay({ text: "pong", model: q.model || p?.models[0] || "", durationMs: 820 } as T, 900);
+    }
+
+    case "qoder_list":
+      return delay(QODER_ACCOUNTS as T, 160);
+    case "claude_list":
+      return delay([] as T, 120);
+    case "claude_probe_local":
+      return delay({ present: false, path: "~/.claude/.credentials.json", also: "钥匙串 Claude Code-credentials" } as T, 80);
+    case "claude_login_start":
+      return delay({ loginId: "preview", authorizeUrl: "https://claude.ai/oauth/authorize", callbackListening: true } as T, 200);
+    case "claude_login_cancel":
+      return v(undefined);
+    case "claude_import_text":
+    case "claude_import_local":
+      return delay({ accounts: [], skipped: [] } as T, 200);
+    case "grok_list":
+    case "kiro_list":
+    case "zcode_list":
+      return delay([] as T, 120);
 
     case "perms_check":
       return v({ ...PERMS, preflightDone: PREFLIGHT_DONE });

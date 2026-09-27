@@ -14,11 +14,15 @@
 pub mod activity;
 pub mod backup;
 pub mod db;
+pub mod key_providers;
 pub mod keys;
 pub mod secrets;
 pub mod settings;
 
 pub use backup::{BackupFile, Backups, RestoreOutcome};
 pub use db::{sql_error, Db, SqlExt};
-pub use keys::{AccountSecret, ChatGptSecret, GrokSecret, KiroSecret, SecretRef, ZcodeSecret};
+pub use keys::{
+    AccountSecret, ChatGptSecret, ClaudeSecret, GrokSecret, KiroSecret, QoderSecret, SecretRef,
+    ZcodeSecret,
+};
 pub use secrets::{MemorySecrets, SecretStore, SqliteSecrets};

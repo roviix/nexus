@@ -14,6 +14,8 @@ use nexus_grok::GrokService;
 use nexus_grokbot::GrokBotService;
 use nexus_kiro::KiroService;
 use nexus_playground::PlaygroundService;
+use nexus_claude::ClaudeService;
+use nexus_qoder::QoderService;
 use nexus_sand::SandService;
 use nexus_store::{settings, Backups, Db, SecretStore, SqliteSecrets};
 use nexus_switcher::Switcher;
@@ -24,6 +26,8 @@ use std::sync::{Arc, Mutex};
 
 pub struct AppState {
     pub db: Arc<Db>,
+    /// 供应商 API Key 等不属于某个账号 crate 的秘密。和库是同一份。
+    pub secrets: Arc<dyn SecretStore>,
     /// 整库快照，落在用户目录下的 `~/.roviix/backups`（ARCHITECTURE §1.1）。放在应用数据目录
     /// **之外**是有意的：卸载应用、换机器搬家时，那个目录要还在。
     pub backups: Arc<Backups>,
@@ -50,6 +54,8 @@ pub struct AppState {
     pub grok: Arc<GrokService>,
     pub kiro: Arc<KiroService>,
     pub zcode: Arc<ZcodeService>,
+    pub qoder: Arc<QoderService>,
+    pub claude: Arc<ClaudeService>,
     /// 本地推理网关。默认关着，由用户点开；读 accounts 取号、读 cursor 拿当前登录号，
     /// 不碰 switcher（ARCHITECTURE §3.4）。
     pub gateway: Arc<GatewayService>,
@@ -107,6 +113,8 @@ impl AppState {
         let grok = Arc::new(GrokService::new(db.clone(), secrets.clone()));
         let kiro = Arc::new(KiroService::new(db.clone(), secrets.clone()));
         let zcode = Arc::new(ZcodeService::new(db.clone(), secrets.clone()));
+        let qoder = Arc::new(QoderService::new(db.clone(), secrets.clone()));
+        let claude = Arc::new(ClaudeService::new(db.clone(), secrets.clone()));
         let gateway = Arc::new(GatewayService::with_services(
             db.clone(),
             secrets.clone(),
@@ -117,6 +125,8 @@ impl AppState {
                 grok: grok.clone(),
                 kiro: kiro.clone(),
                 zcode: zcode.clone(),
+                qoder: qoder.clone(),
+                claude: claude.clone(),
             },
         ));
 
@@ -144,12 +154,15 @@ impl AppState {
             grok,
             kiro,
             zcode,
+            qoder,
+            claude,
             gateway,
             playground: Arc::new(PlaygroundService::new(db.clone(), data_dir)),
             switcher: Arc::new(Switcher::new(db.clone(), secrets.clone(), cursor)),
             accounts,
             oauth: Mutex::new(HashMap::new()),
             db,
+            secrets,
         })
     }
 

@@ -4,6 +4,9 @@
  * 对客户端来说网关只是一个地址和一把钥匙，配置文件的写法与接任何 OpenAI / Anthropic
  * 兼容服务一模一样。
  */
+import { splitModelId } from "../gateway/channels";
+import type { ClientRoute } from "../ipc/types";
+import type { ClientId } from "../shell/nav";
 import { homePath, PLATFORM, type Platform } from "../ui/platform";
 
 export type Tool = "claude" | "codex" | "opencode" | "grok" | "cline" | "sdk";
@@ -121,49 +124,70 @@ export function protocolBase(p: Protocol, ep: Endpoint): string {
 }
 
 /**
- * 写进客户端配置的模型名。目录主键是 `{通道}/{模型}`，但 Codex 等客户端会按自己的
- * 白名单校验：带 `chatgpt/` 前缀会直接 400「not supported when using Codex with a
- * ChatGPT account」。配置里只写短名，选路靠默认通道。
+ * 写进客户端配置的模型名：去掉通道前缀。客户端配置指的是网关上它自己的口
+ * （`/client/codex`），那里裸名就走这个客户端路由所在的通道；而 Codex 这类客户端要认得模型名
+ * 才开得了对应能力，`chatgpt/gpt-5.4` 它不认。与 Rust `commands::connect::written_model` 同一条规则。
  */
 export function clientModelId(id: string): string {
-  const slash = id.indexOf("/");
-  if (slash <= 0) return id;
-  const head = id.slice(0, slash).toLowerCase();
-  if (
-    head === "cursor" ||
-    head === "chatgpt" ||
-    head === "codex" ||
-    head === "grok" ||
-    head === "xai" ||
-    head === "kiro"
-  ) {
-    return id.slice(slash + 1);
-  }
-  return id;
+  const s = splitModelId(id.trim());
+  return s.channel ? s.name : id.trim();
+}
+
+/** 网关上这个客户端自己的口：`http://127.0.0.1:8787/client/claude`。 */
+export function clientEndpoint(ep: Endpoint, client: ClientId): Endpoint {
+  return endpointOf(`${ep.root}/client/${client}`);
 }
 
 // ── 各工具的配置 ─────────────────────────────────────────────────────────────
 
+/** 写给 Claude Code 的四个稳定档名。与 Rust `nexus_connect::claude::ALIAS_*` 一致。 */
+export const CLAUDE_ALIASES = {
+  sonnet: "claude-sonnet-4-6",
+  opus: "claude-opus-4-8",
+  haiku: "claude-haiku-4-5",
+  fable: "claude-fable-5",
+} as const;
+
+export type ClaudeRole = keyof typeof CLAUDE_ALIASES;
+
+/** 这一档实际走的模型。与 Rust `ClientRoute::role_model` 同一条规则：Fable 没配先跟 Opus。 */
+export function roleModel(route: ClientRoute, role: ClaudeRole): string {
+  const pick = (v: string | null | undefined) => (v?.trim() ? v.trim() : "");
+  const main = route.model.trim();
+  switch (role) {
+    case "sonnet":
+      return main;
+    case "opus":
+      return pick(route.opus) || main;
+    case "haiku":
+      return pick(route.haiku) || main;
+    case "fable":
+      return pick(route.fable) || pick(route.opus) || main;
+  }
+}
+
 /**
- * Claude Code 的模型选择是一组槽位，不是一个变量：UI 里切 Opus / Sonnet / Haiku 各走各的，
- * 后台标题生成、文件摘要还另走 SMALL_FAST。任何一个没钉死，它就会发 Anthropic 官方模型名，
- * 中转一律 BAD_MODEL_NAME。新版读 `*_MODEL_NAME`、老版读 `*_MODEL`，两套都写才不用管版本。
+ * Claude Code 接本地网关：四档写稳定档名（网关按档名换成路由里的模型，之后换模型不用再改这份
+ * 文件），`*_MODEL_NAME` 写真实模型给菜单显示，`ANTHROPIC_MODEL` 不写（默认档交给 Claude Code）。
+ * 与 `nexus-connect` 的 `claude::merge` 是同一份键表。
  */
-export function claudeSettings(ep: Endpoint, key: string, model: string): string {
-  model = clientModelId(model);
+export function claudeSettings(ep: Endpoint, key: string, route: ClientRoute): string {
+  const oneM = (role: ClaudeRole) => (route.context1m && role !== "haiku" ? "[1M]" : "");
+  const slot = (role: ClaudeRole) => `${CLAUDE_ALIASES[role]}${oneM(role)}`;
   return JSON.stringify(
     {
       env: {
-        ANTHROPIC_BASE_URL: ep.root,
+        ANTHROPIC_BASE_URL: clientEndpoint(ep, "claude").root,
         ANTHROPIC_AUTH_TOKEN: key,
-        ANTHROPIC_MODEL: model,
-        ANTHROPIC_SMALL_FAST_MODEL: model,
-        ANTHROPIC_DEFAULT_OPUS_MODEL: model,
-        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: model,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: model,
-        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: model,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: model,
+        ANTHROPIC_SMALL_FAST_MODEL: slot("haiku"),
+        ANTHROPIC_DEFAULT_SONNET_MODEL: slot("sonnet"),
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: roleModel(route, "sonnet"),
+        ANTHROPIC_DEFAULT_OPUS_MODEL: slot("opus"),
+        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: roleModel(route, "opus"),
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: slot("haiku"),
+        ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: roleModel(route, "haiku"),
+        ANTHROPIC_DEFAULT_FABLE_MODEL: slot("fable"),
+        ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: roleModel(route, "fable"),
       },
     },
     null,
@@ -176,7 +200,12 @@ export function claudeSettings(ep: Endpoint, key: string, model: string): string
  * ChatGPT 登录态的一条（`requires_openai_auth = false` 就是为了后者）。0.46 及更早只认
  * `auth.json`，所以那份另给一段当兜底。
  */
-export function codexToml(ep: Endpoint, key: string, model: string): string {
+export function codexToml(
+  ep: Endpoint,
+  key: string,
+  model: string,
+  wire: "responses" | "chat" = "responses",
+): string {
   model = clientModelId(model);
   return [
     `model_provider = "nexus"`,
@@ -185,7 +214,7 @@ export function codexToml(ep: Endpoint, key: string, model: string): string {
     "[model_providers.nexus]",
     `name = "nexus"`,
     `base_url = "${ep.v1}"`,
-    `wire_api = "responses"`,
+    `wire_api = "${wire}"`,
     `requires_openai_auth = false`,
     `experimental_bearer_token = "${key}"`,
   ].join("\n");
@@ -240,9 +269,11 @@ export interface Field {
   value: string;
 }
 
-/** Cline 这类只有设置面板的客户端：一行一个字段，各自能复制。 */
+/**
+ * Cline 这类只有设置面板的客户端：一行一个字段，各自能复制。它们打的是不分客户端的 `/v1`，
+ * 模型名的通道前缀照原样留着——那里前缀就是选路。
+ */
 export function clineFields(ep: Endpoint, key: string, model: string): Field[] {
-  model = clientModelId(model);
   return [
     { label: "API Provider", value: "OpenAI Compatible" },
     { label: "Base URL", value: ep.v1 },
@@ -264,7 +295,6 @@ export function envLines(
   model: string,
   platform: Platform = PLATFORM,
 ): string[] {
-  model = clientModelId(model);
   const pairs: Array<[string, string]> =
     tool === "claude"
       ? [
@@ -391,6 +421,10 @@ function js(p: Protocol, ep: Endpoint, key: string, model: string): string {
   ].join("\n");
 }
 
+/**
+ * SDK / cURL 打的是不分客户端的 `/v1`：那里模型名的通道前缀就是选路本身
+ * （`chatgpt/gpt-5.4` 走 ChatGPT，裸名走默认通道），所以照原样写，不剥。
+ */
 export function sdkSnippet(
   lang: Lang,
   p: Protocol,
@@ -399,7 +433,6 @@ export function sdkSnippet(
   model: string,
   platform: Platform = PLATFORM,
 ): string {
-  model = clientModelId(model);
   if (lang === "python") return python(p, ep, key, model);
   if (lang === "js") return js(p, ep, key, model);
   return curl(p, ep, key, model, platform);

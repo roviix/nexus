@@ -388,6 +388,76 @@ CREATE TABLE zcode_accounts (
 );
 "#,
         ),
+        // v18：用 API Key 接入的供应商。业务行里没有钥匙，只有尾号。
+        // 明文在 secrets（`keyprov/<id>/api_key`）。
+        M::up(
+            r#"
+CREATE TABLE key_providers (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  website      TEXT,
+  base_url     TEXT NOT NULL,
+  api_format   TEXT NOT NULL,
+  auth_field   TEXT NOT NULL,
+  models_json  TEXT NOT NULL,
+  key_tail     TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL
+);
+"#,
+        ),
+        // v19：Qoder 账号。和别的平台一样分表（§5.3），表里不存秘密。
+        //
+        // PAT、job token、job refresh 走 secrets。`backend` 决定聊天打到哪：
+        // 国际版 `api3.qoder.sh`，国内版 `gateway.qoder.com.cn`。同一个邮箱的
+        // 两版是两条号，模型目录也不一样。
+        M::up(
+            r#"
+CREATE TABLE qoder_accounts (
+  id                TEXT PRIMARY KEY,
+  account_ref       TEXT UNIQUE NOT NULL,
+  backend           TEXT NOT NULL,             -- global | cn
+  user_id           TEXT,
+  email             TEXT,
+  display_name      TEXT,
+  machine_id        TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  note              TEXT,
+  key_hint          TEXT,
+  has_pat           INTEGER NOT NULL DEFAULT 0,
+  access_expires_at TEXT,                      -- job token 过期（RFC 3339）
+  last_checked_at   TEXT,
+  last_error        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+"#,
+        ),
+        // v20：Claude 订阅号。OAuth / setup-token / Console API Key 三种凭证都走 secrets。
+        M::up(
+            r#"
+CREATE TABLE claude_accounts (
+  id                TEXT PRIMARY KEY,
+  account_ref       TEXT UNIQUE NOT NULL,
+  auth_mode         TEXT NOT NULL,             -- oauth | setup_token | api_key
+  email             TEXT,
+  plan_type         TEXT,
+  status            TEXT NOT NULL,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  note              TEXT,
+  key_hint          TEXT,
+  access_expires_at TEXT,
+  usage_json        TEXT,
+  last_checked_at   TEXT,
+  last_error        TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+"#,
+        ),
+        // v21：社交登录的 Kiro 请求体要带 profileArn。Builder ID 不用它。
+        M::up("ALTER TABLE kiro_accounts ADD COLUMN profile_arn TEXT;"),
     ])
 }
 

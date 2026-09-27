@@ -1,701 +1,949 @@
 /**
- * 接入 —— 把一个客户端指到本地网关上：选通道、选工具、选模型，再生成对应配置。
+ * 接入 —— 把客户端接到本地网关上，并决定它走哪条通道、哪个模型。
  *
- * 网关里的每一条通道（Cursor / ChatGPT / Grok Build / Kiro）摆成顶部一排卡，切一下，下面的
- * 模型候选和整份配置跟着换，而不是各抄一遍。几条通道共用同一个地址 —— 选哪条只决定
- * 「模型下拉里列谁」；目录主键是 `{通道}/{模型}`，不带前缀的请求走用户设的默认通道。
+ * 先挑客户端，再给它配路由。客户端配置只写一次：地址是网关上它自己的口（`/client/claude`），
+ * 模型按这里配的路由走——之后换通道、换模型点一下就生效，不用重写配置、不用重启客户端。
+ * Claude Code 的四档（Sonnet / Opus / Haiku / Fable）可以分开配，比如后台标题、摘要走的 Haiku
+ * 那档换成便宜的模型；档与档之间可以跨通道。
  *
- * 通道、客户端、配置与连接测试是四个平级内容区。这里不做步骤轨道：它们是当前配置的四个
- * 组成部分，不是必须逐项完成的向导。
+ * 顶上一排客户端卡同时是状态总览：谁接好了、谁指着别处、谁的口令 / 端口已经和网关对不上。
+ * 「其他客户端」给 Cline、SDK 这类没有配置文件的：地址、口令、模型名手抄。
  *
  * 钥匙不常驻在界面上：配置里先摆占位，点「显示」或「复制」才去取（取过记活动日志，
- * 和账号凭证同一套规矩）。
+ * 和账号凭证同一套规矩）；一键接入时钥匙根本不经过前端。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { channelOfModel, defaultChannelId, localChannels, splitModelId, type LocalChannelId } from "../gateway/channels";
+import { channelOfModel, defaultChannelId, isChannelId, localChannels, splitModelId, type LocalChannel, type LocalChannelId } from "../gateway/channels";
 import { connect as connectApi, errorText, gateway as gatewayApi, type ConnectTool } from "../ipc/api";
-import type { ClientState, ConnectApplied, ConnectReverted } from "../ipc/types";
+import type { LocalModel } from "../ipc/models";
+import type { ClientRoute, ClientState, ConnectResult, ConnectTest, GatewayStatus } from "../ipc/types";
+import { ChannelPicker } from "../relay/ChannelPicker";
 import { Highlight } from "../relay/Highlight";
 import { ModelPicker, type PickerOption } from "../relay/ModelPicker";
-import { VendorLogo } from "../relay/VendorLogo";
 import {
   claudeSettings,
+  clientEndpoint,
   clientModelId,
   clineFields,
-  codexAuth,
   codexToml,
-  grokToml,
-  opencodeJson,
   endpointOf,
+  grokToml,
   KEY_PLACEHOLDER,
   LANG_LABEL,
+  opencodeJson,
   PROTOCOL_INFO,
   protocolBase,
   sdkSnippet,
   shellLabel,
-  toolMeta,
-  TOOLS,
   type Endpoint,
   type Lang,
   type Protocol,
-  type Tool,
 } from "../relay/snippets";
-import { ChannelPicker } from "../relay/ChannelPicker";
-import { TryResult } from "../relay/TryResult";
 import { useRelay } from "../relay/useRelay";
-import { useTryRun } from "../relay/useTryRun";
-import { go, type Route } from "../shell/nav";
+import { VendorLogo } from "../relay/VendorLogo";
+import { CLIENT_IDS, go, type ClientId, type Route } from "../shell/nav";
 import { ShellIcon } from "../shell/ShellIcon";
+import { confirm } from "../ui/confirm";
 import { homePath } from "../ui/platform";
-import { Icon, Spinner } from "../ui/primitives";
+import { Banner, Icon, Spinner } from "../ui/primitives";
 
-const DEFAULT_PROMPT = "用一句话介绍你自己，并说出你是哪个模型。";
+type Pane = ClientId | "other";
 
-/**
- * 每个工具打开时的默认模型：Claude Code 走 Anthropic 协议、默认 Claude 旗舰；Codex /
- * SDK 在 ChatGPT 通道优先 gpt-6-astra。目录里没有时按顺序回落，最后取目录第一个。
- */
-const TOOL_DEFAULT_MODEL: Record<Tool, string[]> = {
-  claude: ["claude-sonnet-5", "claude-opus-5"],
-  codex: ["gpt-6-astra", "gpt-5.4", "gpt-5.6-sol"],
-  opencode: ["gpt-6-astra", "gpt-5.4", "grok-4.5", "gpt-5.6-sol"],
-  grok: ["grok-4.5", "grok-4.6"],
-  cline: ["gpt-6-astra", "gpt-5.4", "claude-sonnet-5", "gpt-5.6-sol"],
-  sdk: ["gpt-6-astra", "gpt-5.4", "claude-sonnet-5", "gpt-5.6-sol"],
+interface ClientMeta {
+  id: ClientId;
+  label: string;
+  /** 它对网关讲哪种方言。 */
+  dialect: string;
+  file: string;
+  vendor?: "anthropic" | "openai" | "xai";
+  glyph: string;
+}
+
+const CLIENTS: Record<ClientId, ClientMeta> = {
+  claude: { id: "claude", label: "Claude Code", dialect: "Anthropic", file: ".claude/settings.json", vendor: "anthropic", glyph: "C" },
+  codex: { id: "codex", label: "Codex CLI", dialect: "Responses", file: ".codex/config.toml", vendor: "openai", glyph: "≥" },
+  opencode: { id: "opencode", label: "OpenCode", dialect: "OpenAI", file: ".config/opencode/opencode.json", glyph: "○" },
+  grok: { id: "grok", label: "Grok CLI", dialect: "Responses", file: ".grok/config.toml", vendor: "xai", glyph: "G" },
 };
 
-function pickDefault(tool: Tool, ids: string[]): string {
-  return TOOL_DEFAULT_MODEL[tool].find((m) => ids.some((id) => id === m || splitModelId(id).name === m)) ?? ids[0] ?? TOOL_DEFAULT_MODEL[tool][0]!;
+/**
+ * 每个客户端第一次配时的默认模型：Claude Code 优先 Claude 旗舰，Codex 系优先 GPT。
+ * 按名字（去掉通道前缀）在所选通道的目录里找，找不到就取目录第一个。
+ */
+const PREFERRED: Record<ClientId, string[]> = {
+  claude: ["claude-sonnet-5", "claude-opus-5", "claude-sonnet-4.5"],
+  codex: ["gpt-6-astra", "gpt-5.4", "gpt-5.6-sol", "gpt-5.5"],
+  opencode: ["gpt-6-astra", "gpt-5.4", "claude-sonnet-5", "grok-4.5"],
+  grok: ["grok-4.5", "grok-4.6", "grok-4"],
+};
+
+/** 第一次配时先看哪条通道：Codex 天然配 ChatGPT 的号，Grok CLI 配 Grok 的号；有号才轮得到它。 */
+const HOME_CHANNEL: Partial<Record<ClientId, LocalChannelId>> = {
+  codex: "chatgpt",
+  grok: "grok",
+};
+
+function pickDefault(client: ClientId, ids: string[]): string {
+  const hit = PREFERRED[client].map((want) => ids.find((id) => splitModelId(id).name === want)).find(Boolean);
+  return hit ?? ids[0] ?? "";
+}
+
+/** 按名字给 Claude Code 另外三档挑个像样的：同一条通道里名字带 opus / haiku、flash、mini… 的。 */
+function suggestRoles(ids: string[], main: string): Pick<ClientRoute, "opus" | "haiku" | "fable"> {
+  const find = (words: string[]) => ids.find((id) => id !== main && words.some((w) => splitModelId(id).name.toLowerCase().includes(w))) ?? null;
+  return {
+    opus: find(["opus", "max", "pro"]),
+    haiku: find(["haiku", "flash", "mini", "lite", "air", "fast"]),
+    fable: find(["fable"]),
+  };
+}
+
+/** 写进路由的模型一律带通道前缀；用户在框里手输了一个裸名，就归到当前选的通道。 */
+function qualify(model: string, channel: LocalChannelId): string {
+  const m = model.trim();
+  if (!m) return "";
+  return splitModelId(m).channel ? m : `${channel}/${m}`;
+}
+
+function cleanRoute(r: ClientRoute): ClientRoute {
+  const opt = (v?: string | null) => (v?.trim() ? v.trim() : null);
+  return { model: r.model.trim(), opus: opt(r.opus), haiku: opt(r.haiku), fable: opt(r.fable), context1m: Boolean(r.context1m) };
+}
+
+function sameRoute(a: ClientRoute | null | undefined, b: ClientRoute | null | undefined): boolean {
+  if (!a || !b) return false;
+  const x = cleanRoute(a);
+  const y = cleanRoute(b);
+  return x.model === y.model && x.opus === y.opus && x.haiku === y.haiku && x.fable === y.fable && x.context1m === y.context1m;
+}
+
+type Health = "live" | "stale" | "legacy" | "other" | "none";
+
+/** 一个客户端此刻的样子。「接好了」要四件事同时成立：指本机、指自己的口、口令对、端口对。 */
+function healthOf(s: ClientState | undefined): Health {
+  if (!s || s.pointsTo === "none") return "none";
+  if (s.pointsTo === "other") return "other";
+  if (!s.scoped) return "legacy";
+  if (s.keyOk === false || s.portOk === false) return "stale";
+  return "live";
+}
+
+const HEALTH_TEXT: Record<Health, { label: string; tone: "ok" | "warn" | "bad" | "flat" }> = {
+  live: { label: "已接入", tone: "ok" },
+  stale: { label: "需要修复", tone: "bad" },
+  legacy: { label: "旧版接入", tone: "warn" },
+  other: { label: "指向别处", tone: "flat" },
+  none: { label: "未配置", tone: "flat" },
+};
+
+function hostOf(url: string | null | undefined): string {
+  if (!url) return "";
+  return url.replace(/^https?:\/\//, "").split("/")[0] ?? url;
 }
 
 export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) => void }) {
   const relay = useRelay({ catalogs: true });
+  const [states, setStates] = useState<ClientState[] | null>(null);
+  const [stateError, setStateError] = useState<string | null>(null);
+  const [pane, setPane] = useState<Pane>(route.client ?? "claude");
+  const [starting, setStarting] = useState(false);
 
-  /** 哪一条通道（平台 id）；null 按默认（Cursor）。 */
-  const [channel, setChannel] = useState<string | null>(route.channel ?? null);
-  const [tool, setTool] = useState<Tool>("claude");
-  const [model, setModel] = useState<string>(route.model ?? "");
-  const userPickedModel = useRef(Boolean(route.model));
-  const [protocol, setProtocol] = useState<Protocol>("openai");
-  const [lang, setLang] = useState<Lang>("curl");
-  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
-  const [keyError, setKeyError] = useState<string | null>(null);
-
-  /** 已显示出来的口令。 */
-  const [shownKey, setShownKey] = useState<string | undefined>(undefined);
-  const [keyVisible, setKeyVisible] = useState(false);
-
-  const { run, busy, start, stats } = useTryRun();
-
-  // 地址栏带来的通道 / 模型变了（从模型广场再点一次「用它接入」）就跟着换。
   useEffect(() => {
-    if (route.channel) setChannel(route.channel);
-    if (route.model) {
-      setModel(route.model);
-      userPickedModel.current = true;
-    }
-  }, [route.channel, route.model]);
+    if (route.client) setPane(route.client);
+  }, [route.client]);
 
-  const meta = toolMeta(tool);
-
-  const channels = useMemo(() => localChannels(relay.gateway, relay.local), [relay.gateway, relay.local]);
-  const localId: LocalChannelId = (channel as LocalChannelId | null) ?? defaultChannelId(relay.gateway);
-  /** 目录里归当前那条通道的模型；模型下拉只列它们。 */
-  const localInChannel = useMemo(() => (relay.local ?? []).filter((m) => channelOfModel(channels, m.id) === localId), [relay.local, channels, localId]);
-  const ids = useMemo(() => localInChannel.map((m) => m.id), [localInChannel]);
-
-  // 用户没手选过模型时，跟着工具 / 通道换默认。
-  useEffect(() => {
-    if (userPickedModel.current) return;
-    if (!ids.length) return;
-    setModel(pickDefault(tool, ids));
-  }, [tool, ids]);
-
-  const endpoint: Endpoint = useMemo(() => {
-    const g = relay.gateway;
-    if (g?.running) return endpointOf(g.running.baseUrl);
-    const port = g?.settings.port ?? 8787;
-    return endpointOf(`http://127.0.0.1:${port}`);
-  }, [relay.gateway]);
-
-  const keyForText = keyVisible && shownKey ? shownKey : KEY_PLACEHOLDER;
-
-  /** 取口令（已取过就直接给）。用户显式动作才调；取过记活动日志（Rust 侧）。 */
-  const ensureKey = useCallback(async (): Promise<string | null> => {
-    setKeyError(null);
+  const loadStates = useCallback(async () => {
     try {
-      if (shownKey) return shownKey;
-      const k = await gatewayApi.revealKey();
-      setShownKey(k);
-      return k;
+      setStates(await connectApi.inspectAll());
+      setStateError(null);
     } catch (e) {
-      setKeyError(errorText(e));
-      return null;
+      setStateError(errorText(e));
     }
-  }, [shownKey]);
-
-  async function reveal() {
-    const k = await ensureKey();
-    if (k) setKeyVisible(true);
-  }
-
-  const [copied, setCopied] = useState("");
-  const copyTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
-
-  const markCopied = useCallback((id: string) => {
-    setCopied(id);
-    window.clearTimeout(copyTimer.current);
-    copyTimer.current = window.setTimeout(() => setCopied(""), 1400);
   }, []);
 
-  /** 复制一段带真钥匙的文本：先取钥匙再复制，一步到位。 */
-  const copyWithKey = useCallback(
-    async (id: string, build: (key: string) => string) => {
-      const k = await ensureKey();
-      if (!k) return;
-      await navigator.clipboard.writeText(build(k)).catch(() => {});
-      markCopied(id);
-    },
-    [ensureKey, markCopied],
-  );
+  useEffect(() => {
+    void loadStates();
+  }, [loadStates]);
 
-  const ap = useApply(tool, model.trim());
-  const applyBlocked = !model.trim() ? "先选一个模型" : null;
+  const reloadAll = useCallback(async () => {
+    await Promise.all([relay.reload(), loadStates()]);
+  }, [relay, loadStates]);
 
-  const canTest = Boolean(relay.gateway?.running) && model.trim() !== "" && !busy;
+  const byTool = useMemo(() => new Map((states ?? []).map((s) => [s.tool as ClientId, s])), [states]);
+  const channels = useMemo(() => localChannels(relay.gateway, relay.local), [relay.gateway, relay.local]);
+  const running = Boolean(relay.gateway?.running);
 
-  async function test() {
-    if (!canTest) return;
-    await start(model.trim(), prompt);
+  async function startGateway() {
+    setStarting(true);
+    try {
+      await gatewayApi.start();
+      await reloadAll();
+    } catch (e) {
+      setStateError(errorText(e));
+    } finally {
+      setStarting(false);
+    }
   }
 
-  // 模型下拉的候选。
-  const options: PickerOption[] = useMemo(
-    () =>
-      localInChannel.map((m) => ({
-        id: m.id,
-        meta: m.variant !== "standard" ? m.variant : undefined,
-      })),
-    [localInChannel],
-  );
+  const choose = (p: Pane) => {
+    setPane(p);
+    onGo(go("connect", p === "other" ? {} : { client: p }));
+  };
 
-  const localModel = (relay.local ?? []).find((m) => m.id === model);
   return (
     <div className="connect">
       <div className="page-head">
         <h1>接入</h1>
-        <button type="button" className="btn btn-sm btn-icon btn-soft" onClick={() => void relay.reload()} disabled={relay.loading} title="刷新" aria-label="刷新">
+        <button type="button" className="btn btn-sm btn-icon btn-soft" onClick={() => void reloadAll()} disabled={relay.loading} title="刷新" aria-label="刷新">
           <Icon name="refresh" size={14} className={relay.loading ? "is-spinning" : undefined} />
         </button>
       </div>
 
-      <ConnectSection title="通道">
-        <ChannelPicker
-          bare
-          channel={channel}
-          onChange={setChannel}
+      {relay.gateway && !running ? (
+        <Banner
+          title="本地网关没开"
+          hint="客户端的请求要经过它。一键接入时会自动开启，并设成随 Nexus 启动。"
+          action={
+            <button type="button" className="btn btn-sm" disabled={starting} onClick={() => void startGateway()}>
+              {starting ? <Spinner /> : null}
+              现在开启
+            </button>
+          }
+        />
+      ) : null}
+      {stateError ? <Banner tone="bad" title="读不出客户端配置" hint={stateError} /> : null}
+
+      <section className="connect-section">
+        <h2 className="connect-section-title">客户端</h2>
+        <div className="ctiles">
+          {CLIENT_IDS.map((id) => (
+            <ClientTile key={id} meta={CLIENTS[id]} state={byTool.get(id)} saved={relay.gateway?.routes?.[id] ?? null} loading={states == null} active={pane === id} onPick={() => choose(id)} />
+          ))}
+          <button type="button" className={`card ctile${pane === "other" ? " card-hot is-active" : ""}`} aria-pressed={pane === "other"} onClick={() => choose("other")}>
+            <span className="ctile-top">
+              <span className="toolcard-glyph">
+                <span className="mono">{"{}"}</span>
+              </span>
+              <span className="ctile-name">其他客户端</span>
+            </span>
+            <span className="ctile-line">Cline、SDK、cURL · 手动填</span>
+          </button>
+        </div>
+      </section>
+
+      {pane === "other" ? (
+        <OtherClients gateway={relay.gateway} local={relay.local} channels={channels} onGo={onGo} />
+      ) : !relay.gateway || states == null ? (
+        <div className="skeleton" style={{ height: 320 }} />
+      ) : (
+        <ClientPanel
+          key={pane}
+          meta={CLIENTS[pane]}
+          state={byTool.get(pane)}
           gateway={relay.gateway}
           local={relay.local}
-          onStartGateway={() => onGo(go("gateway"))}
-          onManageLocal={(id) => onGo(id === "cursor" ? go("gateway", { sub: "pool" }) : go("accounts", { platform: id }))}
+          channels={channels}
+          preset={route.client === pane || !route.client ? { channel: route.channel, model: route.model } : {}}
+          onChanged={reloadAll}
+          onGo={onGo}
         />
-      </ConnectSection>
-
-      <ConnectSection title="客户端">
-        <div className="tools">
-          {TOOLS.map((t) => {
-            const active = t.id === tool;
-            return (
-              <button key={t.id} type="button" className={`card toolcard${active ? " card-hot is-active" : ""}`} aria-pressed={active} onClick={() => setTool(t.id)}>
-                <span className={`toolcard-glyph${TOOL_VENDOR[t.id] ? ` is-${TOOL_VENDOR[t.id]}` : ""}`}>
-                  {TOOL_VENDOR[t.id] ? <VendorLogo vendor={TOOL_VENDOR[t.id]!} size={16} mono={!active} /> : <span className="mono">{t.glyph}</span>}
-                </span>
-                <span className="toolcard-name">{t.label}</span>
-                <span className="toolcard-sub">{t.sub}</span>
-                {active ? <ShellIcon name="check" size={12} className="toolcard-tick" /> : null}
-              </button>
-            );
-          })}
-        </div>
-      </ConnectSection>
-
-      <ConnectSection title="配置">
-        <div className="card card-flush cfg">
-          <div className="cfg-head">
-            <div className="cfg-identity">
-              <strong className="cfg-client">{meta.label}</strong>
-              <span className="pill cfg-protocol">{PROTOCOL_INFO[tool === "sdk" ? protocol : meta.protocol].label}</span>
-            </div>
-            {ap.supported ? (
-              <div className="cfg-acts">
-                {ap.state?.revertible ? (
-                  <button type="button" className="btn btn-sm btn-quiet" disabled={ap.busy} onClick={() => void ap.revert()} data-tip="按接入前的备份还原；是我们建的文件就删掉">
-                    撤销
-                  </button>
-                ) : null}
-                {ap.onThis && !ap.modelDiffers ? (
-                  <span className="cfg-live">
-                    <Icon name="check" size={12} />
-                    已接入
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-primary"
-                    disabled={ap.busy || Boolean(applyBlocked) || !ap.state}
-                    data-tip={ap.state?.exists && !ap.state.revertible ? "会先把原文件备份到 ~/.roviix/backups/clients" : undefined}
-                    onClick={() => void ap.apply()}
-                  >
-                    {ap.busy ? <Spinner /> : <Icon name="check" size={13} />}
-                    {ap.modelDiffers ? "重新写入" : "一键接入"}
-                  </button>
-                )}
-              </div>
-            ) : null}
-          </div>
-
-          <ApplyNote ap={ap} blocked={applyBlocked} client={meta.label} model={model.trim()} gatewayRunning={Boolean(relay.gateway?.running)} onGoGateway={() => onGo(go("gateway"))} />
-
-          <div className="cfg-params">
-            {/* 钥匙 */}
-            <div className="field">
-              <label>
-                <Icon name="key" size={12} className="field-ico" />
-                网关口令
-              </label>
-              <div className="keyline">
-                <code className="keyline-val">{keyVisible && shownKey ? shownKey : relay.gateway?.apiKeySet ? "••••••••••••••••" : "首次开启网关时生成"}</code>
-                <KeyActions
-                  visible={keyVisible && Boolean(shownKey)}
-                  disabled={!relay.gateway?.apiKeySet}
-                  onReveal={() => void reveal()}
-                  onHide={() => setKeyVisible(false)}
-                  onCopy={() => void copyWithKey("key", (k) => k)}
-                  copied={copied === "key"}
-                />
-              </div>
-              {keyError ? <span className="tiny" style={{ color: "var(--bad)" }}>{keyError}</span> : null}
-            </div>
-
-            {/* 模型 */}
-            <div className="field">
-              <label>
-                <ShellIcon name="layers" size={12} className="field-ico" />
-                模型
-              </label>
-              <ModelPicker
-                value={model}
-                options={options}
-                onChange={(v) => {
-                  setModel(v);
-                  userPickedModel.current = true;
-                }}
-              />
-              <ModelHint
-                id={model}
-                local={Boolean(localModel)}
-                routedTo={localModel && channelOfModel(channels, model) !== localId ? channels.find((c) => c.id === channelOfModel(channels, model))?.label : undefined}
-                known={(relay.local ?? []).length > 0}
-              />
-            </div>
-          </div>
-
-        {/* 配置正文。key 带上工具：换一个就重挂载，淡入的动效跟着重放。 */}
-        <div className="cfg-body" key={tool}>
-            {tool === "claude" ? (
-              <ConfigBlock
-                title={homePath(".claude/settings.json")}
-                format="JSON"
-                code={claudeSettings(endpoint, keyForText, model)}
-                copied={copied === "claude"}
-                onCopy={() => void copyWithKey("claude", (k) => claudeSettings(endpoint, k, model))}
-              />
-            ) : null}
-
-            {tool === "codex" ? (
-              <>
-                <p className="muted" style={{ margin: "0 0 8px", fontSize: 11.5, lineHeight: 1.6 }}>
-                  Codex 只认短名，配置里写成 <code className="mono">{clientModelId(model) || "gpt-5.4"}</code>
-                  。请把 ChatGPT 设为默认通道，裸名才会走这队号。
-                </p>
-                <ConfigBlock
-                  title={homePath(".codex/config.toml")}
-                  format="TOML"
-                  code={codexToml(endpoint, keyForText, model)}
-                  copied={copied === "codex"}
-                  onCopy={() => void copyWithKey("codex", (k) => codexToml(endpoint, k, model))}
-                />
-                <details className="cfg-fold">
-                  <summary>0.46 及更早的 Codex 只从 auth.json 取钥匙</summary>
-                  <div className="stack" style={{ paddingTop: 10 }}>
-                    <p className="muted" style={{ margin: 0, fontSize: 11.5, lineHeight: 1.6 }}>
-                      旧版不认 <code className="mono">experimental_bearer_token</code>，会退回读这份文件。两份都放着就覆盖全部版本。
-                    </p>
-                    <ConfigBlock
-                      title={homePath(".codex/auth.json")}
-                      format="JSON"
-                      code={codexAuth(keyForText)}
-                      copied={copied === "codex-auth"}
-                      onCopy={() => void copyWithKey("codex-auth", (k) => codexAuth(k))}
-                    />
-                  </div>
-                </details>
-              </>
-            ) : null}
-
-            {tool === "opencode" ? (
-              <ConfigBlock
-                title={homePath(".config/opencode/opencode.json")}
-                format="JSON"
-                code={opencodeJson(endpoint, keyForText, model)}
-                copied={copied === "opencode"}
-                onCopy={() => void copyWithKey("opencode", (k) => opencodeJson(endpoint, k, model))}
-              />
-            ) : null}
-
-            {tool === "grok" ? (
-              <ConfigBlock
-                title={homePath(".grok/config.toml")}
-                format="TOML"
-                code={grokToml(endpoint, keyForText, model)}
-                copied={copied === "grok"}
-                onCopy={() => void copyWithKey("grok", (k) => grokToml(endpoint, k, model))}
-              />
-            ) : null}
-
-            {tool === "cline" ? (
-              <div className="stack-tight stack">
-                {clineFields(endpoint, keyForText, model).map((f, i) => (
-                  <FieldRow
-                    key={f.label}
-                    label={f.label}
-                    value={f.value}
-                    copied={copied === `cline-${i}`}
-                    onCopy={() =>
-                      void copyWithKey(`cline-${i}`, (k) => clineFields(endpoint, k, model)[i]!.value)
-                    }
-                  />
-                ))}
-              </div>
-            ) : null}
-
-            {tool === "sdk" ? (
-              <>
-                <div className="row-between wrap" style={{ gap: 10 }}>
-                  <div className="tabs" role="tablist" aria-label="协议">
-                    {(Object.keys(PROTOCOL_INFO) as Protocol[]).map((p) => (
-                      <button key={p} type="button" role="tab" aria-selected={protocol === p} className={protocol === p ? "tab is-active" : "tab"} onClick={() => setProtocol(p)}>
-                        {PROTOCOL_INFO[p].label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="row" style={{ gap: 4 }}>
-                    {(Object.keys(LANG_LABEL) as Lang[]).map((l) => (
-                      <button key={l} type="button" className="chip" aria-pressed={lang === l} onClick={() => setLang(l)}>
-                        {LANG_LABEL[l]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <FieldRow
-                  label="Base URL"
-                  value={protocolBase(protocol, endpoint)}
-                  copied={copied === "sdk-base"}
-                  onCopy={() => void copyWithKey("sdk-base", () => protocolBase(protocol, endpoint))}
-                />
-                <FieldRow label="路径" value={PROTOCOL_INFO[protocol].path} copied={copied === "sdk-path"} onCopy={() => void copyWithKey("sdk-path", () => PROTOCOL_INFO[protocol].path)} />
-                <ConfigBlock
-                  title={lang === "curl" ? shellLabel() : lang === "python" ? "python" : "javascript"}
-                  format={LANG_LABEL[lang]}
-                  code={sdkSnippet(lang, protocol, endpoint, keyForText, model)}
-                  copied={copied === "sdk"}
-                  onCopy={() => void copyWithKey("sdk", (k) => sdkSnippet(lang, protocol, endpoint, k, model))}
-                />
-              </>
-            ) : null}
-
-          </div>
-        </div>
-      </ConnectSection>
-
-      <ConnectSection title="连接测试">
-        <div className="card card-flush cfg connect-test">
-          <div className="cfg-test">
-            <input
-              className="input"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              disabled={busy}
-              placeholder="测试消息"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void test();
-              }}
-            />
-            <button type="button" className="btn btn-primary" disabled={!canTest} onClick={() => void test()} title={canTest ? undefined : "网关没开"}>
-              <ShellIcon name="play" size={13} />
-              {busy ? "测试中…" : "测试连接"}
-            </button>
-          </div>
-          {run ? (
-            <div style={{ padding: "0 18px 16px" }}>
-              <TryResult run={run} stats={stats} busy={busy} />
-            </div>
-          ) : null}
-        </div>
-      </ConnectSection>
+      )}
     </div>
   );
 }
 
-/* ── 一键接入 ─────────────────────────────────────────────────────────────── */
+/* ── 客户端卡 ─────────────────────────────────────────────────────────────── */
 
-type Done = { kind: "applied"; r: ConnectApplied } | { kind: "reverted"; r: ConnectReverted };
-
-/**
- * 一键接入的现状和两个动作。
- *
- * 桌面应用就在这台机器上，让人把 JSON 抄回 `~/.claude/settings.json` 是把最容易错的一步留给了人。
- * Rust 侧读现有文件、只改我们那几个键、先备份再写；钥匙不经过前端。
- *
- * 界面上只剩配置卡右上角一个键：没接 → 一键接入；接在别处 → 还是一键接入（原文件会备份）；
- * 已经接在网关上 → 一枚「已接入」加一个撤销。旧版在参数下面横着一整条状态带，
- * 写的是文件路径、模型、几小时前写入 —— 前两样下面的代码块本来就写着，那条带子只是
- * 把一张卡切成了三段灰。真正要说的话（写完了、出错了、模型改了、文件现在指向别处）
- * 交给 [`ApplyNote`]，有话才出一行。
- *
- * 没有配置文件的工具（Cline / SDK / cursor-agent）不查也不写：`supported` 为假时整套不出现。
- */
-function useApply(tool: Tool, model: string) {
-  const supported = tool === "claude" || tool === "codex" || tool === "opencode" || tool === "grok";
-  const [state, setState] = useState<ClientState | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<Done | null>(null);
-
-  const load = useCallback(async () => {
-    if (!supported) {
-      setState(null);
-      return;
-    }
-    try {
-      setState(await connectApi.inspect(tool as ConnectTool));
-    } catch (e) {
-      setError(errorText(e));
-    }
-  }, [tool, supported]);
-
-  useEffect(() => {
-    setDone(null);
-    setError(null);
-    void load();
-  }, [load]);
-
-  const act = useCallback(
-    async (run: () => Promise<Done>) => {
-      setBusy(true);
-      setError(null);
-      setDone(null);
-      try {
-        setDone(await run());
-        await load();
-      } catch (e) {
-        setError(errorText(e));
-      } finally {
-        setBusy(false);
-      }
-    },
-    [load],
+function ClientTile({
+  meta,
+  state,
+  saved,
+  loading,
+  active,
+  onPick,
+}: {
+  meta: ClientMeta;
+  state: ClientState | undefined;
+  saved: ClientRoute | null;
+  loading: boolean;
+  active: boolean;
+  onPick: () => void;
+}) {
+  const health = healthOf(state);
+  const h = HEALTH_TEXT[health];
+  const line = loading
+    ? "读取中…"
+    : health === "live" || health === "stale"
+      ? (saved?.model ?? state?.model ?? "")
+      : health === "legacy"
+        ? `全局默认通道 · ${state?.model ?? ""}`
+        : health === "other"
+          ? hostOf(state?.baseUrl)
+          : "还没接";
+  return (
+    <button type="button" className={`card ctile${active ? " card-hot is-active" : ""}`} aria-pressed={active} onClick={onPick}>
+      <span className="ctile-top">
+        <span className={`toolcard-glyph${meta.vendor ? ` is-${meta.vendor}` : ""}`}>
+          {meta.vendor ? <VendorLogo vendor={meta.vendor} size={16} mono={!active} /> : <span className="mono">{meta.glyph}</span>}
+        </span>
+        <span className="ctile-name">{meta.label}</span>
+      </span>
+      <span className="ctile-status">
+        <span className={`ctile-dot is-${h.tone}`} aria-hidden />
+        {loading ? "…" : h.label}
+        {state?.env.length ? <span className="ctile-env" title="有环境变量可能架空这份配置">!</span> : null}
+      </span>
+      <span className="ctile-line mono truncate" title={line}>
+        {line}
+      </span>
+    </button>
   );
-
-  const apply = useCallback(() => act(async () => ({ kind: "applied", r: await connectApi.apply(tool as ConnectTool, clientModelId(model)) })), [act, tool, model]);
-
-  const revert = useCallback(() => act(async () => ({ kind: "reverted", r: await connectApi.revert(tool as ConnectTool) })), [act, tool]);
-
-  const onThis = state?.pointsTo === "local";
-  return {
-    supported,
-    state,
-    busy,
-    error,
-    done,
-    apply,
-    revert,
-    onThis,
-    modelDiffers: Boolean(onThis && state?.model != null && state.model !== clientModelId(model)),
-  };
 }
 
-/** 配置卡上那行注解：有话才出，没话不占位。 */
-function ApplyNote({
-  ap,
-  blocked,
-  client,
-  model,
-  gatewayRunning,
-  onGoGateway,
+/* ── 一个客户端的路由与接入 ───────────────────────────────────────────────── */
+
+function channelModels(local: LocalModel[] | null, channels: LocalChannel[], id: LocalChannelId): string[] {
+  return (local ?? []).filter((m) => (m.modality ?? "chat") === "chat" && channelOfModel(channels, m.id) === id).map((m) => m.id);
+}
+
+function initialRoute(
+  client: ClientId,
+  saved: ClientRoute | null,
+  preset: { channel?: string; model?: string },
+  gateway: GatewayStatus,
+  local: LocalModel[] | null,
+  channels: LocalChannel[],
+): { route: ClientRoute; channel: LocalChannelId } {
+  if (preset.model) {
+    const ch = splitModelId(preset.model).channel ?? (isChannelId(preset.channel) ? preset.channel : defaultChannelId(gateway));
+    return { route: { ...(saved ?? { model: "" }), model: qualify(preset.model, ch) }, channel: ch };
+  }
+  if (saved?.model) {
+    const ch = splitModelId(saved.model).channel ?? defaultChannelId(gateway);
+    if (!isChannelId(preset.channel) || preset.channel === ch) return { route: saved, channel: ch };
+  }
+  // 没配过：优先地址里带来的通道，其次这个客户端的「本家」通道（有号时），再其次默认通道、
+  // 第一条有模型的通道。
+  const home = HOME_CHANNEL[client];
+  const order: LocalChannelId[] = [
+    ...(isChannelId(preset.channel) ? [preset.channel] : []),
+    ...(home && channels.find((c) => c.id === home)?.ready ? [home] : []),
+    defaultChannelId(gateway),
+    ...channels.filter((c) => c.ready).map((c) => c.id),
+  ];
+  const ch = order.find((id) => channelModels(local, channels, id).length > 0) ?? order[0] ?? "cursor";
+  return { route: { model: pickDefault(client, channelModels(local, channels, ch)) }, channel: ch };
+}
+
+function ClientPanel({
+  meta,
+  state,
+  gateway,
+  local,
+  channels,
+  preset,
+  onChanged,
+  onGo,
 }: {
-  ap: ReturnType<typeof useApply>;
-  blocked: string | null;
-  client: string;
-  model: string;
-  gatewayRunning: boolean;
-  onGoGateway: () => void;
+  meta: ClientMeta;
+  state: ClientState | undefined;
+  gateway: GatewayStatus;
+  local: LocalModel[] | null;
+  channels: LocalChannel[];
+  preset: { channel?: string; model?: string };
+  onChanged: () => Promise<void>;
+  onGo: (r: Route) => void;
 }) {
-  if (!ap.supported) return null;
+  const client = meta.id;
+  const saved = gateway.routes?.[client] ?? null;
+  // 只在打开这个客户端时算一次：之后是用户手里的草稿，别被后台刷新的状态冲掉。
+  const [init] = useState(() => initialRoute(client, saved, preset, gateway, local, channels));
+  const [draft, setDraft] = useState<ClientRoute>(init.route);
+  const [channel, setChannel] = useState<LocalChannelId>(init.channel);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<{ kind: "applied"; r: ConnectResult; update: boolean } | { kind: "reverted" } | null>(null);
+  const [test, setTest] = useState<ConnectTest | null>(null);
+  const [testing, setTesting] = useState(false);
 
-  let tone: "ok" | "warn" | "bad" | "flat" = "flat";
-  let body: ReactNode = null;
+  // 目录晚到（第一次渲染时还没拉回来）：主模型还空着就补一个默认的。
+  useEffect(() => {
+    if (draft.model) return;
+    const ids = channelModels(local, channels, channel);
+    if (ids.length) setDraft((d) => ({ ...d, model: pickDefault(client, ids) }));
+  }, [local, channels, channel, client, draft.model]);
 
-  if (ap.error) {
-    tone = "bad";
-    body = ap.error;
-  } else if (ap.done?.kind === "applied") {
-    const r = ap.done.r;
-    tone = "ok";
-    body = (
-      <>
-        已写入 {r.files.map((f) => f.path.split(/[\\/]/).pop()).join("、")}
-        {r.files.some((f) => f.backup) ? "（原文件已备份）" : ""}。重开 {client} 生效
-        {!gatewayRunning ? (
-          <>
-            ；本地网关还没开，
-            <button type="button" className="linkish" onClick={onGoGateway}>
-              去开启 →
-            </button>
-          </>
-        ) : (
-          "。"
-        )}
-      </>
-    );
-  } else if (ap.done?.kind === "reverted") {
-    const r = ap.done.r;
-    body = (
-      <>
-        已撤销：
-        {r.restored.length ? `还原 ${r.restored.length} 个文件` : null}
-        {r.removed.length ? `${r.restored.length ? "、" : ""}删除 ${r.removed.length} 个我们建的文件` : null}
-        {r.stripped.length ? `${r.restored.length || r.removed.length ? "、" : ""}从 ${r.stripped.length} 个文件里去掉了我们的配置` : null}。
-      </>
-    );
-  } else if (blocked) {
-    tone = "warn";
-    body = blocked;
-  } else if (ap.modelDiffers) {
-    tone = "warn";
-    body = (
-      <>
-        配置文件里还是 <code className="mono">{ap.state?.model}</code>，重新写入才换成 <code className="mono">{clientModelId(model)}</code>。
-      </>
-    );
-  } else if (ap.state && !ap.onThis && ap.state.pointsTo === "other") {
-    tone = "warn";
-    body = <>这份配置现在指向{ap.state.baseUrl ? <code className="mono">{ap.state.baseUrl}</code> : "别处"}，接入会改写它（原文件先备份）。</>;
+  const health = healthOf(state);
+  const live = health === "live";
+  const dirty = !sameRoute(draft, saved);
+  const inChannel = useMemo(() => channelModels(local, channels, channel), [local, channels, channel]);
+  const channelLabel = (id: string | null) => channels.find((c) => c.id === id)?.label ?? id ?? "";
+
+  const options: PickerOption[] = useMemo(() => inChannel.map((id) => ({ id })), [inChannel]);
+  /** Claude 的分档可以跨通道：全部对话模型，右边标上通道。 */
+  const allOptions: PickerOption[] = useMemo(
+    () =>
+      (local ?? [])
+        .filter((m) => (m.modality ?? "chat") === "chat")
+        .map((m) => {
+          const id = channelOfModel(channels, m.id);
+          return { id: m.id, meta: channels.find((c) => c.id === id)?.label ?? id };
+        }),
+    [local, channels],
+  );
+
+  function pickChannel(id: string | null) {
+    const next = isChannelId(id) ? id : defaultChannelId(gateway);
+    setChannel(next);
+    setDone(null);
+    const ids = channelModels(local, channels, next);
+    setDraft((d) => (ids.includes(d.model) ? d : { ...d, model: pickDefault(client, ids) }));
   }
 
-  if (!body) return null;
+  const routeToSave = (): ClientRoute => {
+    const r = cleanRoute({ ...draft, model: qualify(draft.model, channel) });
+    const q = (v: string | null | undefined) => (v ? qualify(v, channel) : null);
+    return { ...r, opus: q(r.opus), haiku: q(r.haiku), fable: q(r.fable) };
+  };
+
+  async function apply() {
+    const next = routeToSave();
+    if (!next.model) {
+      setError("先选一个模型。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    setTest(null);
+    try {
+      const r = await connectApi.apply(client as ConnectTool, next);
+      setDone({ kind: "applied", r, update: live });
+      setDraft(next);
+      await onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revert() {
+    const ok = await confirm(`${meta.label} 的配置会还原成接入之前的样子；是我们建的文件就删掉。之后它不再经过本地网关。`, {
+      title: `撤销 ${meta.label} 的接入？`,
+      okLabel: "撤销",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await connectApi.revert(client as ConnectTool);
+      setDone({ kind: "reverted" });
+      setTest(null);
+      await onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runTest() {
+    setTesting(true);
+    setTest(null);
+    try {
+      setTest(await connectApi.test(client as ConnectTool));
+    } catch (e) {
+      setTest({ ok: false, text: "", requested: "", target: null, channel: null, account: null, durationMs: 0, error: errorText(e) });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  const primary =
+    health === "stale" ? "修复接入" : health === "legacy" ? "升级接入" : live ? (dirty ? "保存，即时生效" : null) : health === "other" ? "改接到 Nexus" : "一键接入";
+
   return (
-    <p className={`cfg-note is-${tone}`}>
-      <i aria-hidden />
-      <span>{body}</span>
-    </p>
+    <section className="connect-section">
+      <div className="card card-flush cfg">
+        <div className="cfg-head">
+          <div className="cfg-identity">
+            <strong className="cfg-client">{meta.label}</strong>
+            <span className="pill cfg-protocol">{meta.dialect}</span>
+            <span className={`ctile-status is-inline`}>
+              <span className={`ctile-dot is-${HEALTH_TEXT[health].tone}`} aria-hidden />
+              {HEALTH_TEXT[health].label}
+            </span>
+          </div>
+          <div className="cfg-acts">
+            {state?.revertible || live ? (
+              <button type="button" className="btn btn-sm btn-quiet" disabled={busy} onClick={() => void revert()} data-tip="按接入前的备份还原；是我们建的文件就删掉">
+                撤销
+              </button>
+            ) : null}
+            {live ? (
+              <button type="button" className="btn btn-sm" disabled={testing || busy} onClick={() => void runTest()}>
+                {testing ? <Spinner /> : <ShellIcon name="play" size={12} />}
+                测一下
+              </button>
+            ) : null}
+            {primary ? (
+              <button type="button" className="btn btn-sm btn-primary" disabled={busy || !draft.model.trim()} onClick={() => void apply()}>
+                {busy ? <Spinner /> : <Icon name="check" size={13} />}
+                {primary}
+              </button>
+            ) : (
+              <span className="cfg-live">
+                <Icon name="check" size={12} />
+                已接入
+              </span>
+            )}
+          </div>
+        </div>
+
+        <PanelNotes
+          meta={meta}
+          state={state}
+          health={health}
+          dirty={dirty}
+          error={error}
+          done={done}
+          defaultLabel={channelLabel(defaultChannelId(gateway))}
+          gatewayPort={gateway.running ? Number(gateway.running.addr.split(":").pop()) : gateway.settings.port}
+        />
+
+        <div className="croute">
+          <div className="croute-row">
+            <span className="croute-k">通道</span>
+            <div className="croute-v">
+              <ChannelPicker
+                plain
+                channel={channel}
+                onChange={pickChannel}
+                gateway={gateway}
+                local={local}
+                onManageLocal={(id) => onGo(id === "cursor" ? go("gateway", { sub: "pool" }) : go("accounts", { platform: id }))}
+              />
+            </div>
+          </div>
+          <div className="croute-row">
+            <span className="croute-k">{client === "claude" ? "主模型" : "模型"}</span>
+            <div className="croute-v">
+              <ModelPicker
+                value={draft.model}
+                options={options}
+                placeholder={inChannel.length ? "选一个模型，或直接输入 id" : "这条通道还没有可用的模型——先去添加号"}
+                onChange={(v) => {
+                  setDraft((d) => ({ ...d, model: v }));
+                  setDone(null);
+                }}
+              />
+              <span className="croute-hint">
+                {client === "claude"
+                  ? "Sonnet 档与没单独配的档走它。Claude Code 里默认用的也是这一档。"
+                  : `写进配置的是 ${clientModelId(qualify(draft.model, channel)) || "…"}；在 ${meta.label} 里换成这条通道认识的别的模型，也照样走这条通道。`}
+              </span>
+            </div>
+          </div>
+          {client === "claude" ? (
+            <ClaudeRoles
+              draft={draft}
+              options={allOptions}
+              onChange={(patch) => {
+                setDraft((d) => ({ ...d, ...patch }));
+                setDone(null);
+              }}
+              onSuggest={() => setDraft((d) => ({ ...d, ...suggestRoles(inChannel, qualify(d.model, channel)) }))}
+            />
+          ) : null}
+        </div>
+
+        {state?.env.length ? <EnvWarnings env={state.env} client={meta.label} /> : null}
+
+        {test ? <TestResult test={test} channelLabel={channelLabel} /> : null}
+
+        <ConfigPreview meta={meta} gateway={gateway} route={routeToSave()} />
+      </div>
+    </section>
+  );
+}
+
+/** Claude Code 另外三档。默认收着：大多数人四档走一个模型就够了。 */
+function ClaudeRoles({
+  draft,
+  options,
+  onChange,
+  onSuggest,
+}: {
+  draft: ClientRoute;
+  options: PickerOption[];
+  onChange: (patch: Partial<ClientRoute>) => void;
+  onSuggest: () => void;
+}) {
+  const custom = Boolean(draft.opus || draft.haiku || draft.fable || draft.context1m);
+  const [open, setOpen] = useState(custom);
+  const rows: Array<{ key: "opus" | "haiku" | "fable"; label: string; hint: string }> = [
+    { key: "opus", label: "Opus", hint: "跟主模型" },
+    { key: "haiku", label: "Haiku", hint: "跟主模型 · 后台起标题、做摘要走这一档" },
+    { key: "fable", label: "Fable", hint: "跟 Opus" },
+  ];
+  return (
+    <div className="croute-row">
+      <span className="croute-k">分档</span>
+      <div className="croute-v">
+        {!open ? (
+          <button type="button" className="linkish croute-more" onClick={() => setOpen(true)}>
+            四档都走主模型 · 分开配
+          </button>
+        ) : (
+          <div className="croles">
+            {rows.map((r) => (
+              <div key={r.key} className="crole">
+                <span className="crole-k">{r.label}</span>
+                <ModelPicker value={draft[r.key] ?? ""} options={options} placeholder={r.hint} onChange={(v) => onChange({ [r.key]: v || null })} />
+              </div>
+            ))}
+            <div className="crole-foot">
+              <label className="crole-check">
+                <input type="checkbox" className="tick" checked={Boolean(draft.context1m)} onChange={(e) => onChange({ context1m: e.target.checked })} />
+                按 1M 上下文算（Sonnet / Opus / Fable）
+              </label>
+              <span className="row" style={{ gap: 6 }}>
+                <button type="button" className="btn btn-sm btn-quiet" onClick={onSuggest}>
+                  按名字自动分
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-quiet"
+                  onClick={() => {
+                    onChange({ opus: null, haiku: null, fable: null, context1m: false });
+                    setOpen(false);
+                  }}
+                >
+                  都跟主模型
+                </button>
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 卡头下面那几行：有话才出。 */
+function PanelNotes({
+  meta,
+  state,
+  health,
+  dirty,
+  error,
+  done,
+  defaultLabel,
+  gatewayPort,
+}: {
+  meta: ClientMeta;
+  state: ClientState | undefined;
+  health: Health;
+  dirty: boolean;
+  error: string | null;
+  done: { kind: "applied"; r: ConnectResult; update: boolean } | { kind: "reverted" } | null;
+  defaultLabel: string;
+  gatewayPort: number;
+}) {
+  const notes: Array<{ tone: "ok" | "warn" | "bad" | "flat"; body: ReactNode }> = [];
+  if (error) notes.push({ tone: "bad", body: error });
+  if (done?.kind === "applied") {
+    const r = done.r;
+    const extra = [r.gatewayStarted ? "本地网关已开启" : "", r.autostartEnabled ? "已设为随 Nexus 启动" : "", r.onboarded ? "已跳过 Claude Code 的首次引导" : ""].filter(Boolean);
+    notes.push({
+      tone: "ok",
+      body: done.update ? (
+        <>路由已更新，下一条请求就按新的走，不用重启 {meta.label}。{extra.length ? `${extra.join("，")}。` : ""}</>
+      ) : (
+        <>
+          已写入 {r.files.map((f) => f.path.split(/[\\/]/).pop()).join("、")}
+          {r.files.some((f) => f.backup) ? "（原文件已备份）" : ""}。{extra.length ? `${extra.join("，")}。` : ""}重开 {meta.label} 生效，之后在这里改通道、改模型都即时生效。
+        </>
+      ),
+    });
+  } else if (done?.kind === "reverted") {
+    notes.push({ tone: "flat", body: <>已撤销。{meta.label} 不再经过本地网关。</> });
+  }
+  if (!done) {
+    if (health === "stale") {
+      if (state?.keyOk === false) notes.push({ tone: "bad", body: <>配置里的口令和网关现在的不一样（换过口令？），请求会 401。点「修复接入」重写一遍。</> });
+      if (state?.portOk === false) notes.push({ tone: "bad", body: <>配置里的端口和网关现在的（{gatewayPort}）对不上，客户端连不上。点「修复接入」重写一遍。</> });
+    } else if (health === "legacy") {
+      notes.push({ tone: "warn", body: <>这是旧版接入：请求走全局默认通道（{defaultLabel}），不看这里的路由。点「升级接入」改成按客户端路由，之后改模型不用再重启。</> });
+    } else if (health === "other") {
+      notes.push({ tone: "flat", body: <>现在指向 <code className="mono">{hostOf(state?.baseUrl)}</code>。接入会先把原文件备份，撤销能还原。</> });
+    } else if (health === "live" && dirty) {
+      notes.push({ tone: "warn", body: <>路由改了还没保存。保存后下一条请求就生效，不用重启 {meta.label}。</> });
+    } else if (health === "live") {
+      notes.push({ tone: "flat", body: <>在这里改通道和模型，下一条请求就生效——不用重写配置、不用重启 {meta.label}。</> });
+    }
+  }
+  if (!notes.length) return null;
+  return (
+    <>
+      {notes.map((n, i) => (
+        <p key={i} className={`cfg-note is-${n.tone}`}>
+          <i aria-hidden />
+          <span>{n.body}</span>
+        </p>
+      ))}
+    </>
+  );
+}
+
+function EnvWarnings({ env, client }: { env: ClientState["env"]; client: string }) {
+  return (
+    <div className="cenv">
+      <div className="cenv-head">
+        <Icon name="info" size={12} />
+        这些环境变量可能让 {client} 不照配置走
+      </div>
+      {env.map((e) => (
+        <div key={`${e.name}@${e.source}`} className="cenv-row">
+          <code className="mono">
+            {e.name}={e.value}
+          </code>
+          <span className="faint tiny">{e.source}</span>
+          <span className="cenv-effect">{e.effect}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TestResult({ test, channelLabel }: { test: ConnectTest; channelLabel: (id: string | null) => string }) {
+  return (
+    <div className={`ctest ${test.ok ? "is-ok" : "is-bad"}`}>
+      <div className="ctest-head">
+        <span className={`ctile-dot is-${test.ok ? "ok" : "bad"}`} aria-hidden />
+        {test.ok ? "通了" : "没通"}
+        {test.target ?? test.requested ? <code className="mono">{test.target ?? test.requested}</code> : null}
+        {test.channel ? <span className="faint tiny">{channelLabel(test.channel)}</span> : null}
+        {test.account ? <span className="faint tiny truncate">{test.account}</span> : null}
+        {test.durationMs ? <span className="faint tiny">{(test.durationMs / 1000).toFixed(1)}s</span> : null}
+      </div>
+      {test.ok ? <p className="ctest-text selectable">{test.text || "（没有文本）"}</p> : <p className="ctest-text is-bad selectable">{test.error}</p>}
+    </div>
+  );
+}
+
+/* ── 配置正文预览（复制用）───────────────────────────────────────────────── */
+
+function useRevealedKey() {
+  const [key, setKey] = useState<string | undefined>(undefined);
+  const [visible, setVisible] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ensure = useCallback(async (): Promise<string | null> => {
+    setError(null);
+    try {
+      if (key) return key;
+      const k = await gatewayApi.revealKey();
+      setKey(k);
+      return k;
+    } catch (e) {
+      setError(errorText(e));
+      return null;
+    }
+  }, [key]);
+  return { key, visible, setVisible, error, ensure };
+}
+
+function useCopied() {
+  const [copied, setCopied] = useState("");
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const mark = useCallback((id: string) => {
+    setCopied(id);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCopied(""), 1400);
+  }, []);
+  return { copied, mark };
+}
+
+function gatewayEndpoint(gateway: GatewayStatus | null): Endpoint {
+  if (gateway?.running) return endpointOf(gateway.running.baseUrl);
+  return endpointOf(`http://127.0.0.1:${gateway?.settings.port ?? 8787}`);
+}
+
+function ConfigPreview({ meta, gateway, route }: { meta: ClientMeta; gateway: GatewayStatus; route: ClientRoute }) {
+  const k = useRevealedKey();
+  const { copied, mark } = useCopied();
+  const ep = gatewayEndpoint(gateway);
+  const build = (key: string) => {
+    const written = clientModelId(route.model);
+    switch (meta.id) {
+      case "claude":
+        return claudeSettings(ep, key, route);
+      case "codex":
+        return codexToml(clientEndpoint(ep, "codex"), key, written);
+      case "opencode":
+        return opencodeJson(clientEndpoint(ep, "opencode"), key, written);
+      case "grok":
+        return grokToml(clientEndpoint(ep, "grok"), key, written);
+    }
+  };
+  const text = build(k.visible && k.key ? k.key : KEY_PLACEHOLDER);
+  return (
+    <details className="cpreview">
+      <summary>
+        写进配置的内容
+        <span className="faint tiny">{homePath(meta.file)}</span>
+      </summary>
+      <div className="cpreview-body">
+        <div className="row-between" style={{ gap: 8 }}>
+          <span className="faint tiny">一键接入写的就是这些键；别的内容一字不动。复制的是带真口令的版本。</span>
+          <button type="button" className="btn btn-sm btn-quiet" onClick={() => void (k.visible ? k.setVisible(false) : k.ensure().then((v) => v && k.setVisible(true)))}>
+            <Icon name={k.visible ? "eyeOff" : "eye"} size={13} />
+            {k.visible ? "隐藏口令" : "显示口令"}
+          </button>
+        </div>
+        {k.error ? <span className="tiny" style={{ color: "var(--bad)" }}>{k.error}</span> : null}
+        <ConfigBlock
+          title={homePath(meta.file)}
+          format={meta.file.endsWith(".toml") ? "TOML" : "JSON"}
+          code={text}
+          copied={copied === "cfg"}
+          onCopy={() =>
+            void k.ensure().then(async (key) => {
+              if (!key) return;
+              await navigator.clipboard.writeText(build(key)).catch(() => {});
+              mark("cfg");
+            })
+          }
+        />
+      </div>
+    </details>
+  );
+}
+
+/* ── 其他客户端（没有配置文件，手抄）─────────────────────────────────────── */
+
+function OtherClients({ gateway, local, channels, onGo }: { gateway: GatewayStatus | null; local: LocalModel[] | null; channels: LocalChannel[]; onGo: (r: Route) => void }) {
+  const [channel, setChannel] = useState<LocalChannelId | null>(null);
+  const [model, setModel] = useState("");
+  const [kind, setKind] = useState<"cline" | "sdk">("cline");
+  const [protocol, setProtocol] = useState<Protocol>("openai");
+  const [lang, setLang] = useState<Lang>("curl");
+  const k = useRevealedKey();
+  const { copied, mark } = useCopied();
+  const ep = gatewayEndpoint(gateway);
+  const ch = channel ?? defaultChannelId(gateway);
+  const ids = useMemo(() => channelModels(local, channels, ch), [local, channels, ch]);
+
+  useEffect(() => {
+    setModel((m) => (ids.includes(m) ? m : (ids[0] ?? "")));
+  }, [ids]);
+
+  const keyText = k.visible && k.key ? k.key : KEY_PLACEHOLDER;
+  const copyWith = (id: string, build: (key: string) => string) =>
+    void k.ensure().then(async (key) => {
+      if (!key) return;
+      await navigator.clipboard.writeText(build(key)).catch(() => {});
+      mark(id);
+    });
+
+  return (
+    <section className="connect-section">
+      <div className="card card-flush cfg">
+        <div className="cfg-head">
+          <div className="cfg-identity">
+            <strong className="cfg-client">其他客户端</strong>
+            <span className="pill cfg-protocol">OpenAI / Anthropic 兼容</span>
+          </div>
+        </div>
+        <p className="cfg-note is-flat">
+          <i aria-hidden />
+          <span>
+            直接打 <code className="mono">/v1</code>：模型名带通道前缀（<code className="mono">chatgpt/gpt-5.4</code>）就走那条通道，裸名走默认通道（{channels.find((c) => c.isDefault)?.label ?? "Cursor"}）。默认通道在
+            <button type="button" className="linkish" onClick={() => onGo(go("gateway"))}>
+              本地网关
+            </button>
+            页改。
+          </span>
+        </p>
+        <div className="croute">
+          <div className="croute-row">
+            <span className="croute-k">通道</span>
+            <div className="croute-v">
+              <ChannelPicker plain channel={ch} onChange={(id) => setChannel(isChannelId(id) ? id : null)} gateway={gateway} local={local} />
+            </div>
+          </div>
+          <div className="croute-row">
+            <span className="croute-k">模型</span>
+            <div className="croute-v">
+              <ModelPicker value={model} options={ids.map((id) => ({ id }))} onChange={setModel} />
+            </div>
+          </div>
+        </div>
+        <div className="cfg-body" key={kind}>
+          <div className="row-between wrap" style={{ gap: 10 }}>
+            <div className="tabs" role="tablist" aria-label="客户端">
+              <button type="button" role="tab" aria-selected={kind === "cline"} className={kind === "cline" ? "tab is-active" : "tab"} onClick={() => setKind("cline")}>
+                Cline / 兼容客户端
+              </button>
+              <button type="button" role="tab" aria-selected={kind === "sdk"} className={kind === "sdk" ? "tab is-active" : "tab"} onClick={() => setKind("sdk")}>
+                SDK / cURL
+              </button>
+            </div>
+            <button type="button" className="btn btn-sm btn-quiet" onClick={() => void (k.visible ? k.setVisible(false) : k.ensure().then((v) => v && k.setVisible(true)))}>
+              <Icon name={k.visible ? "eyeOff" : "eye"} size={13} />
+              {k.visible ? "隐藏口令" : "显示口令"}
+            </button>
+          </div>
+          {kind === "cline" ? (
+            <div className="stack-tight stack">
+              {clineFields(ep, keyText, model).map((f, i) => (
+                <FieldRow key={f.label} label={f.label} value={f.value} copied={copied === `cline-${i}`} onCopy={() => copyWith(`cline-${i}`, (key) => clineFields(ep, key, model)[i]!.value)} />
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className="row-between wrap" style={{ gap: 10 }}>
+                <div className="tabs" role="tablist" aria-label="协议">
+                  {(Object.keys(PROTOCOL_INFO) as Protocol[]).map((p) => (
+                    <button key={p} type="button" role="tab" aria-selected={protocol === p} className={protocol === p ? "tab is-active" : "tab"} onClick={() => setProtocol(p)}>
+                      {PROTOCOL_INFO[p].label}
+                    </button>
+                  ))}
+                </div>
+                <div className="row" style={{ gap: 4 }}>
+                  {(Object.keys(LANG_LABEL) as Lang[]).map((l) => (
+                    <button key={l} type="button" className="chip" aria-pressed={lang === l} onClick={() => setLang(l)}>
+                      {LANG_LABEL[l]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <FieldRow label="Base URL" value={protocolBase(protocol, ep)} copied={copied === "sdk-base"} onCopy={() => copyWith("sdk-base", () => protocolBase(protocol, ep))} />
+              <ConfigBlock
+                title={lang === "curl" ? shellLabel() : lang === "python" ? "python" : "javascript"}
+                format={LANG_LABEL[lang]}
+                code={sdkSnippet(lang, protocol, ep, keyText, model)}
+                copied={copied === "sdk"}
+                onCopy={() => copyWith("sdk", (key) => sdkSnippet(lang, protocol, ep, key, model))}
+              />
+            </>
+          )}
+          {k.error ? <span className="tiny" style={{ color: "var(--bad)" }}>{k.error}</span> : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
 /* ── 小件 ─────────────────────────────────────────────────────────────────── */
 
-/** 工具卡上的标：有可信官方标的用厂商标，其余用一个字符。 */
-const TOOL_VENDOR: Partial<Record<Tool, "anthropic" | "openai" | "cursor" | "xai">> = {
-  claude: "anthropic",
-  codex: "openai",
-  grok: "xai",
-};
-
-function ConnectSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="connect-section">
-      <h2 className="connect-section-title">{title}</h2>
-      <div className="connect-section-body">{children}</div>
-    </section>
-  );
-}
-
-function KeyActions({
-  visible,
-  disabled,
-  onReveal,
-  onHide,
-  onCopy,
-  copied,
-}: {
-  visible: boolean;
-  disabled?: boolean;
-  onReveal: () => void;
-  onHide: () => void;
-  onCopy: () => void;
-  copied: boolean;
-}) {
-  return (
-    <span className="row" style={{ gap: 2 }}>
-      <button type="button" className="btn btn-sm btn-icon btn-quiet" disabled={disabled} onClick={visible ? onHide : onReveal} aria-label={visible ? "隐藏" : "显示"}>
-        <Icon name={visible ? "eyeOff" : "eye"} size={13} />
-      </button>
-      <button type="button" className={`btn btn-sm btn-icon btn-quiet${copied ? " is-done" : ""}`} disabled={disabled} onClick={onCopy} aria-label="复制">
-        <Icon name={copied ? "check" : "copy"} size={13} />
-      </button>
-    </span>
-  );
-}
-
-/** 模型框下面那一行：网关认不认这个名字、会走哪条通道。 */
-function ModelHint({
-  id,
-  local,
-  routedTo,
-  known,
-}: {
-  id: string;
-  local: boolean;
-  /** 这个名字实际会走的那条通道（和当前选的不是同一条时才给）。 */
-  routedTo?: string;
-  known: boolean;
-}) {
-  if (!id.trim() || !known) return null;
-  if (routedTo) {
-    return (
-      <span className="mhint muted">
-        <span className="mono">{id}</span> 会走 {routedTo} 通道——地址和口令一样，只是扣的是那边的号。
-      </span>
-    );
-  }
-  if (!local) {
-    return (
-      <span className="mhint muted">
-        目录里没有 <span className="mono">{id}</span>。不带通道前缀时走默认通道；写成 通道/名称 则强制那条。
-      </span>
-    );
-  }
-  return null;
-}
-
-function ConfigBlock({
-  title,
-  format,
-  code,
-  copied,
-  onCopy,
-}: {
-  title: string;
-  format: string;
-  code: string;
-  copied: boolean;
-  onCopy: () => void;
-}) {
+function ConfigBlock({ title, format, code, copied, onCopy }: { title: string; format: string; code: string; copied: boolean; onCopy: () => void }) {
   const separatorIndex = Math.max(title.lastIndexOf("/"), title.lastIndexOf("\\"));
   const directory = separatorIndex >= 0 ? title.slice(0, separatorIndex + 1) : "";
   const name = separatorIndex >= 0 ? title.slice(separatorIndex + 1) : title;
-
   return (
     <div className="codeblock">
       <div className="codeblock-head">
@@ -705,7 +953,7 @@ function ConfigBlock({
           <span className="codeblock-name">{name}</span>
         </span>
         <span className="codeblock-format">{format}</span>
-        <button type="button" className={`btn btn-sm btn-quiet codeblock-copy${copied ? " is-done" : ""}`} onClick={onCopy} title="复制的是带真钥匙的版本">
+        <button type="button" className={`btn btn-sm btn-quiet codeblock-copy${copied ? " is-done" : ""}`} onClick={onCopy} title="复制的是带真口令的版本">
           <Icon name={copied ? "check" : "copy"} size={13} />
           {copied ? "已复制" : "复制"}
         </button>

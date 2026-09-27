@@ -15,14 +15,19 @@ use crate::lane::{
 };
 use crate::ledger::{Ledger, UsageSummary};
 use crate::media::{MediaJob, MediaJobs};
+use crate::provider::{self, ProviderLane};
+use crate::reqlog::{LogEntry, RequestLog};
+use crate::routes::{self, ClientRoute, ClientRoutes};
 use crate::server::{self, Gateway};
 use crate::subscriptions;
 use crate::upstream::CursorUpstream;
 use nexus_accounts::AccountsService;
 use nexus_chatgpt::ChatGptService;
+use nexus_claude::ClaudeService;
 use nexus_core::{AppError, ErrorCode, Result, Secret};
 use nexus_grok::GrokService;
 use nexus_kiro::KiroService;
+use nexus_qoder::QoderService;
 use nexus_store::keys::SecretRef;
 use nexus_store::{settings, Db, SecretStore};
 use nexus_zcode::ZcodeService;
@@ -36,6 +41,8 @@ pub const SETTING_PORT: &str = "gateway.port";
 pub const SETTING_AUTOSTART: &str = "gateway.autostart";
 pub const SETTING_FORCE_MODEL: &str = "gateway.force_model";
 pub const SETTING_DEFAULT_CHANNEL: &str = "gateway.default_channel";
+/// 按客户端的路由（`routes::ClientRoutes` 的 JSON）。
+pub const SETTING_CLIENT_ROUTES: &str = "gateway.client_routes";
 const SECRET_API_KEY: &str = "gateway/api_key";
 pub const DEFAULT_PORT: u16 = 8787;
 /// 端口被占时往后最多试这么多个。端口不是用户该操心的事：占了就自动换一个，换到的那个
@@ -121,10 +128,12 @@ pub struct GatewayStatus {
     pub api_key_set: bool,
     /// Cursor 通道的接力队。
     pub lane: LaneSnapshot,
-    /// 订阅通道（ChatGPT / Grok Build / Kiro …），按选路顺序。
+    /// 订阅通道（ChatGPT / Grok Build / Kiro …）和供应商通道，按选路顺序。
     pub channels: Vec<ChannelSnapshot>,
     /// 最近的异步媒体任务（生视频），新的在前。
     pub media_jobs: Vec<MediaJob>,
+    /// 按客户端的路由。接入页看它知道每个客户端此刻走哪条通道、哪个模型。
+    pub routes: ClientRoutes,
 }
 
 struct Running {
@@ -145,6 +154,8 @@ pub struct SubscriptionServices {
     pub grok: Arc<GrokService>,
     pub kiro: Arc<KiroService>,
     pub zcode: Arc<ZcodeService>,
+    pub qoder: Arc<QoderService>,
+    pub claude: Arc<ClaudeService>,
 }
 
 pub struct GatewayService {
@@ -155,6 +166,8 @@ pub struct GatewayService {
     grok: Arc<GrokService>,
     kiro: Arc<KiroService>,
     zcode: Arc<ZcodeService>,
+    qoder: Arc<QoderService>,
+    claude: Arc<ClaudeService>,
     /// 哪些号进接力队。跨启停都是同一份，落库。
     roster: Arc<Roster>,
     /// Cursor 正登着的号。设置页改目录时换读者，接力队还是这一份。
@@ -170,6 +183,12 @@ pub struct GatewayService {
     media_jobs: Arc<MediaJobs>,
     /// 用户指定的默认通道。跟正在听的 `ChannelRegistry` 共用这一把锁。
     default_channel: Arc<RwLock<String>>,
+    /// 供应商通道的「号队」：几家供应商之间的接力与冷却。跨启停保留。
+    provider_lane: Arc<ProviderLane>,
+    /// 按客户端的路由。跟正在听的网关共用这一把锁，改了不用重启。
+    routes: Arc<RwLock<ClientRoutes>>,
+    /// 最近请求的明细（只在内存里）。跨启停同一份。
+    log: Arc<RequestLog>,
 }
 
 impl GatewayService {
@@ -183,6 +202,8 @@ impl GatewayService {
         let grok = Arc::new(GrokService::new(db.clone(), secrets.clone()));
         let kiro = Arc::new(KiroService::new(db.clone(), secrets.clone()));
         let zcode = Arc::new(ZcodeService::new(db.clone(), secrets.clone()));
+        let qoder = Arc::new(QoderService::new(db.clone(), secrets.clone()));
+        let claude = Arc::new(ClaudeService::new(db.clone(), secrets.clone()));
         Self::with_services(
             db,
             secrets,
@@ -193,6 +214,8 @@ impl GatewayService {
                 grok,
                 kiro,
                 zcode,
+                qoder,
+                claude,
             },
         )
     }
@@ -210,6 +233,8 @@ impl GatewayService {
             grok,
             kiro,
             zcode,
+            qoder,
+            claude,
         } = subs;
         let settings = read_settings(&db);
         let roster = Arc::new(Roster::load(db.clone()));
@@ -240,6 +265,18 @@ impl GatewayService {
                     zcode.clone() as Arc<dyn SubscriptionAccounts>
                 )),
             ),
+            (
+                channel::QODER,
+                Arc::new(subscriptions::subscription_lane(
+                    qoder.clone() as Arc<dyn SubscriptionAccounts>
+                )),
+            ),
+            (
+                channel::CLAUDE,
+                Arc::new(subscriptions::subscription_lane(
+                    claude.clone() as Arc<dyn SubscriptionAccounts>
+                )),
+            ),
         ];
         let ledger = Arc::new(Ledger::new(db.clone()));
         if let Err(err) = ledger.prune() {
@@ -252,6 +289,8 @@ impl GatewayService {
                 .unwrap_or(channel::CURSOR)
                 .to_string(),
         ));
+        let provider_lane = Arc::new(ProviderLane::new(db.clone(), secrets.clone()));
+        let routes = Arc::new(RwLock::new(read_routes(&db)));
         Self {
             db,
             secrets,
@@ -259,6 +298,8 @@ impl GatewayService {
             grok,
             kiro,
             zcode,
+            qoder,
+            claude,
             roster,
             cursor_login,
             lane: Arc::new(lane),
@@ -267,11 +308,14 @@ impl GatewayService {
             ledger,
             media_jobs,
             default_channel,
+            provider_lane,
+            routes,
+            log: Arc::new(RequestLog::new()),
         }
     }
 
-    /// 网关的全部通道（默认 Cursor + 四条订阅通道）。每次起服务时装一份；门禁现查，加号 / 关号 /
-    /// 拉到新目录都不用重启。
+    /// 网关的全部通道（默认 Cursor + 五条订阅通道 + 供应商）。每次起服务时装一份；门禁现查，
+    /// 加号 / 关号 / 拉到新目录 / 加一家供应商都不用重启。
     fn registry(&self, cursor_cfg: StreamConfig) -> ChannelRegistry {
         let mut reg = ChannelRegistry::new(channel::cursor_channel(
             self.lane(),
@@ -284,11 +328,17 @@ impl GatewayService {
                 channel::GROK => subscriptions::grok_channel(lane, self.grok.clone()),
                 channel::KIRO => subscriptions::kiro_channel(lane, self.kiro.clone()),
                 channel::ZCODE => subscriptions::zcode_channel(lane, self.zcode.clone()),
+                channel::QODER => subscriptions::qoder_channel(lane, self.qoder.clone()),
+                channel::CLAUDE => subscriptions::claude_channel(lane, self.claude.clone()),
                 other => unreachable!("未知通道 {other}"),
             };
             reg = reg.with(ch);
         }
-        reg.share_default(self.default_channel.clone())
+        reg.with(provider::provider_channel(
+            self.provider_lane.clone(),
+            self.db.clone(),
+        ))
+        .share_default(self.default_channel.clone())
     }
 
     fn channel_lane(&self, id: &str) -> Result<&Arc<RelayLane>> {
@@ -311,15 +361,18 @@ impl GatewayService {
                 media_ready: ch.gate.media_ready()
                     && (!ch.gate.models(Capability::Image).is_empty()
                         || !ch.gate.models(Capability::Video).is_empty()),
-                lane: self
-                    .channel_lane(ch.id)
-                    .map(|l| l.snapshot())
-                    .unwrap_or_else(|_| LaneSnapshot {
-                        current: None,
-                        candidates: vec![],
-                        missing: vec![],
-                        available: vec![],
-                    }),
+                lane: if ch.id == channel::PROVIDER {
+                    self.provider_lane.snapshot()
+                } else {
+                    self.channel_lane(ch.id)
+                        .map(|l| l.snapshot())
+                        .unwrap_or_else(|_| LaneSnapshot {
+                            current: None,
+                            candidates: vec![],
+                            missing: vec![],
+                            available: vec![],
+                        })
+                },
                 chat_models: ch
                     .gate
                     .models(Capability::Chat)
@@ -366,6 +419,18 @@ impl GatewayService {
                     "智谱",
                     Some("经 ZCode（智谱 GLM 编码套餐）。裸 glm-* 也认，zcode/ 前缀可显式指定。"),
                 ),
+                channel::QODER => (
+                    "Qoder",
+                    Some("经 Qoder 网关（COSY 签名的 SSE）。公开名如 qoder/Qwen3.8-Max，国际版和国内版的号各自认自己的目录。"),
+                ),
+                channel::CLAUDE => (
+                    "Anthropic",
+                    Some("经 Claude 订阅（OAuth / setup-token）或 Console API Key，直连 api.anthropic.com。OAuth 出站按 Claude Code 指纹发。公开名如 claude/claude-opus-4-6。"),
+                ),
+                channel::PROVIDER => (
+                    "供应商",
+                    Some("经你自己的 API Key 供应商。provider/ 前缀显式指定；清单里的裸名也认。同一个模型有几家声明时按顺序接力。"),
+                ),
                 _ => (ch.label, None),
             };
             let mut push =
@@ -408,23 +473,87 @@ impl GatewayService {
         out
     }
 
-    /// 订阅通道：手动指定当前号（按账号标签）。
+    /// 订阅通道：手动指定当前号（按账号标签）。供应商通道：把这一家排到它所有模型的最前面。
     pub fn channel_set_current(&self, channel: &str, label: &str) -> Result<GatewayStatus> {
-        self.channel_lane(channel)?.set_current(label);
+        if channel == channel::PROVIDER {
+            self.provider_lane.prefer(label);
+        } else {
+            self.channel_lane(channel)?.set_current(label);
+        }
         self.status()
     }
 
     /// 订阅通道：清掉耗尽 / 冷却记录。
     pub fn channel_reset_lane(&self, channel: &str) -> Result<GatewayStatus> {
-        self.channel_lane(channel)?.reset();
+        if channel == channel::PROVIDER {
+            self.provider_lane.reset();
+        } else {
+            self.channel_lane(channel)?.reset();
+        }
         self.status()
     }
 
     /// 账号被删 / 关掉：它不再是当前号，关于它的记录也一起忘。
     pub fn channel_forget(&self, channel: &str, label: &str) {
-        if let Ok(lane) = self.channel_lane(channel) {
+        if channel == channel::PROVIDER {
+            self.provider_lane.forget(label);
+        } else if let Ok(lane) = self.channel_lane(channel) {
             lane.forget(label);
         }
+    }
+
+    /// 按客户端的路由。
+    pub fn routes(&self) -> ClientRoutes {
+        self.routes.read().expect("client routes").clone()
+    }
+
+    /// 改一个客户端的路由（`None` = 删掉，回到跟随默认通道）。落库，正在听的网关下一发就照新的走。
+    ///
+    /// `written` 是这次写进客户端配置的模型名：记进路由的旧名单，客户端没重开之前发来的
+    /// 旧名字也跟着新路由走。旧名单本身跨改动保留。
+    pub fn set_route(
+        &self,
+        client: &str,
+        route: Option<ClientRoute>,
+        written: Option<&str>,
+    ) -> Result<ClientRoutes> {
+        let Some(client) = routes::parse_client(client) else {
+            return Err(AppError::invalid(format!("没有这个客户端：{client}")));
+        };
+        let mut next = self.routes();
+        match route.map(ClientRoute::cleaned) {
+            Some(r) if r.model.is_empty() => {
+                return Err(AppError::invalid("先选一个模型。"));
+            }
+            Some(mut r) => {
+                if let Some(old) = next.get(client) {
+                    for a in &old.aliases {
+                        if !r.aliases.iter().any(|x| x.eq_ignore_ascii_case(a)) {
+                            r.aliases.push(a.clone());
+                        }
+                    }
+                }
+                if let Some(w) = written {
+                    r.remember(w);
+                }
+                next.insert(client.to_string(), r.cleaned());
+            }
+            None => {
+                next.remove(client);
+            }
+        }
+        settings::set(&self.db, SETTING_CLIENT_ROUTES, &next)?;
+        *self.routes.write().expect("client routes") = next.clone();
+        Ok(next)
+    }
+
+    /// 最近请求的明细，新的在前。
+    pub fn requests(&self, limit: usize) -> Vec<LogEntry> {
+        self.log.recent(limit)
+    }
+
+    pub fn clear_requests(&self) {
+        self.log.clear();
     }
 
     /// 最近的媒体任务。
@@ -493,7 +622,8 @@ impl GatewayService {
         if let Some(dc) = patch.default_channel {
             let Some(id) = channel::parse_id(&dc) else {
                 return Err(AppError::invalid(format!(
-                    "默认通道只能是 cursor / chatgpt / grok / kiro / zcode，给的是 {dc}"
+                    "默认通道只能是 {}，给的是 {dc}",
+                    channel::KNOWN_IDS
                 )));
             };
             s.default_channel = id.to_string();
@@ -530,6 +660,20 @@ impl GatewayService {
         Ok(fresh)
     }
 
+    /// 已有的口令；还没生成过就是 `None`（只读，不顺手生成）。
+    pub fn api_key_if_set(&self) -> Result<Option<String>> {
+        let key = SecretRef::from_raw(SECRET_API_KEY);
+        Ok(self.secrets.get(&key)?.map(|s| s.expose().to_string()))
+    }
+
+    /// 客户端该连的端口：开着就是正在听的那个，关着就是设置里的。
+    pub fn effective_port(&self) -> u16 {
+        match self.running.lock().expect("running").as_ref() {
+            Some(r) => r.addr.port(),
+            None => self.settings().port,
+        }
+    }
+
     /// 换一把新口令。已配置旧口令的客户端会立刻 401，界面要提醒。
     pub fn rotate_api_key(&self) -> Result<String> {
         let key = SecretRef::from_raw(SECRET_API_KEY);
@@ -558,6 +702,8 @@ impl GatewayService {
             api_key: Some(api_key),
             ledger: Some(self.ledger.clone()),
             media_jobs: Some(self.media_jobs.clone()),
+            routes: self.routes.clone(),
+            log: Some(self.log.clone()),
         });
 
         // 端口被占就往后找一个空的。找到的那个写回设置：下次开还是它，客户端里抄过的地址
@@ -672,6 +818,7 @@ impl GatewayService {
             lane: self.lane().snapshot(),
             channels: self.channel_snapshots(),
             media_jobs: self.media_jobs.recent(20),
+            routes: self.routes(),
             running: info,
             restart_needed,
             api_key_set,
@@ -735,6 +882,19 @@ fn read_settings(db: &Db) -> GatewaySettings {
         .unwrap_or(channel::CURSOR)
         .to_string(),
     }
+}
+
+/// 读不出来（老库没有、JSON 坏了）就当没有路由：客户端作用域的请求回到默认通道，不至于起不来。
+fn read_routes(db: &Db) -> ClientRoutes {
+    let routes: ClientRoutes = settings::get_or(db, SETTING_CLIENT_ROUTES, ClientRoutes::new());
+    routes
+        .into_iter()
+        .filter_map(|(client, route)| {
+            let client = routes::parse_client(&client)?;
+            let route = route.cleaned();
+            (!route.model.is_empty()).then(|| (client.to_string(), route))
+        })
+        .collect()
 }
 
 fn build_lane(
@@ -975,6 +1135,75 @@ mod tests {
         assert!(st.lane.candidates.is_empty(), "没登录、没托管号");
         assert!(st.lane.available.is_empty());
         assert_eq!(st.settings.port, DEFAULT_PORT);
+        // 供应商是和订阅号并列的一条通道，没有供应商时也在快照里（只是没号）。
+        let provider = st
+            .channels
+            .iter()
+            .find(|c| c.id == channel::PROVIDER)
+            .expect("供应商通道在快照里");
+        assert!(!provider.ready);
+        assert_eq!(provider.prefixes, vec!["provider/"]);
+    }
+
+    #[test]
+    fn provider_can_be_the_default_channel() {
+        let svc = service();
+        let s = svc
+            .update_settings(SettingsPatch {
+                default_channel: Some("provider".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(s.default_channel, "provider");
+    }
+
+    #[test]
+    fn client_routes_persist_and_remember_written_names() {
+        let p = parts();
+        let svc = build(&p);
+        assert!(svc.routes().is_empty());
+        svc.set_route(
+            "codex",
+            Some(ClientRoute {
+                model: " chatgpt/gpt-5.4 ".into(),
+                ..ClientRoute::default()
+            }),
+            Some("gpt-5.4"),
+        )
+        .unwrap();
+        svc.set_route(
+            "codex",
+            Some(ClientRoute {
+                model: "cursor/claude-opus-5".into(),
+                ..ClientRoute::default()
+            }),
+            Some("claude-opus-5"),
+        )
+        .unwrap();
+        let again = build(&p);
+        let r = &again.routes()["codex"];
+        assert_eq!(r.model, "cursor/claude-opus-5");
+        assert_eq!(r.aliases, vec!["claude-opus-5", "gpt-5.4"]);
+        assert_eq!(
+            again.status().unwrap().routes["codex"].model,
+            "cursor/claude-opus-5"
+        );
+
+        assert!(svc
+            .set_route(
+                "cursor",
+                Some(ClientRoute {
+                    model: "cursor/a".into(),
+                    ..ClientRoute::default()
+                }),
+                None
+            )
+            .is_err());
+        assert!(svc
+            .set_route("codex", Some(ClientRoute::default()), None)
+            .is_err());
+        svc.set_route("codex", None, None).unwrap();
+        assert!(build(&p).routes().is_empty());
     }
 
     #[test]

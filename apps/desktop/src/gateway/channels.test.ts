@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LocalModel } from "../ipc/models";
 import type { ChannelSnapshot, GatewayCandidate, GatewayStatus } from "../ipc/types";
-import { channelOf, channelOfModel, channelSummary, defaultChannelId, laneOf, localChannels, starved } from "./channels";
+import { channelOf, channelOfModel, channelSummary, defaultChannelId, laneOf, localChannels, splitModelId, starved } from "./channels";
 
 const candidate = (label: string, state: GatewayCandidate["state"]): GatewayCandidate =>
   ({ label, state, pinned: false, percentUsed: null, source: "grok", storedId: "id" }) as GatewayCandidate;
@@ -27,6 +27,7 @@ const base: GatewayStatus = {
   apiKeySet: true,
   channels: [],
   mediaJobs: [],
+  routes: {},
   lane: { current: null, candidates: [], missing: [], available: [] },
 };
 
@@ -100,6 +101,26 @@ describe("channelOfModel / defaultChannelId", () => {
     expect(channelOfModel(channels, "glm/glm-4.7")).toBe("zcode");
     // 裸名走用户设的默认通道，和别的平台一个规矩。
     expect(channelOfModel(channels, "glm-4.7")).toBe("zcode");
+  });
+
+  it("routes qoder/ and provider/ to their own channels", () => {
+    const status: GatewayStatus = {
+      ...base,
+      settings: { ...base.settings, defaultChannel: "provider" },
+      channels: [
+        channel({ id: "qoder", label: "Qoder", vendor: "qoder", prefixes: ["qoder/", "qoder-cn/"], chatModels: [], imageModels: [], videoModels: [] }),
+        channel({ id: "provider", label: "供应商", vendor: "provider", prefixes: ["provider/"], chatModels: ["provider/deepseek-v4-pro"], imageModels: [], videoModels: [] }),
+      ],
+    };
+    const channels = localChannels(status);
+    expect(defaultChannelId(status)).toBe("provider");
+    expect(channelOfModel(channels, "qoder/Qwen3.8-Max")).toBe("qoder");
+    expect(channelOfModel(channels, "provider/deepseek-v4-pro")).toBe("provider");
+    expect(splitModelId("qoder-cn/Auto").channel).toBe("qoder");
+    expect(splitModelId("claude/claude-opus-4-6").channel).toBe("claude");
+    // 供应商的模型 id 自己带斜杠：不是已知前缀就当裸名。
+    expect(splitModelId("anthropic/claude-sonnet").channel).toBeNull();
+    expect(channelSummary({ ...channels[2]!, isDefault: false }).text).toContain("还没有供应商");
   });
 
   it("does not dump bare catalog names onto Cursor", () => {

@@ -24,6 +24,7 @@ const gateway: GatewayStatus = {
   apiKeySet: true,
   channels: [],
   mediaJobs: [],
+  routes: {},
   lane: {
     current: "a@x.com",
     candidates: [

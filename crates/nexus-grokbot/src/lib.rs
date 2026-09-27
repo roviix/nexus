@@ -27,7 +27,7 @@ mod sync;
 pub use app::{AppStatus, GROK_BOT_APP};
 pub use credential::{StreamCredential, STREAM_CREDENTIAL_FILENAME};
 pub use descriptor::{BoxRelayDescriptor, BOX_RELAY_PATH};
-pub use secrets::{ActiveAccount, GrokBotSecrets};
+pub use secrets::{install_active_login, ActiveAccount, ClientLogin, GrokBotSecrets};
 pub use service::{
     relay_config_path, CuaProbe, DirectCredentialInfo, ExportedAccount, GrokBotIdentity,
     GrokBotService, GrokBotStatus, RelayInfo, CUA_PROBE_MODEL,

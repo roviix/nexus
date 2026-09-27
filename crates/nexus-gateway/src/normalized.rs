@@ -119,6 +119,23 @@ pub struct ChatRequest {
     /// 客户端请求头里与协议有关的那几个（小写键，白名单见 `server::pick_client_headers`）。
     /// Codex CLI 每个请求都带一组 `x-codex-*`，转给上游前按账号收敛。
     pub client_headers: std::collections::HashMap<String, String>,
+    /// 客户端的原始请求，三种方言都有。只有「上游恰好讲同一种方言」的后端会用它
+    /// （API Key 供应商），见 [`RawInbound`]。
+    pub raw_inbound: Option<RawInbound>,
+}
+
+/// 客户端的原始请求：方言、请求体、要不要流。
+///
+/// 中间表示有损：`cache_control`、带签名的 thinking 块、各家自己的扩展字段都进不来。
+/// 上游讲同一种方言时（Anthropic 格式的供应商接 Claude Code）拿它原样转发，只换模型名。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawInbound {
+    pub dialect: crate::inbound::Dialect,
+    pub body: std::sync::Arc<serde_json::Value>,
+    pub stream: bool,
+    /// 原样转发时一并带上的请求头（`anthropic-beta`、`user-agent` 这类，小写键）。
+    /// 客户端直连供应商时本来就会发它们；翻译的时候不带——那时请求已经不是它写的样子了。
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

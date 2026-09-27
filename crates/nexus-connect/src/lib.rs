@@ -13,13 +13,26 @@
 
 mod claude;
 mod codex;
+pub mod env;
 mod fsx;
 mod grok;
 mod opencode;
 
+pub use claude::{ensure_onboarded as ensure_claude_onboarded, ClaudeModels, ClaudeSlot};
+pub use env::{env_conflicts, EnvConflict};
+
 use nexus_core::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+/// 一份配置里读出来的三样。各工具的 `inspect` 都交这个。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Seen {
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    /// 配置里的钥匙。只给 Tauri 层比对「是不是网关现在的口令」，不序列化出去。
+    pub api_key: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,15 +78,72 @@ impl Tool {
     }
 }
 
+/// Claude Code 把钥匙写进哪个环境变量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthEnv {
+    /// `ANTHROPIC_AUTH_TOKEN`，第三方中转的默认。
+    #[default]
+    AuthToken,
+    /// `ANTHROPIC_API_KEY`，官方 API。
+    ApiKey,
+}
+
+impl AuthEnv {
+    pub fn as_env(self) -> &'static str {
+        match self {
+            AuthEnv::AuthToken => "ANTHROPIC_AUTH_TOKEN",
+            AuthEnv::ApiKey => "ANTHROPIC_API_KEY",
+        }
+    }
+}
+
+/// Codex 的 `wire_api`。本地网关和云端走 Responses；OpenAI Chat 供应商走 `chat`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WireApi {
+    #[default]
+    Responses,
+    Chat,
+}
+
+impl WireApi {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WireApi::Responses => "responses",
+            WireApi::Chat => "chat",
+        }
+    }
+}
+
 /// 要接到哪：地址（带不带 `/v1` 都行，这里会归一）、钥匙、模型。
+///
+/// `claude` 给了就按它写四档（接本地网关：稳定档名 + 显示名）；没给时四档都钉成 `model`。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    pub claude: Option<ClaudeModels>,
+    pub auth_env: AuthEnv,
+    pub wire_api: WireApi,
 }
 
 impl Target {
+    /// 一把钥匙、一个模型，四档都钉成它，认证走 `ANTHROPIC_AUTH_TOKEN`。
+    pub fn simple(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            model: model.into(),
+            claude: None,
+            auth_env: AuthEnv::AuthToken,
+            wire_api: WireApi::Responses,
+        }
+    }
+
     /// 不带 `/v1` 的根地址：Anthropic 协议填这个。
     pub fn root_url(&self) -> String {
         self.base_url
@@ -144,6 +214,9 @@ pub struct Inspection {
     pub revertible: bool,
     /// 上次一键接入的时刻（清单里的）。
     pub applied_at: Option<String>,
+    /// 配置里的钥匙。Tauri 层拿它和网关口令比对，**不出 IPC**。
+    #[serde(skip)]
+    pub api_key: Option<String>,
 }
 
 /// 一次接入写了哪些文件。
@@ -201,7 +274,7 @@ pub fn inspect(layout: &Layout, tool: Tool) -> Result<Inspection> {
     let files = layout.files(tool);
     let main = &files[0];
     let text = fsx::read_opt(main)?;
-    let (base_url, model) = match tool {
+    let seen = match tool {
         Tool::ClaudeCode => claude::inspect(text.as_deref()),
         Tool::Codex => codex::inspect_config(text.as_deref()),
         Tool::OpenCode => opencode::inspect(text.as_deref()),
@@ -211,10 +284,11 @@ pub fn inspect(layout: &Layout, tool: Tool) -> Result<Inspection> {
     Ok(Inspection {
         path: display(main),
         exists: text.is_some(),
-        base_url,
-        model,
+        base_url: seen.base_url,
+        model: seen.model,
         revertible: manifest.is_some(),
         applied_at: manifest.map(|m| m.at),
+        api_key: seen.api_key,
     })
 }
 
@@ -335,11 +409,7 @@ mod tests {
     }
 
     fn target(url: &str) -> Target {
-        Target {
-            base_url: url.into(),
-            api_key: "nx-secret".into(),
-            model: "claude-sonnet-5".into(),
-        }
+        Target::simple(url, "nx-secret", "claude-sonnet-5")
     }
 
     #[test]

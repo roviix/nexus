@@ -316,6 +316,8 @@ async fn spawn_with_models(ready: bool, extra_models: Vec<String>) -> Harness {
         api_key: None,
         ledger: None,
         media_jobs: None,
+        routes: Arc::default(),
+        log: None,
     });
     let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = listener.local_addr().unwrap();

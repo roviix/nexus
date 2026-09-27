@@ -1,5 +1,5 @@
 /**
- * 通道选择：网关的几条（Cursor / ChatGPT / Grok Build / Kiro），一排卡里挑一张。
+ * 通道选择：网关的几条（Cursor / ChatGPT / Grok Build / Kiro / ZCode / Qoder / Claude / 供应商），一排卡里挑一张。
  *
  * 上一版只有一张「本地网关」卡，把四队号压成了一张，选完还得靠模型名前缀猜请求会走哪条。
  * 现在每条通道各一张卡：用户指定的默认通道接裸名，其余要写 `{通道}/模型`。
@@ -10,9 +10,10 @@
  * 地址、端口这类东西不在卡上：接入页的配置块里自然会写出来，用户不该在选通道的时候先看见 `:8787`。
  */
 import type { ReactNode } from "react";
-import { defaultChannelId, laneCount, localChannels, modelsOf, type LocalChannel, type LocalChannelId } from "../gateway/channels";
+import { defaultChannelId, laneCount, localChannels, modelsOf, unitOf, type LocalChannel, type LocalChannelId } from "../gateway/channels";
 import type { LocalModel } from "../ipc/models";
 import type { GatewayStatus } from "../ipc/types";
+import { Icon } from "../ui/primitives";
 import { VendorLogo } from "./VendorLogo";
 
 type ToneKey = "live" | "uneven" | "down" | "none" | "off";
@@ -25,14 +26,20 @@ const TONE_COLOR: Record<ToneKey, string> = {
   off: "var(--color-faint)",
 };
 
-/** 通道卡上的厂商标。 */
-const LOCAL_VENDOR: Record<LocalChannelId, Parameters<typeof VendorLogo>[0]["vendor"]> = {
-  cursor: "cursor",
-  chatgpt: "openai",
-  grok: "xai",
-  kiro: "other",
-  zcode: "zhipu",
-};
+/** 通道卡上的标。供应商不是哪一家厂商，画一把钥匙。 */
+export function ChannelLogo({ id, size = 13 }: { id: LocalChannelId; size?: number }) {
+  if (id === "provider") return <Icon name="key" size={size} />;
+  const vendor: Record<Exclude<LocalChannelId, "provider">, Parameters<typeof VendorLogo>[0]["vendor"]> = {
+    cursor: "cursor",
+    chatgpt: "openai",
+    grok: "xai",
+    kiro: "other",
+    zcode: "zhipu",
+    qoder: "other",
+    claude: "anthropic",
+  };
+  return <VendorLogo vendor={vendor[id]} size={size} />;
+}
 
 export function ChannelCard({
   logo,
@@ -98,9 +105,12 @@ export function ChannelCard({
               —
             </span>
           )}
-          <span className="pill" style={{ color, borderColor: `color-mix(in oklab, ${color} 35%, var(--color-line))` }}>
-            {toneLabel ?? TONE_LABEL[tone]}
-          </span>
+          {/* 压了键的卡不再挂状态胶囊：「没有号」和「添加号」说的是同一件事，挤在一格里谁也读不清。 */}
+          {filler ? (
+            <span className="pill" style={{ color, borderColor: `color-mix(in oklab, ${color} 35%, var(--color-line))` }}>
+              {toneLabel ?? TONE_LABEL[tone]}
+            </span>
+          ) : null}
         </span>
         {aside && filler ? (
           <span className="pick-aside num truncate" title={aside}>
@@ -129,11 +139,12 @@ function localCard(ch: LocalChannel, gateway: GatewayStatus | null): { big: stri
   const aside = models ? `${models} 个模型` : undefined;
   if (!gateway) return { big: null, bigColor: "var(--color-faint)", tone: "none", aside };
   if (!running) return { big: String(total), bigColor: "var(--color-faint)", tone: "off", aside };
+  const none = ch.id === "provider" ? "还没有" : "没有号";
   if (total === 0) {
     // 默认通道没号是真没有（裸名会被拒）；其余没号只是「要写前缀才走这里」。
-    return { big: "0", bigColor: ch.isDefault ? "var(--warn)" : "var(--color-faint)", tone: ch.isDefault ? "uneven" : "none", toneLabel: "没有号", aside };
+    return { big: "0", bigColor: ch.isDefault ? "var(--warn)" : "var(--color-faint)", tone: ch.isDefault ? "uneven" : "none", toneLabel: none, aside };
   }
-  if (usable === 0) return { big: `0/${total}`, bigColor: "var(--bad)", tone: "down", toneLabel: "号都不可用", aside };
+  if (usable === 0) return { big: `0/${total}`, bigColor: "var(--bad)", tone: "down", toneLabel: "都不可用", aside };
   return { big: usable === total ? String(usable) : `${usable}/${total}`, bigColor: "var(--ok)", tone: "live", toneLabel: "可接", aside };
 }
 
@@ -148,6 +159,7 @@ export function ChannelPicker({
   gateway,
   local,
   bare,
+  plain,
   onStartGateway,
   onManageLocal,
 }: {
@@ -158,6 +170,8 @@ export function ChannelPicker({
   local?: LocalModel[] | null;
   /** 不带「通道」面板外壳，只出一排卡：外面已经有一层分步标题时用。 */
   bare?: boolean;
+  /** 连「通道 · 本机网关」那行小标题也不要：外面那一行已经写着「通道」。 */
+  plain?: boolean;
   /** 给了就在卡上出「补齐这一步」的键；不给就不出（只读的地方不该催人做事）。 */
   onStartGateway?: () => void;
   /** 某条通道没有号：Cursor 去网关页加，其余去账号页对应页签。 */
@@ -176,19 +190,19 @@ export function ChannelPicker({
             <button type="button" className="btn btn-sm" onClick={onStartGateway}>
               去开启
             </button>
-          ) : onManageLocal && gateway && running && total === 0 ? (
+          ) : onManageLocal && gateway && total === 0 ? (
             <button type="button" className="btn btn-sm" onClick={() => onManageLocal(ch.id)}>
-              添加号
+              {ch.id === "provider" ? "添加" : "添加号"}
             </button>
           ) : null;
         return (
           <ChannelCard
             key={ch.id}
-            logo={<VendorLogo vendor={LOCAL_VENDOR[ch.id]} size={13} />}
+            logo={<ChannelLogo id={ch.id} />}
             name={ch.label}
             pill={ch.isDefault ? "默认" : undefined}
             big={c.big}
-            bigSuffix=" 个号"
+            bigSuffix={` ${unitOf(ch.id)}`}
             bigColor={c.bigColor}
             tone={c.tone}
             toneLabel={c.toneLabel}
@@ -202,6 +216,7 @@ export function ChannelPicker({
     </div>
   );
 
+  if (plain) return cards;
   const note = !gateway ? "本机网关" : !running ? "本机网关 · 未开启" : "本机网关 · 运行中";
   const body = (
     <div className="chan-groups">

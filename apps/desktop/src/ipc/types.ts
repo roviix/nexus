@@ -967,8 +967,11 @@ export interface GatewayLane {
   available: GatewayAvailable[];
 }
 
-/** 网关里一条订阅通道的 id。与 Rust `channel::ChannelId` 的取值一致；也是账号页签的平台 id。 */
-export type GatewayChannelId = "chatgpt" | "grok" | "kiro" | "zcode";
+/**
+ * 网关里一条非 Cursor 通道的 id。与 Rust `channel::ChannelId` 的取值一致；也是账号页签的平台 id。
+ * `provider` 是用户自己的 API Key 供应商——它和订阅通道并列，「号」是一家家供应商。
+ */
+export type GatewayChannelId = "chatgpt" | "grok" | "kiro" | "zcode" | "qoder" | "claude" | "provider";
 
 /** 一条订阅通道的快照。与 Rust `service::ChannelSnapshot` 对齐。 */
 export interface ChannelSnapshot {
@@ -1011,10 +1014,59 @@ export interface GatewayStatus {
   restartNeeded: boolean;
   apiKeySet: boolean;
   lane: GatewayLane;
-  /** 订阅通道（ChatGPT / Grok Build / Kiro …），按选路顺序。号本身在各自的账号页签管。 */
+  /** 订阅通道（ChatGPT / Grok Build / Kiro …）与供应商通道，按选路顺序。号本身在各自的账号页签管。 */
   channels: ChannelSnapshot[];
   /** 最近的异步媒体任务（生视频），新的在前。 */
   mediaJobs: MediaJob[];
+  /** 按客户端的路由：键是 claude / codex / opencode / grok。 */
+  routes: Record<string, ClientRoute>;
+}
+
+/**
+ * 一个客户端的路由。与 Rust `routes::ClientRoute` 对齐。
+ *
+ * 客户端配置里写的是网关上它自己的口（`/client/claude`）。从那里进来的请求照这份路由选模型，
+ * 改了下一发就生效——不用重写配置、不用重启客户端。
+ */
+export interface ClientRoute {
+  /** 主模型，`{通道}/{模型}`。Claude Code 的 Sonnet 档与没单独配的档走它。 */
+  model: string;
+  /** Claude Code 另外三档；空 = 跟主模型（Fable 先跟 Opus）。 */
+  opus?: string | null;
+  haiku?: string | null;
+  fable?: string | null;
+  /** Claude Code 按 1M 上下文算预算。 */
+  context1m?: boolean;
+  /** 接入时写进客户端配置的模型名（只读，网关自己记的）。 */
+  aliases?: string[];
+}
+
+/** 最近请求的一行明细。与 Rust `reqlog::LogEntry` 对齐。 */
+export interface RequestLogEntry {
+  id: number;
+  at: string;
+  /** 从哪个客户端的口进来（claude / codex …）。直接打 `/v1` 的是 null。 */
+  client: string | null;
+  dialect: string;
+  stream: boolean;
+  /** 客户端报的模型名。 */
+  requested: string;
+  /** 按路由换算后实际要的模型；和 requested 一样时为 null。 */
+  target: string | null;
+  channel: string | null;
+  account: string | null;
+  routed: string | null;
+  ok: boolean;
+  status: number;
+  kind: string | null;
+  error: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  ttftMs: number | null;
+  durationMs: number;
+  /** 同一次请求里第几次尝试（换号 / 换一家重来时 > 1）。 */
+  attempt: number;
 }
 
 // ── ChatGPT 订阅号（本地网关的第二种号源）──────────────────────────────────────
@@ -1213,6 +1265,10 @@ export interface DeviceAccount {
   mediaOverride?: boolean | null;
   /** Grok：生效的媒体资格（覆盖 > 探测）。null = 未知，让它去撞一次。 */
   mediaEligible?: boolean | null;
+  /** Qoder：有 Personal Access Token。短票过期会用它再换，界面不需要看见票本身。 */
+  hasToken?: boolean;
+  /** Qoder：global（国际版）/ cn（国内版）。 */
+  backend?: "global" | "cn";
   createdAt: string;
   updatedAt: string;
 }
@@ -1244,16 +1300,57 @@ export type DeviceLoginState =
 /** 配置文件现在指向哪里。 */
 export type PointsTo = "local" | "other" | "none";
 
+/** 会让客户端不照配置走的一个环境变量。 */
+export interface EnvConflict {
+  name: string;
+  /** 像钥匙的只留开头几位。 */
+  value: string;
+  /** `环境变量` 或 `~/.zshrc:12`。 */
+  source: string;
+  effect: string;
+}
+
 export interface ClientState {
+  tool: "claude" | "codex" | "opencode" | "grok";
   /** 主配置文件（Claude 的 settings.json / Codex 的 config.toml）。 */
   path: string;
   exists: boolean;
   baseUrl: string | null;
+  /** Claude Code 是 Sonnet 档的显示名（接网关时就是它此刻真实走的模型）。 */
   model: string | null;
   /** 有我们留下的接入清单 —— 也就是「可以撤销」。 */
   revertible: boolean;
   appliedAt: string | null;
   pointsTo: PointsTo;
+  /** 指到的是这个客户端自己的口（按客户端路由）。老版本接入的是全局 `/v1`。 */
+  scoped: boolean;
+  /** 配置里的口令和网关现在的一致。没接到本机时为 null。 */
+  keyOk: boolean | null;
+  /** 配置里的端口和网关现在的一致。没接到本机时为 null。 */
+  portOk: boolean | null;
+  env: EnvConflict[];
+}
+
+export interface ConnectResult {
+  files: AppliedFile[];
+  /** 网关原来关着，这一步把它开了。 */
+  gatewayStarted: boolean;
+  /** 这一步把「随应用启动」打开了。 */
+  autostartEnabled: boolean;
+  /** 顺手补了 Claude Code 的首次引导标记。 */
+  onboarded: boolean;
+  baseUrl: string;
+}
+
+export interface ConnectTest {
+  ok: boolean;
+  text: string;
+  requested: string;
+  target: string | null;
+  channel: string | null;
+  account: string | null;
+  durationMs: number;
+  error: string | null;
 }
 
 export interface AppliedFile {
@@ -1266,6 +1363,44 @@ export interface AppliedFile {
 
 export interface ConnectApplied {
   files: AppliedFile[];
+}
+
+export type ApiFormat = "anthropic" | "openai_chat" | "openai_responses";
+export type AuthField = "auth_token" | "api_key";
+
+/** 一家 API Key 供应商——网关 `provider/` 通道里的一个「号」。与 Rust `key_providers::KeyProvider` 对齐。 */
+export interface KeyProvider {
+  id: string;
+  name: string;
+  website: string | null;
+  baseUrl: string;
+  apiFormat: ApiFormat;
+  authField: AuthField;
+  /** 这家能跑的上游模型 id，按用户排的顺序。 */
+  models: string[];
+  /** 停用的不进网关，配置和钥匙都留着。 */
+  enabled: boolean;
+  keyTail: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface KeyProviderInput {
+  id?: string | null;
+  name: string;
+  website?: string | null;
+  baseUrl: string;
+  apiFormat: ApiFormat;
+  authField: AuthField;
+  models: string[];
+  enabled?: boolean | null;
+  apiKey?: string | null;
+}
+
+export interface ProviderPing {
+  text: string;
+  model: string;
+  durationMs: number;
 }
 
 export interface ConnectReverted {

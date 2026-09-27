@@ -4,7 +4,8 @@
  * 这一页只有两块：
  *  1. 开没开（一个开关）。地址、端口、口令这些是接线用的字面量，默认收在「地址与口令」后面 ——
  *     客户端配置在「接入」页一键写入，用户本不该进来先看见 `127.0.0.1:8787`；
- *  2. 通道 —— 网关背后的几队号，**并列**摆：Cursor / ChatGPT / Grok Build / Kiro。
+ *  2. 通道 —— 网关背后的几队号，**并列**摆：Cursor / ChatGPT / Grok Build / Kiro / ZCode / Qoder，
+ *     以及用户自己的 API Key 供应商（它的「号」是一家家供应商）。
  *     目录主键是 `{通道}/{模型}`。出厂默认通道是 Cursor，用户可以点「设为默认」换：
  *     之后裸名或不写模型都走那条，不再按名字猜。Cursor 那一行点进去是它的号池
  *     （`#gateway/pool`）；其余通道的号在「账号」对应页签里，授权了就自动在队里。
@@ -30,10 +31,11 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { AccountCard } from "../accounts/AccountCard";
 import { AccountInspector } from "../accounts/AccountInspector";
 import { createCursorAccountView, type AccountView } from "../accounts/model";
-import { channelSummary, laneCount, localChannels, modelsOf, starved as isStarved, type LocalChannel } from "../gateway/channels";
+import { channelSummary, laneCount, localChannels, modelsOf, starved as isStarved, unitOf, type LocalChannel } from "../gateway/channels";
 import { accounts, gateway } from "../ipc/api";
 import { models as modelsApi, type LocalModel } from "../ipc/models";
-import type { Account, GatewayAvailable, GatewayCandidate, GatewaySettings, GatewayStatus, MediaJob } from "../ipc/types";
+import type { Account, GatewayAvailable, GatewayCandidate, GatewaySettings, GatewayStatus, MediaJob, RequestLogEntry } from "../ipc/types";
+import { RequestLog } from "./gateway/RequestLog";
 import { go, type AccountPlatform, type Route } from "../shell/nav";
 import { ShellIcon } from "../shell/ShellIcon";
 import { confirm } from "../ui/confirm";
@@ -56,6 +58,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
   const [openLabel, setOpenLabel] = useState<string | null>(null);
   /** 地址 / 端口 / 口令那一块默认收着。 */
   const [wiringOpen, setWiringOpen] = useState(false);
+  const [requests, setRequests] = useState<RequestLogEntry[] | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -64,9 +67,10 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
     } catch (e) {
       setError(e);
     }
-    const [k, l] = await Promise.allSettled([accounts.list(), modelsApi.local()]);
+    const [k, l, r] = await Promise.allSettled([accounts.list(), modelsApi.local(), gateway.requests(100)]);
     setKnown(k.status === "fulfilled" ? k.value : []);
     setLocal(l.status === "fulfilled" ? l.value : null);
+    setRequests(r.status === "fulfilled" ? r.value : []);
   }, []);
 
   const byEmail = useMemo(() => {
@@ -448,7 +452,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
                         </>
                       ) : (
                         <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("accounts", { platform: ch.id as AccountPlatform }))}>
-                          账号
+                          {ch.id === "provider" ? "供应商" : "账号"}
                           <Icon name="chevron" size={12} className="gw-chan-go" />
                         </button>
                       )}
@@ -458,6 +462,12 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
               );
             })}
           </div>
+
+          <RequestLog
+            entries={requests}
+            channelLabel={(id) => channels.find((c) => c.id === id)?.label ?? id}
+            onClear={() => void gateway.clearRequests().then(() => setRequests([]))}
+          />
 
           {status.mediaJobs.length > 0 ? <MediaJobsCard jobs={status.mediaJobs} /> : null}
         </div>
@@ -880,7 +890,7 @@ function ChannelRowText({ ch, text, total, models }: { ch: LocalChannel; text: s
           </code>
         ))}
         <span className="faint tiny">
-          {total > 0 ? `${total} 个号` : ch.isDefault ? "还没有号" : "没有号"}
+          {total > 0 ? `${total} ${unitOf(ch.id)}` : ch.isDefault ? "还没有号" : ch.id === "provider" ? "还没有" : "没有号"}
           {models > 0 ? ` · ${ch.chatModels.length} 个对话模型` : ""}
           {ch.imageModels.length > 0 ? ` · ${ch.imageModels.length} 个生图` : ""}
           {ch.videoModels.length > 0 ? ` · ${ch.videoModels.length} 个生视频` : ""}

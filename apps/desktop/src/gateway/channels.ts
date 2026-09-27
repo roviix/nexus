@@ -1,10 +1,10 @@
 /**
  * 网关通道的纯函数：从 `GatewayStatus` 里把所有通道摆成**同一种东西**，再算一句结论。
  *
- * 网关背后是好几队号：Cursor / ChatGPT / Grok Build / Kiro / ZCode。Rust 侧把 Cursor 放在
- * `status.lane`、其余放在 `status.channels`——那是选路实现上的主次；对用户来说它们是并列
- * 的五条通道。这里把两处并成一份 `LocalChannel[]`，Cursor 永远排第一。默认通道由用户指定，
- * 不再写死 Cursor。
+ * 网关背后是好几队号：Cursor / ChatGPT / Grok Build / Kiro / ZCode / Qoder / Claude，外加用户自己的
+ * API Key 供应商。Rust 侧把 Cursor 放在 `status.lane`、其余放在 `status.channels`——那是选路
+ * 实现上的主次；对用户来说它们是并列的通道。这里把两处并成一份 `LocalChannel[]`，Cursor 永远
+ * 排第一。默认通道由用户指定，不再写死 Cursor。
  */
 import type { LocalModel } from "../ipc/models";
 import type { ChannelSnapshot, GatewayCandidate, GatewayChannelId, GatewayLane, GatewayStatus } from "../ipc/types";
@@ -41,31 +41,45 @@ export interface LocalChannel {
  * Cursor 的模型清单不在快照里（它是静态表 + 兜底），给了 `local` 目录时按「不归任何就绪
  * 订阅通道」反推；没给就留空——网关页只关心号，不关心模型数。
  */
-export function defaultChannelId(status: GatewayStatus | null | undefined): LocalChannelId {
-  const id = status?.settings.defaultChannel;
-  if (id === "chatgpt" || id === "grok" || id === "kiro" || id === "zcode" || id === "cursor") return id;
-  return CURSOR;
+const CHANNEL_IDS: readonly LocalChannelId[] = ["cursor", "chatgpt", "grok", "kiro", "zcode", "qoder", "claude", "provider"];
+
+/** 请求前缀（含别名）→ 通道。别名 `codex/` `xai/` `glm/` 只认来源，不进目录。 */
+const PREFIX_ALIASES: Record<string, LocalChannelId> = {
+  cursor: "cursor",
+  chatgpt: "chatgpt",
+  codex: "chatgpt",
+  grok: "grok",
+  xai: "grok",
+  kiro: "kiro",
+  zcode: "zcode",
+  glm: "zcode",
+  qoder: "qoder",
+  "qoder-cn": "qoder",
+  claude: "claude",
+  provider: "provider",
+};
+
+export function isChannelId(id: string | null | undefined): id is LocalChannelId {
+  return !!id && (CHANNEL_IDS as readonly string[]).includes(id);
 }
 
-/** `{通道}/{模型}` 的第一段。别名 `codex/` `xai/` 只认来源，不进目录。对不上已知通道时当裸名。 */
+export function defaultChannelId(status: GatewayStatus | null | undefined): LocalChannelId {
+  const id = status?.settings.defaultChannel;
+  return isChannelId(id) ? id : CURSOR;
+}
+
+/** `{通道}/{模型}` 的第一段。对不上已知通道时当裸名（供应商的模型 id 自己也可能带斜杠）。 */
 export function splitModelId(id: string): { channel: LocalChannelId | null; name: string } {
   const slash = id.indexOf("/");
   if (slash <= 0) return { channel: null, name: id };
-  const head = id.slice(0, slash).toLowerCase();
-  const channel: LocalChannelId | null =
-    head === "cursor"
-      ? "cursor"
-      : head === "chatgpt" || head === "codex"
-        ? "chatgpt"
-        : head === "grok" || head === "xai"
-          ? "grok"
-          : head === "kiro"
-            ? "kiro"
-            : head === "zcode" || head === "glm"
-              ? "zcode"
-              : null;
+  const channel = PREFIX_ALIASES[id.slice(0, slash).toLowerCase()] ?? null;
   if (channel) return { channel, name: id.slice(slash + 1) };
   return { channel: null, name: id };
+}
+
+/** 通道里「号」的量词：供应商按家数，别的按号数。 */
+export function unitOf(id: LocalChannelId): string {
+  return id === "provider" ? "家" : "个号";
 }
 
 export function localChannels(status: GatewayStatus | null | undefined, local?: LocalModel[] | null): LocalChannel[] {
@@ -169,6 +183,11 @@ export function channelSummary(
     return { text: `${usable} / ${total} 个号可接${current ? ` · 正在用 ${current.label}` : ""}`, tone: "ok" };
   }
   const prefix = `${ch.id}/`;
+  if (ch.id === "provider") {
+    if (total === 0) return { text: `还没有供应商 · 加一把 API Key，写成 ${prefix}模型 就走它`, tone: "default" };
+    if (usable === 0) return { text: `${total} 家都在歇着 · ${prefix}… 请求会被拒`, tone: "warn" };
+    return { text: `${usable} / ${total} 家可接${current ? ` · 正在用 ${current.label}` : ""}`, tone: "ok" };
+  }
   if (total === 0) return { text: `没有 ${ch.label} 账号 · 写成 ${prefix}… 才走这里`, tone: "default" };
   if (usable === 0) return { text: `${total} 个 ${ch.label} 账号都不可用 · ${prefix}… 请求会被拒`, tone: "warn" };
   const media = ch.imageModels.length + ch.videoModels.length > 0 ? (ch.mediaReady ? " · 可出图 / 出视频" : " · 无号可出媒体") : "";

@@ -16,7 +16,7 @@
 </div>
 
 Nexus is a Rust + Tauri v2 desktop app for macOS and Windows. It runs a gateway on `127.0.0.1`
-that uses **your own** Cursor / ChatGPT / Grok / Kiro / ZCode accounts as upstreams and speaks the standard
+that uses **your own** Cursor / ChatGPT / Grok / Kiro / ZCode / Qoder accounts as upstreams and speaks the standard
 `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/models` and `/v1/images/generations`.
 Anything that talks the OpenAI or Anthropic dialect — Claude Code, Codex CLI, OpenCode, the official
 SDKs, plain `curl` — can point at it directly. No API key to apply for.
@@ -42,19 +42,27 @@ account system, no telemetry.
   `count_tokens`), OpenAI Responses, OpenAI Images. Inbound requests are parsed into a single
   intermediate representation and then bridged to the upstream; streaming SSE passes through as-is.
 - **Multiple upstreams.** Cursor (`aiserver.v1.InferenceService/Stream`), ChatGPT subscriptions
-  (`chatgpt.com/backend-api/codex`), Grok, Kiro and ZCode (Zhipu GLM coding plan). `/v1/models`
-  aggregates the catalogue according to what each upstream can actually do.
+  (`chatgpt.com/backend-api/codex`), Grok, Kiro, ZCode (Zhipu GLM coding plan) and Qoder.
+  `/v1/models` aggregates the catalogue according to what each upstream can actually do.
+- **API key providers, too.** DeepSeek, Kimi, Zhipu, OpenRouter, SiliconFlow or any OpenAI /
+  Anthropic-compatible endpoint form one more channel, `provider/`. When several providers list the
+  same model they relay in order: a rejected key, an empty balance, a rate limit or a dead endpoint
+  moves the next request to the next provider. When the client and the provider speak the same
+  dialect the request is passed through untouched, so `cache_control` and `thinking` survive.
 - **The channel is part of the model name.** Catalogue entries are keyed as `{channel}/{model}`
   (`cursor/claude-opus-5`, `chatgpt/gpt-5`). A prefixed name is forced onto that channel; a bare name
   goes to **the default channel you picked**. Which pool a request lands on is visible and editable
-  rather than something the gateway infers.
+  rather than something the gateway infers. Clients set up with one click get routes of their own
+  (see below).
 - **Quota relay, not load balancing.** One user, one machine — one account is enough at any moment.
   Nexus keeps using the current account and only moves to the next when the quota runs out.
   Session stickiness therefore comes for free and accounts rotate very rarely.
 - **Model name mapping.** Claude Code sends `claude-sonnet-4-5`, Codex sends `gpt-5`; the gateway
   maps those to names the upstream recognises. You can also force every request onto one model.
 - **A request ledger.** Every request records account, model, tokens and latency. The overview page
-  reads from it.
+  reads from it. The gateway page also lists recent requests: which channel and account each attempt
+  landed on and, on failure, what the upstream said — including requests turned away before they
+  reached a pool (wrong token, empty pool).
 
 ![Local gateway](docs/images/gateway.png)
 
@@ -70,9 +78,21 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 ### One-click client setup
 
 The "connect" page edits your client config files directly — Claude Code
-(`~/.claude/settings.json`), Codex CLI (`~/.codex/config.toml`), OpenCode — pointing them at the
-local gateway. It backs the file up first and every change is revertible. Only our keys are touched;
-if the file isn't valid JSON/TOML to begin with, Nexus refuses to edit it rather than guess.
+(`~/.claude/settings.json`), Codex CLI (`~/.codex/config.toml`), OpenCode, Grok CLI — pointing them at
+the local gateway. It backs the file up first and every change is revertible. Only our keys are
+touched; if the file isn't valid JSON/TOML to begin with, Nexus refuses to edit it rather than guess.
+
+- **One route per client.** Claude Code on Cursor and Codex on ChatGPT can both be true at once. The
+  config points at a per-client address (`/client/claude`); change the channel or model in the app
+  afterwards and the next request follows it — no config rewrite, no client restart.
+- **Claude Code's four tiers, separately.** Sonnet / Opus / Haiku / Fable can each point at a model,
+  across channels; the `/model` menu shows the real model names.
+- **Works as soon as it's written.** If the gateway is off it is started and set to launch with Nexus;
+  Claude Code skips its first-run login flow. "Test" sends a real request down the client's own path
+  and reports which channel and account served it.
+- **Tells you what's wrong.** A token or port in the config that no longer matches the gateway, or a
+  shell variable such as `ANTHROPIC_BASE_URL` that overrides the config file, is called out on the
+  page.
 
 ![Connect](docs/images/connect.png)
 
@@ -85,6 +105,8 @@ if the file isn't valid JSON/TOML to begin with, Nexus refuses to edit it rather
   reads the credentials it leaves behind (`~/.zcode/v2/credentials.json`, AES-256-GCM). Individual
   and team plans under one credential file become separate accounts — their quotas are separate.
   You can also paste a `{apiKeyId}.{apiKeySecret}` pair yourself.
+- Qoder accounts are imported by pasting PATs, one per line; the international and China editions
+  each use their own gateway.
 - See plan, quota and reset times. Expired, banned and exhausted accounts are flagged automatically.
 - Quota and billing are two separate cards: one for what's left and when it resets, one for list
   price, discounts, next charge and past invoices. They are different units and are never merged
@@ -224,8 +246,9 @@ credentials — delete them when you're done.**
 │   ├── nexus-grok/ nexus-grokbot/  # Grok accounts and Grok Bot quota
 │   ├── nexus-kiro/                 # Kiro accounts
 │   ├── nexus-zcode/                # ZCode (Zhipu GLM): credentials imported from the official client
-│   ├── nexus-gateway/              # the local gateway: dialect port, quota relay, ledger
-│   ├── nexus-connect/              # one-click setup for Claude Code / Codex / OpenCode
+│   ├── nexus-qoder/                # Qoder accounts and chat protocol
+│   ├── nexus-gateway/              # the local gateway: dialect port, quota relay, providers, per-client routes, ledger
+│   ├── nexus-connect/              # one-click setup for Claude Code / Codex / OpenCode / Grok CLI
 │   ├── nexus-playground/           # playground thread and message storage
 │   ├── nexus-sand/                 # Sand patch engine (local + remote over SSH)
 │   └── nexus-crsr/                 # CRSR patch: native Agent panel on a crsr_ API key

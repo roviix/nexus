@@ -2,7 +2,7 @@
 //!
 //! 写法对齐 sub2api / CLIProxyAPI 给 Grok CLI 写的那份：一个 named model，走 Responses。
 
-use crate::Target;
+use crate::{Seen, Target};
 use nexus_core::{AppError, Result};
 use toml_edit::{value, DocumentMut, Item, Table};
 
@@ -44,23 +44,24 @@ pub fn merge(existing: Option<&str>, t: &Target) -> Result<String> {
     Ok(doc.to_string())
 }
 
-pub fn inspect(existing: Option<&str>) -> (Option<String>, Option<String>) {
+pub fn inspect(existing: Option<&str>) -> Seen {
     let Some(text) = existing else {
-        return (None, None);
+        return Seen::default();
     };
     let Ok(doc) = text.parse::<DocumentMut>() else {
-        return (None, None);
+        return Seen::default();
     };
     let grok = doc.get("model").and_then(|m| m.get("grok"));
-    let base = grok
-        .and_then(|t| t.get("base_url"))
-        .and_then(Item::as_str)
-        .map(str::to_string);
-    let model = grok
-        .and_then(|t| t.get("model"))
-        .and_then(Item::as_str)
-        .map(str::to_string);
-    (base, model)
+    let field = |k: &str| {
+        grok.and_then(|t| t.get(k))
+            .and_then(Item::as_str)
+            .map(str::to_string)
+    };
+    Seen {
+        base_url: field("base_url"),
+        model: field("model"),
+        api_key: field("api_key"),
+    }
 }
 
 pub fn strip(existing: &str) -> Result<Option<String>> {
@@ -98,11 +99,7 @@ mod tests {
     use super::*;
 
     fn t() -> Target {
-        Target {
-            base_url: "http://127.0.0.1:8787/v1".into(),
-            api_key: "nx-x".into(),
-            model: "grok-4.5".into(),
-        }
+        Target::simple("http://127.0.0.1:8787/v1", "nx-x", "grok-4.5")
     }
 
     #[test]
@@ -111,8 +108,9 @@ mod tests {
         assert!(out.contains("default = \"grok\""));
         assert!(out.contains("api_backend = \"responses\""));
         assert!(out.contains("base_url = \"http://127.0.0.1:8787/v1\""));
-        let (base, model) = inspect(Some(&out));
-        assert_eq!(base.as_deref(), Some("http://127.0.0.1:8787/v1"));
-        assert_eq!(model.as_deref(), Some("grok-4.5"));
+        let seen = inspect(Some(&out));
+        assert_eq!(seen.base_url.as_deref(), Some("http://127.0.0.1:8787/v1"));
+        assert_eq!(seen.model.as_deref(), Some("grok-4.5"));
+        assert_eq!(seen.api_key.as_deref(), Some("nx-x"));
     }
 }

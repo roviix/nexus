@@ -16,7 +16,7 @@
 </div>
 
 Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.0.0.1` 上起一个本地网关，
-用你自己的 Cursor / ChatGPT / Grok / Kiro / ZCode 账号做上游，对外暴露标准的
+用你自己的 Cursor / ChatGPT / Grok / Kiro / ZCode / Qoder 账号做上游，对外暴露标准的
 `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/models`、`/v1/images/generations`。
 任何讲 OpenAI 或 Anthropic 方言的客户端——Claude Code、Codex CLI、OpenCode、官方 SDK、`curl`——
 都可以直接指到它上面，不需要再申请一把 API key。
@@ -36,16 +36,20 @@ Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.
 - **一个端口，四种方言。** OpenAI Chat Completions、Anthropic Messages（含 `count_tokens`）、
   OpenAI Responses、OpenAI Images。入站统一解析成一份中间表示再桥接到上游，流式 SSE 原样支持。
 - **多平台上游。** Cursor（`aiserver.v1.InferenceService/Stream`）、ChatGPT 订阅号
-  （`chatgpt.com/backend-api/codex`）、Grok、Kiro、ZCode（智谱 GLM 编码套餐）。
+  （`chatgpt.com/backend-api/codex`）、Grok、Kiro、ZCode（智谱 GLM 编码套餐）、Qoder。
   模型目录（`/v1/models`）按上游能力自动汇总。
+- **也能接 API Key 供应商。** DeepSeek、Kimi、智谱、OpenRouter、硅基流动或任意 OpenAI / Anthropic
+  兼容地址，是网关里的一条通道 `provider/`。同一个模型几家都有时按顺序接力：钥匙被拒、余额不足、
+  限流、连不上就换下一家。客户端和供应商协议一致时原样透传，`cache_control`、`thinking` 不丢。
 - **通道写在模型名里。** 目录主键是 `{通道}/{模型}`（`cursor/claude-opus-5`、`chatgpt/gpt-5`），
   带前缀就强制走那条通道；不带前缀的走**你自己设的默认通道**。请求落到哪条号池是看得见、
-  改得动的，不靠网关猜。
+  改得动的，不靠网关猜。一键接入的客户端另有自己的路由（见下）。
 - **额度接力，不是负载均衡。** 一直用当前号，额度到线自动切到下一个；会话粘性天然成立，
   换号频率极低。
 - **模型名映射。** Claude Code 发 `claude-sonnet-4-5`、Codex 发 `gpt-5`，网关把它们对到上游认识的
   名字；也可以强制所有请求走某个模型。
-- **请求账本。** 每次请求记账号 / 模型 / token / 耗时，概览页看本地用量。
+- **请求账本。** 每次请求记账号 / 模型 / token / 耗时，概览页看本地用量。网关页另有「最近请求」：
+  每次尝试落到哪条通道哪个号、失败时上游的原话，连口令不对、号池空这种没进号池的也在。
 
 ![本地网关](docs/images/gateway.png)
 
@@ -61,7 +65,17 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 ### 一键接入
 
 「接入」页直接改客户端的配置文件，把 Claude Code（`~/.claude/settings.json`）、
-Codex CLI（`~/.codex/config.toml`）、OpenCode 指到本地网关上；改之前先备份，一键可还原。
+Codex CLI（`~/.codex/config.toml`）、OpenCode、Grok CLI 指到本地网关上；改之前先备份，一键可还原。
+
+- **每个客户端一条自己的路由。** Claude Code 走 Cursor、Codex 走 ChatGPT 可以同时成立。配置里写的是
+  这个客户端专属的地址（`/client/claude`），之后在接入页换通道、换模型，下一条请求就生效，
+  不用重写配置、不用重启客户端。
+- **Claude Code 四档分开配。** Sonnet / Opus / Haiku / Fable 各指一个模型，可以跨通道；`/model`
+  菜单里显示真实模型名。
+- **写完就能用。** 网关没开会顺手开起来并设成随 Nexus 启动；Claude Code 跳过首次登录引导。
+  「测一下」按客户端自己的路径发一条真请求，回报落到哪条通道、哪个号。
+- **看得出哪里不对。** 配置里的口令或端口和网关对不上、shell 里有 `ANTHROPIC_BASE_URL` 这类会盖过
+  配置文件的环境变量，页上直接说出来。
 
 ![接入](docs/images/connect.png)
 
@@ -72,6 +86,7 @@ Codex CLI（`~/.codex/config.toml`）、OpenCode 指到本地网关上；改之�
 - ZCode 账号没有单独的授权流程：在官方 ZCode 客户端里登录一次，Nexus 直接读它留下的凭证
   （`~/.zcode/v2/credentials.json`，AES-256-GCM）。一份凭证里的个人版 / 团队版是两条独立的号——
   额度是分开的。也可以自己贴一把 `{apiKeyId}.{apiKeySecret}`。
+- Qoder 账号贴 PAT 导入（一行一个），国际版 / 国内版各走各的网关。
 - 查看订阅、额度、重置时间；到期 / 封禁 / 额度耗尽自动标记。
 - 额度和账单分两张卡：一张是还剩多少、什么时候重置，另一张是标价、券、下次扣多少、历史发票。
   两者不是一个口径，不叠成一个数。
@@ -194,8 +209,9 @@ node scripts/test-package-release.mjs
 │   ├── nexus-grok/ nexus-grokbot/  # Grok 账号与 Grok Bot 额度
 │   ├── nexus-kiro/                 # Kiro 账号
 │   ├── nexus-zcode/                # ZCode（智谱 GLM）账号：从官方客户端导入凭证
-│   ├── nexus-gateway/              # 本地网关：方言口 + 额度接力 + 账本
-│   ├── nexus-connect/              # 一键接入：改 Claude Code / Codex / OpenCode 配置
+│   ├── nexus-qoder/                # Qoder 账号与聊天协议
+│   ├── nexus-gateway/              # 本地网关：方言口 + 额度接力 + 供应商通道 + 按客户端路由 + 账本
+│   ├── nexus-connect/              # 一键接入：改 Claude Code / Codex / OpenCode / Grok CLI 配置
 │   ├── nexus-playground/           # 游乐场的线程 / 消息存储
 │   ├── nexus-sand/                 # Sand 补丁引擎（本机 + 远程 SSH）
 │   └── nexus-crsr/                 # CRSR 补丁：原生 Agent 面板走 crsr_ API Key

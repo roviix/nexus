@@ -26,6 +26,7 @@ const base: GatewayStatus = {
     },
   ],
   mediaJobs: [],
+  routes: {},
   lane: { current: null, candidates: [], missing: [], available: [] },
 };
 

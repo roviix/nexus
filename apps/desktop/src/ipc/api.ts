@@ -24,8 +24,14 @@ import type {
   ChatGptManifestModel,
   ChatGptUsage,
   GatewayChannelId,
+  ClientRoute,
   ClientState,
-  ConnectApplied,
+  ConnectResult,
+  ConnectTest,
+  KeyProvider,
+  KeyProviderInput,
+  ProviderPing,
+  RequestLogEntry,
   ConnectReverted,
   DeviceAccount,
   DeviceLoginHandle,
@@ -312,6 +318,12 @@ export const grokbot = {
    * 会给这个号建（或唤醒）一个 Box pod。
    */
   mintForAccount: (id: string) => call<GrokBotDirectMinted>("grokbot_mint_for_account", { id }),
+  /**
+   * 把这个号写成 Grok Bot 客户端的活跃登录并重启客户端。
+   * 有 refresh，或还活着的桌面 session 即可；网站 web 会话不行。
+   */
+  switchClient: (id: string) =>
+    call<{ email: string; slot: string }>("grokbot_switch_client", { id }),
   /** 手动续一次 token（正常不需要，补丁 / 网关会自己续）。 */
   renewDirect: () => call<GrokBotDirectMinted>("grokbot_renew_direct"),
   clearDirect: () => call<void>("grokbot_clear_direct"),
@@ -376,6 +388,9 @@ export const gateway = {
   channelResetLane: (channel: GatewayChannelId) => call<GatewayStatus>("gateway_channel_reset_lane", { channel }),
   /** 最近的异步媒体任务（生视频）。 */
   mediaJobs: (limit = 20) => call<MediaJob[]>("gateway_media_jobs", { limit }),
+  /** 最近请求的明细（只在内存里，新的在前）。 */
+  requests: (limit = 100) => call<RequestLogEntry[]>("gateway_requests", { limit }),
+  clearRequests: () => call<void>("gateway_clear_requests"),
   /** 口令的唯一出口。用户显式点「显示 / 复制」才调。 */
   revealKey: () => call<string>("gateway_reveal_key"),
   rotateKey: () => call<string>("gateway_rotate_key"),
@@ -473,21 +488,83 @@ export const zcode = {
   resetLane: () => gateway.channelResetLane("zcode"),
 };
 
+/**
+ * Claude 订阅。OAuth / setup-token / Console API Key 直连 api.anthropic.com 的 Messages。
+ * OAuth 出站按 Claude Code 指纹发，用量记在套餐额度。
+ * 授权是 PKCE：本机 54545 在听时同意后自动完成，端口被占再贴回调地址。
+ * 也可以导入本机 Claude Code 的凭证文件或钥匙串。
+ */
+export const claude = {
+  list: () => call<DeviceAccount[]>("claude_list"),
+  loginStart: (note?: string) =>
+    call<{ loginId: string; authorizeUrl: string; callbackListening: boolean }>("claude_login_start", { note }),
+  loginCancel: () => call<void>("claude_login_cancel"),
+  importText: (text: string, note?: string) => call<{ accounts: DeviceAccount[]; skipped: string[] }>("claude_import_text", { text, note }),
+  probeLocal: () => call<{ present: boolean; path: string; also?: string | null }>("claude_probe_local"),
+  importLocal: (note?: string) => call<{ accounts: DeviceAccount[]; skipped: string[] }>("claude_import_local", { note }),
+  refreshQuota: (id: string) => call<DeviceAccount>("claude_refresh_quota", { id }),
+  remove: (id: string) => call<void>("claude_remove", { id }),
+  setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("claude_set_enabled", { id, enabled }),
+  setNote: (id: string, note: string | null) => call<DeviceAccount>("claude_set_note", { id, note }),
+  setCurrent: (label: string) => gateway.channelSetCurrent("claude", label),
+  resetLane: () => gateway.channelResetLane("claude"),
+};
+
+/**
+ * Qoder。聊天走官方网关的 COSY 签名 SSE，不经过 qodercli。没有设备码登录：贴一把
+ * Personal Access Token，国际版和国内版各算一个号。
+ */
+export const qoder = {
+  list: () => call<DeviceAccount[]>("qoder_list"),
+  importText: (text: string, note?: string, backend?: string) =>
+    call<ZcodeImportReport>("qoder_import_text", { text, note, backend }),
+  remove: (id: string) => call<void>("qoder_remove", { id }),
+  setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("qoder_set_enabled", { id, enabled }),
+  setNote: (id: string, note: string | null) => call<DeviceAccount>("qoder_set_note", { id, note }),
+  setCurrent: (label: string) => gateway.channelSetCurrent("qoder", label),
+  resetLane: () => gateway.channelResetLane("qoder"),
+};
+
 // ── 一键接入 ─────────────────────────────────────────────────────────────────
 
-/** 只有 Claude Code / Codex 有能直接写的配置文件。 */
+/** 有能直接写的配置文件的客户端。 */
 export type ConnectTool = "claude" | "codex" | "opencode" | "grok";
 
 export const connect = {
   /** 这个工具的配置现在指向哪。不改任何东西。 */
   inspect: (tool: ConnectTool) => call<ClientState>("connect_inspect", { tool }),
+  /** 四个客户端一起查。 */
+  inspectAll: () => call<ClientState[]>("connect_inspect_all"),
   /**
-   * 把工具接到本地网关上：Rust 侧自己解出地址与钥匙、备份原文件、合并写入。
-   * 钥匙不经过前端。返回写了哪些文件。
+   * 接入 / 更新接入：记下这个客户端的路由、确保网关开着、备份原文件、合并写入。
+   * 钥匙不经过前端。已经接好的客户端改路由也调它——路由即时生效，配置里的显示名跟着更新。
    */
-  apply: (tool: ConnectTool, model: string) => call<ConnectApplied>("connect_apply", { tool, model }),
+  apply: (tool: ConnectTool, route: ClientRoute) => call<ConnectResult>("connect_apply", { tool, route }),
   /** 撤销：按清单还原备份 / 删掉我们建的文件；没清单就只剔我们的键。 */
   revert: (tool: ConnectTool) => call<ConnectReverted>("connect_revert", { tool }),
+  /** 照这个客户端的样子（同一个口、同一种方言、配置里那个模型名）发一句。 */
+  test: (tool: ConnectTool, prompt?: string) => call<ConnectTest>("connect_test", { tool, prompt: prompt ?? null }),
+};
+
+export const keyProviders = {
+  list: () => call<KeyProvider[]>("key_providers_list"),
+  save: (input: KeyProviderInput) => call<KeyProvider>("key_providers_save", { input }),
+  setEnabled: (id: string, enabled: boolean) => call<KeyProvider>("key_providers_set_enabled", { id, enabled }),
+  remove: (id: string) => call<void>("key_providers_delete", { id }),
+  reveal: (id: string) => call<string>("key_providers_reveal", { id }),
+  models: (query: {
+    baseUrl: string;
+    apiFormat: KeyProvider["apiFormat"];
+    authField: KeyProvider["authField"];
+    apiKey?: string | null;
+    providerId?: string | null;
+  }) => call<string[]>("key_providers_models", { query }),
+  /** 直接打这家（不经过网关）：钥匙、地址、模型通不通。模型空着测清单里第一个。 */
+  ping: (providerId: string, model?: string | null) =>
+    call<ProviderPing>("key_providers_ping", { query: { providerId, model: model ?? null } }),
+  /** 让这家排到它所有模型的最前面（网关「用这家」）。 */
+  prefer: (name: string) => gateway.channelSetCurrent("provider", name),
+  resetLane: () => gateway.channelResetLane("provider"),
 };
 
 // ── 权限预检 ────────────────────────────────────────────────────────────────
@@ -510,6 +587,7 @@ export const EVENTS = {
   switchProgress: "switcher://progress",
   oauthState: "oauth://state",
   chatgptLogin: "chatgpt://login",
+  claudeLogin: "claude://login",
   grokLogin: "grok://login",
   kiroLogin: "kiro://login",
   accountRefreshed: "accounts://refreshed",
@@ -541,6 +619,16 @@ export function onOauthState(cb: (s: OauthState) => void): Promise<UnlistenFn> {
 
 export function onChatGptLogin(cb: (s: ChatGptLoginState) => void): Promise<UnlistenFn> {
   return listen<ChatGptLoginState>(EVENTS.chatgptLogin, (e) => cb(e.payload));
+}
+
+export type ClaudeLoginState =
+  | { state: "waiting"; sessionId: string; elapsedSecs: number }
+  | { state: "succeeded"; sessionId: string }
+  | { state: "failed"; sessionId: string; message: string; hint: string | null }
+  | { state: "cancelled"; sessionId: string };
+
+export function onClaudeLogin(cb: (s: ClaudeLoginState) => void): Promise<UnlistenFn> {
+  return listen<ClaudeLoginState>(EVENTS.claudeLogin, (e) => cb(e.payload));
 }
 
 export function onGrokLogin(cb: (s: DeviceLoginState) => void): Promise<UnlistenFn> {

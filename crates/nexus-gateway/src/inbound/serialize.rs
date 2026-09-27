@@ -11,6 +11,17 @@ use crate::normalized::{Completion, FinishReason, ToolCall, ToolDef, Usage};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+/// Kiro 不签发 Anthropic 的思考签名。用正文的 sha256 占位，Claude Code 才肯收下这块。
+fn thinking_signature(text: &str) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    if text.is_empty() {
+        return String::new();
+    }
+    let digest = sha2::Sha256::digest(text.as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(digest)
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -131,6 +142,8 @@ pub struct Serializer {
     block_index: u32,
     text_block_open: bool,
     thinking_block_open: bool,
+    /// 这一段思考的正文，用来在关上块之前补 `signature_delta`。
+    thinking_buf: String,
     sent_text: String,
     /// 客户端声明过的工具（名字 → 语法 / 命名空间元数据）。不在这里的调用不能回给它——
     /// 它既执行不了，也没法带回结果。
@@ -170,6 +183,7 @@ impl Serializer {
             block_index: 0,
             text_block_open: false,
             thinking_block_open: false,
+            thinking_buf: String::new(),
             sent_text: String::new(),
             client_tools: client_tools
                 .iter()
@@ -331,6 +345,15 @@ impl Serializer {
 
     fn close_thinking(&mut self, out: &mut Vec<SseFrame>) {
         if self.thinking_block_open {
+            if !self.thinking_buf.is_empty() {
+                let signature = thinking_signature(&self.thinking_buf);
+                self.thinking_buf.clear();
+                out.push(SseFrame::json(
+                    Some("content_block_delta"),
+                    &json!({ "type": "content_block_delta", "index": self.block_index,
+                             "delta": { "type": "signature_delta", "signature": signature } }),
+                ));
+            }
             out.push(SseFrame::json(
                 Some("content_block_stop"),
                 &json!({ "type": "content_block_stop", "index": self.block_index }),
@@ -651,6 +674,7 @@ impl Serializer {
                     ));
                     self.thinking_block_open = true;
                 }
+                self.thinking_buf.push_str(delta);
                 out.push(SseFrame::json(
                     Some("content_block_delta"),
                     &json!({ "type": "content_block_delta", "index": self.block_index,
@@ -858,7 +882,7 @@ impl Serializer {
                 let mut content = Vec::new();
                 if !c.thinking.is_empty() {
                     content.push(
-                        json!({ "type": "thinking", "thinking": c.thinking, "signature": "" }),
+                        json!({ "type": "thinking", "thinking": c.thinking, "signature": thinking_signature(&c.thinking) }),
                     );
                 }
                 if !c.text.is_empty() {
@@ -1022,6 +1046,7 @@ mod tests {
                 "ping",
                 "content_block_start",
                 "content_block_delta", // thinking 块
+                "content_block_delta", // signature_delta
                 "content_block_stop",
                 "content_block_start",
                 "content_block_delta", // 切到 text 块
@@ -1034,10 +1059,13 @@ mod tests {
         let start = parse(&all[2]);
         assert_eq!(start["content_block"]["type"], "thinking");
         assert_eq!(start["index"], 0);
-        let text_start = parse(&all[5]);
+        let signature = parse(&all[4]);
+        assert_eq!(signature["delta"]["type"], "signature_delta");
+        assert_eq!(signature["delta"]["signature"], thinking_signature("hmm"));
+        let text_start = parse(&all[6]);
         assert_eq!(text_start["content_block"]["type"], "text");
         assert_eq!(text_start["index"], 1, "块序号递增");
-        let delta = parse(&all[9]);
+        let delta = parse(&all[10]);
         assert_eq!(delta["delta"]["stop_reason"], "end_turn");
         assert_eq!(delta["usage"]["cache_read_input_tokens"], 3);
     }
@@ -1243,6 +1271,7 @@ mod tests {
         let body = a.final_json(&c);
         assert_eq!(body["type"], "message");
         assert_eq!(body["content"][0]["type"], "thinking");
+        assert_eq!(body["content"][0]["signature"], thinking_signature("t"));
         assert_eq!(body["content"][1]["text"], "txt");
         assert_eq!(
             body["content"][2]["input"]["_raw"], "not json",

@@ -27,10 +27,14 @@ export type Section =
   | "settings";
 
 /**
- * 账号页的两个平台。Cursor 的号能切进 IDE、能进切号池 / 网关号池；ChatGPT 的号
- * 只有一个用途——给本机网关跑 Codex 模型。Grok Build / Kiro / ZCode 同样只喂网关，各自一页签。
+ * 账号页的平台页签，也是网关通道的 id。Cursor 的号能切进 IDE、能进切号池 / 网关号池；
+ * 其余几家的号只喂本机网关。供应商（`provider`）是用户自己的 API Key——它同样是一条通道，
+ * 「号」是一家家供应商，所以和它们并列一页签。
  */
-export type AccountPlatform = "cursor" | "chatgpt" | "grok" | "kiro" | "zcode";
+export type AccountPlatform = "cursor" | "chatgpt" | "grok" | "kiro" | "zcode" | "qoder" | "claude" | "provider";
+
+/** 能一键写配置的客户端。接入页按它选中哪一个。 */
+export type ClientId = "claude" | "codex" | "opencode" | "grok";
 
 /**
  * 游乐场的三个子项。对话与图片是两种会话（走的接口不同：chat completions / images），
@@ -74,6 +78,8 @@ export interface Route {
   email?: string;
   /** 只对 `accounts` 有意义：哪个平台的号。缺省是 Cursor。 */
   platform?: AccountPlatform;
+  /** 只对 `connect` 有意义：选中哪个客户端。缺省是 Claude Code。 */
+  client?: ClientId;
   /** 只对 `playground` 有意义：哪个子项。缺省由页面按上次停留的地方决定。 */
   view?: PlaygroundView;
   /** 只对 `settings` 有意义：哪个页签。缺省是通用。 */
@@ -139,14 +145,19 @@ export interface AccountPlatformMeta {
   label: string;
 }
 
-/** 账号页顶部的平台页签。 */
+/** 账号页顶部的平台页签。供应商排最后：它是用户自己的 API Key，不是某个平台的订阅号。 */
 export const ACCOUNT_PLATFORMS: AccountPlatformMeta[] = [
   { id: "cursor", label: "Cursor" },
   { id: "chatgpt", label: "ChatGPT" },
   { id: "grok", label: "Grok Build" },
   { id: "kiro", label: "Kiro" },
   { id: "zcode", label: "ZCode" },
+  { id: "qoder", label: "Qoder" },
+  { id: "claude", label: "Claude" },
+  { id: "provider", label: "供应商" },
 ];
+
+export const CLIENT_IDS: ClientId[] = ["claude", "codex", "opencode", "grok"];
 
 export interface SettingsTabMeta {
   id: SettingsTab;
@@ -230,6 +241,10 @@ export function parseRoute(hash: string): Route {
     if (model) route.model = model;
     const channel = query.get("channel")?.trim();
     if (channel) route.channel = channel;
+    // 上一版供应商不是通道，接入页地址里带的是 `?provider=<id>`：落到供应商通道。
+    if (!channel && query.get("provider")?.trim()) route.channel = "provider";
+    const client = query.get("client")?.trim();
+    if (section === "connect" && client && (CLIENT_IDS as string[]).includes(client)) route.client = client as ClientId;
   }
   if (VIEWED.has(section)) {
     if (VIEW_IDS.has(tail)) route.view = tail as PlaygroundView;
@@ -254,6 +269,7 @@ export function routeHash(r: Route): string {
   let hash = `#${r.section}`;
   if (CHANNELED.has(r.section)) {
     const q = new URLSearchParams();
+    if (r.section === "connect" && r.client) q.set("client", r.client);
     if (r.channel) q.set("channel", r.channel);
     if (r.model) q.set("model", r.model);
     const qs = q.toString();
@@ -277,6 +293,7 @@ export function go(
   opts?: {
     channel?: string;
     model?: string;
+    client?: ClientId;
     email?: string;
     platform?: AccountPlatform;
     view?: PlaygroundView;
@@ -288,6 +305,7 @@ export function go(
   const r: Route = { section };
   if ((CHANNELED.has(section) || VIEWED.has(section)) && opts?.model?.trim()) r.model = opts.model.trim();
   if (CHANNELED.has(section) && opts?.channel?.trim()) r.channel = opts.channel.trim();
+  if (section === "connect" && opts?.client) r.client = opts.client;
   if (VIEWED.has(section) && opts?.view) r.view = opts.view;
   if (EMAILED.has(section) && opts?.email?.trim()) r.email = opts.email.trim();
   if (PLATFORMED.has(section) && opts?.platform) r.platform = opts.platform;

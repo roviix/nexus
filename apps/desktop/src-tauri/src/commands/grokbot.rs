@@ -9,9 +9,10 @@
 use crate::commands::switcher::run_blocking;
 use crate::state::AppState;
 use nexus_accounts::{Account, NewAccount};
-use nexus_core::{AccountId, Result};
+use nexus_core::{AccountId, AppError, Result};
 use nexus_grokbot::{
-    BoxRelayDescriptor, CuaProbe, GrokBotIdentity, GrokBotStatus, StreamCredential, CUA_PROBE_MODEL,
+    app, install_active_login, BoxRelayDescriptor, ClientLogin, CuaProbe, GrokBotIdentity,
+    GrokBotStatus, StreamCredential, CUA_PROBE_MODEL,
 };
 use nexus_store::activity;
 use serde::Serialize;
@@ -136,6 +137,71 @@ pub async fn grokbot_mint_direct(state: State<'_, AppState>) -> Result<DirectMin
         ),
     );
     Ok(DirectMinted::from(cred))
+}
+
+/// 界面用的客户端切号结果（不含 token）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientSwitched {
+    pub email: String,
+    pub slot: String,
+}
+
+/// 把账号库里这个号写成 Grok Bot 客户端的活跃登录，然后重启客户端。
+///
+/// 要求和切进 Cursor 相同：有 refresh，或一把还活着的桌面 `type=session`。仅会话时 access
+/// 和 refresh 两格写同一把 JWT（Grok Bot 续期走 `/oauth/token`，认这把）。`type=web` 不行，
+/// 续期会收到 `shouldLogout` 并把号踢掉。
+#[tauri::command]
+pub async fn grokbot_switch_client(
+    state: State<'_, AppState>,
+    id: AccountId,
+) -> Result<ClientSwitched> {
+    let account = state.accounts.repo.get(&id)?;
+    if !account.can_write_cursor_login() {
+        let err = AppError::new(
+            nexus_core::ErrorCode::ProfileIncomplete,
+            format!("{} 不能登录到 Grok Bot 客户端。", account.email),
+        );
+        return Err(if account.web_session_only() {
+            err.with_hint(
+                "这是网站会话（type=web）。Grok Bot 一续期就会被踢下线。先在 Cursor 切号里把它转成桌面会话，或用密码授权拿到 refresh。",
+            )
+        } else {
+            err.with_hint("需要 refresh token，或一把还没过期的桌面 session（type=session）。")
+        });
+    }
+    let session = state.accounts.session(&id).await?;
+    let access = session.access_token.expose().to_string();
+    let refresh = session
+        .refresh_token
+        .as_ref()
+        .map(|t| t.expose().to_string())
+        .unwrap_or_else(|| access.clone());
+    let email = account.email.clone();
+    let gb = state.grokbot.clone();
+    let slot = run_blocking(move || {
+        app::quit_if_running()?;
+        let slot = install_active_login(&ClientLogin {
+            access_token: access,
+            refresh_token: refresh,
+            email,
+        })?;
+        gb.forget_secrets();
+        app::launch()?;
+        Ok(slot)
+    })
+    .await?;
+    activity::info(
+        &state.db,
+        "grokbot",
+        Some(&account.email),
+        "Grok Bot 客户端改登这个号",
+    );
+    Ok(ClientSwitched {
+        email: account.email,
+        slot,
+    })
 }
 
 /// **不经 Grok Bot 客户端**：用「我的账号」里这个号直接换到 grokBotToken，写成直连凭证。

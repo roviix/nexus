@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { grokbot, switcher } from "../../ipc/api";
 import type { Account, GrokBotCuaProbe, GrokBotIdentity, GrokBotStatus } from "../../ipc/types";
 import { switchAccountIntoCursor } from "../../accounts/switchInto";
-import { canUseDashboard } from "../../ui/accounts";
+import { canUseDashboard, hasLiveAccess } from "../../ui/accounts";
 import { canAddToSwitchPool } from "../../ui/switcher";
 import { timeAgo, timeUntil } from "../../ui/format";
 import { ErrorNote, Icon, Spinner, Tag } from "../../ui/primitives";
@@ -27,7 +27,14 @@ function readSwitchToo(): boolean {
   }
 }
 
-type Busy = null | "use" | "identify" | "launch" | "mint" | "renew" | "probe";
+type Busy = null | "use" | "identify" | "launch" | "mint" | "renew" | "probe" | "client";
+
+/** 能不能写进 Grok Bot 客户端：有 refresh，或还活着的桌面 session。网站 web 会话一续期就会被踢掉。 */
+function canLoginGrokBotClient(account: Account): boolean {
+  if (account.status === "dead") return false;
+  if (account.hasRefresh) return true;
+  return hasLiveAccess(account) && account.accessTokenType === "session";
+}
 
 export function GrokBotTab({ account }: { account: Account }) {
   const [st, setSt] = useState<GrokBotStatus | null>(null);
@@ -169,6 +176,53 @@ export function GrokBotTab({ account }: { account: Account }) {
             >
               {busy === "use" ? <Spinner /> : null}
               {willSwitch ? "用这个号并切 Cursor" : "用这个号"}
+            </button>
+          )}
+        </div>
+        <div className={`usedin-row${clientIsThis ? " is-in is-live" : ""}`}>
+          <span className="usedin-ico">
+            <Icon name="external" size={13} />
+          </span>
+          <span className="usedin-k">客户端登录</span>
+          <span className="usedin-v">
+            {!app.installed
+              ? "未安装"
+              : clientIsThis
+                ? "这个号"
+                : activeEmail
+                  ? activeEmail
+                  : app.signedIn === false
+                    ? "未登录"
+                    : "未识别"}
+          </span>
+          {clientIsThis ? (
+            <Tag tone="ok">当前</Tag>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              disabled={busy !== null || !app.installed || !canLoginGrokBotClient(account)}
+              title={
+                !app.installed
+                  ? "先安装 Grok Bot"
+                  : account.status === "dead"
+                    ? "这个号已失效"
+                    : account.hasRefresh
+                      ? "退出并重启 Grok Bot，让客户端改登这个号"
+                      : account.accessTokenType === "web"
+                        ? "网站会话不能直接登进 Grok Bot。先在 Cursor 切号里转成桌面会话，或用密码授权拿到 refresh"
+                        : hasLiveAccess(account)
+                          ? "退出并重启 Grok Bot。仅会话的桌面 token 会同时写入 refresh 那一格"
+                          : "需要 refresh token，或一把还没过期的桌面 session"
+              }
+              onClick={() =>
+                void act("client", async () => {
+                  await grokbot.switchClient(account.id);
+                  setIdentity(await grokbot.identify());
+                })
+              }
+            >
+              {busy === "client" ? <Spinner /> : "登录这个号"}
             </button>
           )}
         </div>

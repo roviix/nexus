@@ -3,7 +3,7 @@
 //! 只改内置 `openai` provider 的 `options.baseURL` + `apiKey`，以及顶层 `model`（写成
 //! `openai/{id}`）。不发明自定义 provider——否则丢掉 OpenCode 自带的模型元数据。
 
-use crate::Target;
+use crate::{Seen, Target};
 use nexus_core::{AppError, Result};
 use serde_json::{json, Map, Value};
 
@@ -42,25 +42,30 @@ pub fn merge(existing: Option<&str>, t: &Target) -> Result<String> {
     Ok(serde_json::to_string_pretty(&root)? + "\n")
 }
 
-pub fn inspect(existing: Option<&str>) -> (Option<String>, Option<String>) {
+pub fn inspect(existing: Option<&str>) -> Seen {
     let Some(text) = existing else {
-        return (None, None);
+        return Seen::default();
     };
     let Ok(v) = serde_json::from_str::<Value>(text) else {
-        return (None, None);
+        return Seen::default();
     };
-    let base = v
-        .pointer("/provider/openai/options/baseURL")
-        .and_then(|x| x.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let option = |k: &str| {
+        v.pointer(&format!("/provider/openai/options/{k}"))
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     let model = v
         .get("model")
         .and_then(|x| x.as_str())
         .map(|s| s.trim().trim_start_matches("openai/").to_string())
         .filter(|s| !s.is_empty());
-    (base, model)
+    Seen {
+        base_url: option("baseURL"),
+        model,
+        api_key: option("apiKey"),
+    }
 }
 
 pub fn strip(existing: &str) -> Result<Option<String>> {
@@ -97,11 +102,7 @@ mod tests {
     use super::*;
 
     fn t() -> Target {
-        Target {
-            base_url: "http://127.0.0.1:8787".into(),
-            api_key: "nx-x".into(),
-            model: "grok-4.5".into(),
-        }
+        Target::simple("http://127.0.0.1:8787", "nx-x", "grok-4.5")
     }
 
     #[test]

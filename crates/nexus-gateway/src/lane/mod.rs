@@ -77,6 +77,11 @@ pub trait Lane: Send + Sync {
     }
     /// 一次请求结束后回报。实现据此决定：额度到线 → 接力下一个；这个模型限流 → 绕行。
     fn report(&self, credential: &Credential, model: &str, outcome: Outcome<'_>);
+    /// 上游自己出错（5xx、连不上、超时）时换一份凭证有没有用。订阅号的队里每个号打的是
+    /// 同一个上游，换了也一样；供应商的队里每一家是不同的上游，换一家就绕开了。
+    fn switch_helps_on_upstream_error(&self) -> bool {
+        false
+    }
 }
 
 /// 固定一份凭证，不接力。

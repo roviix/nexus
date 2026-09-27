@@ -1,10 +1,11 @@
-//! 四个订阅平台（ChatGPT / Grok Build / Kiro / ZCode）接进通道模型的地方。
+//! 六个订阅平台（ChatGPT / Grok Build / Kiro / ZCode / Qoder / Claude）接进通道模型的地方。
 //!
 //! 每个平台只回答两组问题：**号**（[`SubscriptionAccounts`]：谁能进队、给我 token）和
 //! **目录**（[`ChannelGate`]：这个名字归不归你、你此刻能不能接）。lane、选路、账本、状态快照
 //! 都不再认识具体平台——加第五个平台就是在这个文件里再写一对 impl 加一个 `*_channel()`。
 
-use crate::channel::{Capability, Channel, ChannelGate, CHATGPT, GROK, KIRO, ZCODE};
+use crate::channel::{Capability, Channel, ChannelGate, CHATGPT, CLAUDE, GROK, KIRO, QODER, ZCODE};
+use crate::claude::{ClaudeRouting, ClaudeUpstream};
 use crate::codex::{CodexConfig, CodexUpstream};
 use crate::grok::GrokUpstream;
 use crate::kiro::KiroUpstream;
@@ -12,10 +13,13 @@ use crate::lane::{
     chatgpt_quota_hint, BoxFuture, Lane, QuotaHint, SubscriptionAccounts, SubscriptionCandidate,
     SubscriptionSource,
 };
+use crate::qoder::{QoderRouting, QoderUpstream};
 use crate::zcode::{ZcodeRoute, ZcodeRouting, ZcodeUpstream};
 use nexus_chatgpt::ChatGptService;
+use nexus_claude::ClaudeService;
 use nexus_grok::GrokService;
 use nexus_kiro::KiroService;
+use nexus_qoder::QoderService;
 use nexus_zcode::ZcodeService;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -332,7 +336,7 @@ pub fn kiro_channel(lane: Arc<dyn Lane>, accounts: Arc<KiroService>) -> Channel 
         vendor: "aws",
         prefixes: nexus_kiro::protocol::ROUTE_PREFIXES,
         lane,
-        upstream: Arc::new(KiroUpstream::new()),
+        upstream: Arc::new(KiroUpstream::new(accounts.clone())),
         gate: Arc::new(KiroGate { accounts }),
         passthrough: false,
     }
@@ -430,6 +434,185 @@ pub fn zcode_channel(lane: Arc<dyn Lane>, accounts: Arc<ZcodeService>) -> Channe
         lane,
         upstream: Arc::new(ZcodeUpstream::new(accounts.clone())),
         gate: Arc::new(ZcodeGate { accounts }),
+        passthrough: false,
+    }
+}
+
+// ---------- Qoder ----------
+
+impl SubscriptionAccounts for QoderService {
+    fn channel(&self) -> &'static str {
+        QODER
+    }
+
+    fn candidates(&self) -> Vec<SubscriptionCandidate> {
+        let list = match self.list() {
+            Ok(l) => l,
+            Err(err) => {
+                tracing::warn!(%err, "读 Qoder 账号列表失败");
+                return Vec::new();
+            }
+        };
+        list.into_iter()
+            .filter(|a| a.enabled && a.has_credential())
+            .map(|a| SubscriptionCandidate {
+                label: a.label(),
+                quota: QuotaHint::default(),
+                id: a.id.as_str().to_string(),
+            })
+            .collect()
+    }
+
+    fn access_token<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> BoxFuture<'a, nexus_core::Result<nexus_core::Secret>> {
+        Box::pin(async move {
+            QoderService::credential(self, &nexus_core::QoderAccountId::from_raw(id.to_string()))
+                .await
+        })
+    }
+
+    /// job token 的过期时刻在账号行上，不在 token 字符串里。过期了 `credential` 会重换。
+    fn token_expiry(&self, _access_token: &str) -> Option<SystemTime> {
+        None
+    }
+}
+
+impl QoderRouting for QoderService {
+    fn identity(&self, label: &str) -> Option<nexus_qoder::QoderIdentity> {
+        QoderService::identity_of_label(self, label)
+    }
+
+    fn invalidate(&self, label: &str) {
+        QoderService::invalidate_label(self, label);
+    }
+}
+
+pub struct QoderGate {
+    pub accounts: Arc<QoderService>,
+}
+
+impl ChannelGate for QoderGate {
+    fn ready(&self) -> bool {
+        channel_ready(self.accounts.as_ref())
+    }
+
+    fn owns(&self, cap: Capability, base_model: &str) -> bool {
+        cap == Capability::Chat && nexus_qoder::protocol::known_model(base_model)
+    }
+
+    fn models(&self, cap: Capability) -> Vec<String> {
+        match cap {
+            Capability::Chat => self.accounts.models(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+pub fn qoder_channel(lane: Arc<dyn Lane>, accounts: Arc<QoderService>) -> Channel {
+    Channel {
+        id: QODER,
+        label: "Qoder",
+        vendor: "qoder",
+        prefixes: nexus_qoder::ROUTE_PREFIXES,
+        lane,
+        upstream: Arc::new(QoderUpstream::new(accounts.clone())),
+        gate: Arc::new(QoderGate { accounts }),
+        passthrough: false,
+    }
+}
+
+impl SubscriptionAccounts for ClaudeService {
+    fn channel(&self) -> &'static str {
+        CLAUDE
+    }
+
+    fn candidates(&self) -> Vec<SubscriptionCandidate> {
+        let list = match self.list() {
+            Ok(l) => l,
+            Err(err) => {
+                tracing::warn!(%err, "读 Claude 账号列表失败");
+                return Vec::new();
+            }
+        };
+        list.into_iter()
+            .filter(|a| {
+                a.enabled
+                    && a.status == nexus_claude::ClaudeStatus::Active
+                    && (a.has_refresh || a.has_token || a.has_api_key)
+            })
+            .map(|a| {
+                let quota = a.usage.as_ref().map(|u| crate::lane::QuotaHint {
+                    percent_used: u.credit_usage_percent,
+                    exhausted: u.credit_usage_percent.is_some_and(|p| p >= 100.0),
+                });
+                SubscriptionCandidate {
+                    label: a.label.clone(),
+                    quota: quota.unwrap_or_default(),
+                    id: a.id.as_str().to_string(),
+                }
+            })
+            .collect()
+    }
+
+    fn access_token<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> BoxFuture<'a, nexus_core::Result<nexus_core::Secret>> {
+        Box::pin(async move {
+            ClaudeService::access_token(
+                self,
+                &nexus_core::ClaudeAccountId::from_raw(id.to_string()),
+            )
+            .await
+        })
+    }
+
+    fn token_expiry(&self, _access_token: &str) -> Option<SystemTime> {
+        None
+    }
+}
+
+impl ClaudeRouting for ClaudeService {
+    fn route(&self, label: &str) -> Option<(nexus_claude::ClaudeAuthMode, String)> {
+        ClaudeService::route_of_label(self, label)
+    }
+}
+
+pub struct ClaudeGate {
+    pub accounts: Arc<ClaudeService>,
+}
+
+impl ChannelGate for ClaudeGate {
+    fn ready(&self) -> bool {
+        channel_ready(self.accounts.as_ref())
+    }
+
+    fn owns(&self, cap: Capability, base_model: &str) -> bool {
+        cap == Capability::Chat && nexus_claude::owns_model(base_model)
+    }
+
+    fn models(&self, cap: Capability) -> Vec<String> {
+        match cap {
+            Capability::Chat => nexus_claude::MODELS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+pub fn claude_channel(lane: Arc<dyn Lane>, accounts: Arc<ClaudeService>) -> Channel {
+    Channel {
+        id: CLAUDE,
+        label: "Claude",
+        vendor: "anthropic",
+        prefixes: nexus_claude::ROUTE_PREFIXES,
+        lane,
+        upstream: Arc::new(ClaudeUpstream::new(accounts.clone())),
+        gate: Arc::new(ClaudeGate { accounts }),
         passthrough: false,
     }
 }

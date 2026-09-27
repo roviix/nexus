@@ -6,16 +6,21 @@
 //!
 //! 路由同时挂在 `/v1`、`/openai/v1`、`/anthropic/v1` 下，并容忍客户端把 `/v1` 写进 Base URL 后
 //! 拼出来的 `/v1/v1/…`——那不是客户的错，直接 404 只会让人以为服务挂了。
+//!
+//! 另有按客户端的一组口：`/client/{claude|codex|opencode|grok}/v1/…`。一键接入写进客户端的就是
+//! 这种地址，从这里进来的请求按那个客户端自己的路由选模型（见 [`crate::routes`]）。
 
-use crate::channel::{Capability, Channel, ChannelRegistry, Resolved};
-use crate::error::UpstreamError;
+use crate::channel::{qualify, Capability, Channel, ChannelRegistry, Resolved};
+use crate::error::{UpstreamError, UpstreamKind};
 use crate::images::{self, GeneratedImage, ImageRequest};
 use crate::inbound::{parse_request, protocol_error, Dialect, Serializer, SseFrame};
 use crate::inference::STATIC_MODELS;
 use crate::lane::{Credential, Lane, Outcome};
 use crate::ledger::{Ledger, RequestRecord};
 use crate::media::{self, MediaJobs};
-use crate::normalized::{estimate_tokens, Completion, Delta, Usage};
+use crate::normalized::{estimate_tokens, ChatRequest, Completion, Delta, RawInbound, Usage};
+use crate::reqlog::{LogEntry, RequestLog};
+use crate::routes::{self, ClientRoutes};
 use crate::upstream::Upstream;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
@@ -23,10 +28,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -42,6 +47,10 @@ pub struct Gateway {
     /// 异步媒体任务（生视频）的登记簿：`request_id → 通道 / 账号`，状态轮询要回到创建它的号。
     /// `None` = 不落库（测试、examples），视频任务只活在这一次进程里也查不到。
     pub media_jobs: Option<Arc<MediaJobs>>,
+    /// 按客户端的路由。和服务层共用一把锁：接入页改了路由，正在听的网关下一发就照新的走。
+    pub routes: Arc<RwLock<ClientRoutes>>,
+    /// 最近请求的明细。`None` = 不记（测试、examples）。
+    pub log: Option<Arc<RequestLog>>,
 }
 
 impl Gateway {
@@ -52,15 +61,68 @@ impl Gateway {
             api_key: None,
             ledger: None,
             media_jobs: None,
+            routes: Arc::default(),
+            log: None,
         }
     }
 
     fn route(&self, model: &str, cap: Capability) -> Resolved<'_> {
         self.channels.resolve(model, cap)
     }
+
+    /// 这个客户端的这次请求实际要的模型。不在客户端作用域里、或这个客户端没配路由，原样返回。
+    fn scoped_model(&self, client: Option<&str>, model: &str) -> String {
+        let Some(client) = client else {
+            return model.to_string();
+        };
+        let routes = self.routes.read().expect("client routes");
+        match routes.get(client) {
+            Some(route) => routes::resolve(route, client, model, &self.channels),
+            None => model.to_string(),
+        }
+    }
+
+    /// 连通道都没进就结束了的请求：口令不对、请求体坏了。记一行，排障时最想看到的就是它。
+    fn reject(
+        &self,
+        client: Option<&str>,
+        dialect: Dialect,
+        model: &str,
+        status: u16,
+        message: &str,
+    ) {
+        if let Some(log) = &self.log {
+            log.push(LogEntry {
+                client: client.map(str::to_string),
+                dialect: dialect_name(dialect).to_string(),
+                requested: model.to_string(),
+                ok: false,
+                status,
+                kind: Some(if status == 401 { "auth" } else { "bad_request" }.to_string()),
+                error: Some(message.to_string()),
+                attempt: 1,
+                ..LogEntry::default()
+            });
+        }
+    }
 }
 
 type Shared = Arc<Gateway>;
+
+/// 请求从哪个客户端作用域进来。`/v1/…` 是 `None`。
+#[derive(Debug, Clone, Copy)]
+struct Scope(Option<&'static str>);
+
+/// 一次方言口请求的来龙去脉：记账、记明细、回报 lane 都要用。
+struct Ctx {
+    client: Option<&'static str>,
+    dialect: Dialect,
+    stream: bool,
+    /// 客户端报的模型名（响应里原样回显它）。
+    requested: String,
+    /// 选路后要的模型：lane 按它冷却、账本按它记。
+    model_label: String,
+}
 
 /// 客户端请求头里与上游协议有关的那几个，转给后端前先挑出来（小写键）。
 ///
@@ -96,6 +158,23 @@ pub fn pick_client_headers(headers: &HeaderMap) -> std::collections::HashMap<Str
     out
 }
 
+/// 原样转发给 API Key 供应商时一并带上的头（小写键）。客户端直连供应商时本来就会发它们：
+/// `anthropic-beta` 管着交错思考、1M 上下文这些开关，`user-agent` 有的编码套餐拿来认客户端。
+pub fn pick_passthrough_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    const KEEP: &[&str] = &["anthropic-beta", "anthropic-version", "user-agent", "x-app"];
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let key = name.as_str().to_ascii_lowercase();
+            if !KEEP.contains(&key.as_str()) {
+                return None;
+            }
+            let v = value.to_str().ok()?.trim();
+            (!v.is_empty()).then(|| (key, v.to_string()))
+        })
+        .collect()
+}
+
 /// 等上游响应头最多这么久：ChatGPT 通道要把会话状态印 / 额度头挂到客户端响应上，只能在
 /// 首字节之前。上游一般一两秒内给头；超过就不等了，正文照常流。
 const UPSTREAM_HEADERS_PATIENCE: std::time::Duration = std::time::Duration::from_secs(8);
@@ -108,32 +187,55 @@ fn dialect_name(d: Dialect) -> &'static str {
     }
 }
 
-/// 一次请求收尾：先告诉 lane（它据此接力 / 冷却），再记账。两件事的顺序无关紧要，
+/// 一次请求收尾：先告诉 lane（它据此接力 / 冷却），再记账、记明细。顺序无关紧要，
 /// 但都得做——账本漏一条只是数字不准，lane 漏一次是号会被用穿。
 fn settle(
     gw: &Gateway,
     channel: &Channel,
     credential: &Credential,
-    model: &str,
-    dialect: Dialect,
+    ctx: &Ctx,
     result: &Result<Completion, UpstreamError>,
     started: std::time::Instant,
+    attempt: u8,
 ) {
+    let model = ctx.model_label.as_str();
     match result {
         Ok(c) => channel
             .lane
             .report(credential, model, Outcome::Ok(&c.usage)),
         Err(e) => channel.lane.report(credential, model, Outcome::Err(e)),
     }
-    let Some(ledger) = &gw.ledger else { return };
     let elapsed = started.elapsed().as_millis() as u64;
+    if let Some(log) = &gw.log {
+        let mut entry = log_entry(ctx, Some(channel.id), Some(&credential.label), attempt);
+        match result {
+            Ok(c) => {
+                entry.ok = true;
+                entry.status = 200;
+                entry.routed = c.routed_model.clone();
+                entry.input_tokens = c.usage.input_tokens;
+                entry.output_tokens = c.usage.output_tokens;
+                entry.cache_read_tokens = c.usage.cache_read_tokens;
+                entry.ttft_ms = c.ttft_ms;
+                entry.duration_ms = if c.turn_ms > 0 { c.turn_ms } else { elapsed };
+            }
+            Err(e) => {
+                entry.status = e.status;
+                entry.kind = Some(e.kind.as_str().to_string());
+                entry.error = Some(e.message.clone());
+                entry.duration_ms = elapsed;
+            }
+        }
+        log.push(entry);
+    }
+    let Some(ledger) = &gw.ledger else { return };
     match result {
         Ok(c) => ledger.record(RequestRecord {
             channel: channel.id,
             account: &credential.label,
             model,
             routed: c.routed_model.as_deref(),
-            dialect: dialect_name(dialect),
+            dialect: dialect_name(ctx.dialect),
             ok: true,
             status: 200,
             kind: None,
@@ -147,7 +249,7 @@ fn settle(
             account: &credential.label,
             model,
             routed: None,
-            dialect: dialect_name(dialect),
+            dialect: dialect_name(ctx.dialect),
             ok: false,
             status: e.status,
             kind: Some(e.kind.as_str()),
@@ -159,14 +261,39 @@ fn settle(
     }
 }
 
+fn log_entry(ctx: &Ctx, channel: Option<&str>, account: Option<&str>, attempt: u8) -> LogEntry {
+    LogEntry {
+        client: ctx.client.map(str::to_string),
+        dialect: dialect_name(ctx.dialect).to_string(),
+        stream: ctx.stream,
+        requested: ctx.requested.clone(),
+        target: (ctx.model_label != ctx.requested).then(|| ctx.model_label.clone()),
+        channel: channel.map(str::to_string),
+        account: account.map(str::to_string),
+        attempt,
+        ..LogEntry::default()
+    }
+}
+
+/// 一个号都拿不到就结束了（号池空、全在冷却）：没有账号可记，明细里照样留一行。
+fn log_unserved(gw: &Gateway, ctx: &Ctx, channel: &str, e: &UpstreamError) {
+    if let Some(log) = &gw.log {
+        let mut entry = log_entry(ctx, Some(channel), None, 1);
+        entry.status = e.status;
+        entry.kind = Some(e.kind.as_str().to_string());
+        entry.error = Some(e.message.clone());
+        log.push(entry);
+    }
+}
+
 /// 入站请求体上限。Axum 默认 2 MB，`Bytes` 抽取时直接 413，handler / 上游都进不去，
 /// 客户端看到的是一句英文 `Failed to buffer the request body: length limit exceeded`。
 /// 64 MB 和出图参考图、Connect 信封同一量级；云端 TS 网关是 32 MB，本机回环多给一点，
 /// 两张 20 MB 的 data URL 也过得去。
 pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-pub fn router(gw: Shared) -> Router {
-    let v1 = Router::new()
+fn v1_routes(gw: Shared, scope: Scope) -> Router {
+    Router::new()
         .route("/chat/completions", post(chat_completions))
         .route("/messages", post(messages))
         .route("/messages/count_tokens", post(count_tokens))
@@ -192,14 +319,27 @@ pub fn router(gw: Shared) -> Router {
         .route("/v1/videos/{request_id}", get(video_status))
         .route("/v1/videos/{request_id}/content", get(video_content))
         .route("/v1/models", get(models))
-        .with_state(gw);
-    Router::new()
+        .layer(Extension(scope))
+        .with_state(gw)
+}
+
+pub fn router(gw: Shared) -> Router {
+    let v1 = v1_routes(gw.clone(), Scope(None));
+    let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .nest("/v1", v1.clone())
         .nest("/openai/v1", v1.clone())
-        .nest("/anthropic/v1", v1)
-        // 后挂的 layer 在最外：先写入上限，再在回程把 Axum 那句英文 413 换成方言 JSON。
-        .layer(middleware::from_fn(rewrite_payload_too_large))
+        .nest("/anthropic/v1", v1);
+    // 每个客户端一组口。客户端名是固定的几个，逐个挂比在路径里取参数简单：作用域在进 handler
+    // 之前就定了，handler 不用再解析路径。
+    for client in routes::CLIENTS {
+        app = app.nest(
+            &format!("/client/{client}/v1"),
+            v1_routes(gw.clone(), Scope(Some(client))),
+        );
+    }
+    // 后挂的 layer 在最外：先写入上限，再在回程把 Axum 那句英文 413 换成方言 JSON。
+    app.layer(middleware::from_fn(rewrite_payload_too_large))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
@@ -270,48 +410,125 @@ fn sse_response(rx: mpsc::UnboundedReceiver<Result<Bytes, std::convert::Infallib
         .expect("静态响应头")
 }
 
-async fn chat_completions(State(gw): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
-    handle(gw, Dialect::OpenAiChat, headers, body).await
+async fn chat_completions(
+    State(gw): State<Shared>,
+    Extension(scope): Extension<Scope>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    handle(gw, scope, Dialect::OpenAiChat, headers, body).await
 }
 
-async fn messages(State(gw): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
-    handle(gw, Dialect::AnthropicMessages, headers, body).await
+async fn messages(
+    State(gw): State<Shared>,
+    Extension(scope): Extension<Scope>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    handle(gw, scope, Dialect::AnthropicMessages, headers, body).await
 }
 
 /// Codex 主用的方言。
-async fn responses(State(gw): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
-    handle(gw, Dialect::OpenAiResponses, headers, body).await
+async fn responses(
+    State(gw): State<Shared>,
+    Extension(scope): Extension<Scope>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    handle(gw, scope, Dialect::OpenAiResponses, headers, body).await
 }
 
-async fn handle(gw: Shared, dialect: Dialect, headers: HeaderMap, body: Bytes) -> Response {
+/// 原样转发的流半路出错时回给客户端的那一帧，照客户端方言的错误形状写。
+fn raw_error_frames(dialect: Dialect, e: &UpstreamError) -> Vec<SseFrame> {
+    match dialect {
+        Dialect::AnthropicMessages => vec![SseFrame::json(
+            Some("error"),
+            &protocol_error(dialect, e.status, &e.message),
+        )],
+        Dialect::OpenAiChat => vec![
+            SseFrame::json(None, &protocol_error(dialect, e.status, &e.message)),
+            SseFrame::data("[DONE]"),
+        ],
+        Dialect::OpenAiResponses => vec![SseFrame::json(
+            Some("error"),
+            &json!({ "type": "error", "code": e.kind.as_str(), "message": e.message, "status": e.status }),
+        )],
+    }
+}
+
+async fn handle(
+    gw: Shared,
+    scope: Scope,
+    dialect: Dialect,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let client = scope.0;
     if !authorized(&gw, &headers) {
+        gw.reject(
+            client,
+            dialect,
+            "",
+            401,
+            "口令不对：客户端配置里的 key 和网关现在的口令不一致（换过口令的话要重新接入）",
+        );
         return err_json(dialect, 401, "invalid api key");
     }
     let body: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(e) => return err_json(dialect, 400, &format!("invalid JSON body: {e}")),
+        Err(e) => {
+            let message = format!("invalid JSON body: {e}");
+            gw.reject(client, dialect, "", 400, &message);
+            return err_json(dialect, 400, &message);
+        }
     };
     let conversation = headers
         .get("x-conversation-id")
         .and_then(|v| v.to_str().ok());
     let mut parsed = match parse_request(dialect, &body, conversation) {
         Ok(p) => p,
-        Err(e) => return err_json(dialect, e.status(), &e.to_string()),
+        Err(e) => {
+            let asked = body.get("model").and_then(Value::as_str).unwrap_or("");
+            gw.reject(client, dialect, asked, e.status(), &e.to_string());
+            return err_json(dialect, e.status(), &e.to_string());
+        }
     };
-    let resolved = gw.route(&parsed.request.model, Capability::Chat);
-    let model_label = if parsed.request.model.trim().is_empty() {
-        crate::channel::qualify(resolved.channel.id, &resolved.base_model)
+    let requested = parsed.request.model.clone();
+    let target = gw.scoped_model(client, &requested);
+    let resolved = gw.route(&target, Capability::Chat);
+    let model_label = if target.trim().is_empty() {
+        qualify(resolved.channel.id, &resolved.base_model)
     } else {
-        parsed.request.model.clone()
+        target
     };
     parsed.request.model = resolved.base_model.clone();
     parsed.request.client_headers = pick_client_headers(&headers);
     let passthrough_route = resolved.channel.passthrough;
-    // Responses 透传通道（ChatGPT / Grok）会用到原始体。别的通道不带：中间表示够用。
+    let body = Arc::new(body);
+    // Responses 透传通道（ChatGPT / Grok）会用到原始体。
     if dialect == Dialect::OpenAiResponses && passthrough_route {
-        parsed.request.raw_responses = Some(Arc::new(body));
+        parsed.request.raw_responses = Some(body.clone());
     }
-    let mut ser = Serializer::new(dialect, &model_label, &parsed.request.tools);
+    parsed.request.raw_inbound = Some(RawInbound {
+        dialect,
+        body,
+        stream: parsed.stream,
+        headers: pick_passthrough_headers(&headers),
+    });
+    // 响应里回显客户端报的名字：按路由换成了哪个模型是网关自己的事，客户端拿自己的名字对账。
+    let echo = if requested.trim().is_empty() {
+        model_label.clone()
+    } else {
+        requested.clone()
+    };
+    let ctx = Ctx {
+        client,
+        dialect,
+        stream: parsed.stream,
+        requested,
+        model_label,
+    };
+    let mut ser = Serializer::new(dialect, &echo, &parsed.request.tools);
     let request = parsed.request;
 
     if !parsed.stream {
@@ -321,13 +538,14 @@ async fn handle(gw: Shared, dialect: Dialect, headers: HeaderMap, body: Bytes) -
                 relayed = h;
             }
         };
-        let result = relay(&gw, &model_label, dialect, &request, &mut sink).await;
+        let result = relay(&gw, &ctx, &request, &mut sink).await;
         return match result {
             Ok(c) => {
                 let body = match &c.raw_response {
-                    // 透传：上游最终的 response 对象原样回，不照着中间表示再拼一遍。
-                    Some(raw) if dialect == Dialect::OpenAiResponses => raw.clone(),
-                    _ => ser.final_json(&c),
+                    // 透传：上游最终的响应原样回，不照着中间表示再拼一遍。只有方言和客户端
+                    // 一致的后端才会给它。
+                    Some(raw) => raw.clone(),
+                    None => ser.final_json(&c),
                 };
                 let mut res = (StatusCode::OK, Json(body)).into_response();
                 attach_headers(&mut res, &relayed);
@@ -359,7 +577,12 @@ async fn handle(gw: Shared, dialect: Dialect, headers: HeaderMap, body: Bytes) -
                 Delta::Thinking(t) => ser.thinking(&t),
                 Delta::Raw { event, data } => {
                     raw_mode = true;
-                    vec![SseFrame::event(event, data)]
+                    // OpenAI Chat 的帧没有 event 行，原样就是只有 data。
+                    vec![if event.is_empty() {
+                        SseFrame::data(data)
+                    } else {
+                        SseFrame::event(event, data)
+                    }]
                 }
                 Delta::Headers(h) => {
                     if let Some(tx) = hdr_tx.take() {
@@ -370,7 +593,7 @@ async fn handle(gw: Shared, dialect: Dialect, headers: HeaderMap, body: Bytes) -
             };
             push(&tx, frames);
         };
-        let result = relay(&gw, &model_label, dialect, &request, &mut on_delta).await;
+        let result = relay(&gw, &ctx, &request, &mut on_delta).await;
         // 上游没给头（换号失败、Cursor 通道）：放行等头的那一侧，别让客户端白等。
         drop(hdr_tx.take());
         let frames = match &result {
@@ -379,10 +602,7 @@ async fn handle(gw: Shared, dialect: Dialect, headers: HeaderMap, body: Bytes) -
                 Vec::new()
             }
             Ok(c) => ser.finish(c),
-            Err(e) if raw_mode => vec![SseFrame::json(
-                Some("error"),
-                &json!({ "type": "error", "code": e.kind.as_str(), "message": e.message, "status": e.status }),
-            )],
+            Err(e) if raw_mode => raw_error_frames(dialect, e),
             Err(e) => ser.error(&e.message, e.status),
         };
         push(&tx, frames);
@@ -420,24 +640,31 @@ const MAX_ACCOUNT_ATTEMPTS: usize = 4;
 /// 取号 → 打上游 → 收尾（回报 lane、记账），怪号的错误在**首字节之前**换号重来。
 ///
 /// 只有 `blames_account` 的错误换号：额度 / 鉴权 / 权限 / 限流 / 这个号出不了这个模型。
-/// 供应商抖动换号无用、请求本身的问题换号必然重现、超时和取消不重试——这些直接回。
+/// 上游抖动一般换号无用（队里每个号打的是同一个上游）、请求本身的问题换号必然重现、
+/// 取消不重试——这些直接回。例外是 lane 自己说换了有用（供应商通道：换一家就是换一个上游）。
 /// 已经吐过增量就不能换：客户端已经收到半段回答，换号重来会拼出两段。
 /// 换号途中 lane 也没号可给了、或又把刚失败的号递回来（只有一个号 / lane 不认回报），
 /// 回上游最后那条错误——它比「没号了」更说明发生了什么，状态码也是客户端认得的 402 / 429 / 401。
 async fn relay(
     gw: &Gateway,
-    model: &str,
-    dialect: Dialect,
+    ctx: &Ctx,
     request: &crate::normalized::ChatRequest,
     on_delta: &mut (dyn FnMut(Delta) + Send),
 ) -> Result<Completion, UpstreamError> {
+    let model = ctx.model_label.as_str();
     let mut last: Option<UpstreamError> = None;
     let mut tried: Vec<String> = Vec::new();
     let route = gw.route(model, Capability::Chat).channel;
+    let switch_on_upstream = route.lane.switch_helps_on_upstream_error();
     for attempt in 1..=MAX_ACCOUNT_ATTEMPTS {
         let credential = match route.lane.acquire(model).await {
             Ok(c) => c,
-            Err(e) => return Err(last.unwrap_or(e)),
+            Err(e) => {
+                if last.is_none() {
+                    log_unserved(gw, ctx, route.id, &e);
+                }
+                return Err(last.unwrap_or(e));
+            }
         };
         if let (Some(e), true) = (&last, tried.contains(&credential.label)) {
             return Err(e.clone());
@@ -453,9 +680,18 @@ async fn relay(
             on_delta(d);
         };
         let result = route.upstream.stream(&credential, request, &mut sink).await;
-        settle(gw, route, &credential, model, dialect, &result, started);
+        settle(gw, route, &credential, ctx, &result, started, attempt as u8);
         match result {
-            Err(e) if e.kind.blames_account() && !emitted && attempt < MAX_ACCOUNT_ATTEMPTS => {
+            Err(e)
+                if !emitted
+                    && attempt < MAX_ACCOUNT_ATTEMPTS
+                    && (e.kind.blames_account()
+                        || (switch_on_upstream
+                            && matches!(
+                                e.kind,
+                                UpstreamKind::Upstream | UpstreamKind::Timeout
+                            ))) =>
+            {
                 tracing::info!(
                     account = %credential.label, model, kind = e.kind.as_str(), status = e.status, attempt,
                     "这个号出不了，换号重来"
@@ -643,8 +879,17 @@ async fn run_images(
     res
 }
 
-/// Anthropic 的 `count_tokens`：本地估算，不打上游。
-async fn count_tokens(State(gw): State<Shared>, headers: HeaderMap, body: Bytes) -> Response {
+/// Anthropic 的 `count_tokens`。
+///
+/// 落到 Claude 订阅通道时，按即将发出去的请求体问 `api.anthropic.com`：
+/// 本地估算和上游分词器不一致时，Claude Code 的上下文预算会算错。
+/// 别的通道没有这个口，仍在本地估算。
+async fn count_tokens(
+    State(gw): State<Shared>,
+    Extension(scope): Extension<Scope>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let dialect = Dialect::AnthropicMessages;
     if !authorized(&gw, &headers) {
         return err_json(dialect, 401, "invalid api key");
@@ -653,27 +898,109 @@ async fn count_tokens(State(gw): State<Shared>, headers: HeaderMap, body: Bytes)
         Ok(v) => v,
         Err(e) => return err_json(dialect, 400, &format!("invalid JSON body: {e}")),
     };
-    let parsed = match parse_request(dialect, &body, None) {
-        Ok(p) => p,
-        Err(e) => return err_json(dialect, e.status(), &e.to_string()),
-    };
-    let mut text: String = parsed
-        .request
-        .messages
-        .iter()
-        .map(|m| m.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    for t in &parsed.request.tools {
-        text.push('\n');
-        text.push_str(&t.name);
-        text.push_str(&t.description);
-        text.push_str(&t.parameters.to_string());
+    if let Err(e) = parse_request(dialect, &body, None) {
+        return err_json(dialect, e.status(), &e.to_string());
     }
-    Json(json!({ "input_tokens": estimate_tokens(&text) })).into_response()
+    let asked = body.get("model").and_then(Value::as_str).unwrap_or("");
+    let target = gw.scoped_model(scope.0, asked);
+    let resolved = gw.route(&target, Capability::Chat);
+    if resolved.channel.id == crate::channel::CLAUDE {
+        let model_label = if target.trim().is_empty() {
+            qualify(resolved.channel.id, &resolved.base_model)
+        } else {
+            target
+        };
+        return count_on_claude(resolved.channel, &model_label, body, &headers).await;
+    }
+    Json(json!({ "input_tokens": estimate_tokens(&count_source(&body)) })).into_response()
 }
 
-async fn models(State(gw): State<Shared>, headers: HeaderMap) -> Response {
+async fn count_on_claude(
+    channel: &Channel,
+    model_label: &str,
+    body: Value,
+    headers: &HeaderMap,
+) -> Response {
+    let dialect = Dialect::AnthropicMessages;
+    let credential = match channel.lane.acquire(model_label).await {
+        Ok(c) => c,
+        Err(e) => return err_json(dialect, e.status, &e.message),
+    };
+    let request = ChatRequest {
+        model: model_label.to_string(),
+        raw_inbound: Some(RawInbound {
+            dialect,
+            body: Arc::new(body),
+            stream: false,
+            headers: pick_passthrough_headers(headers),
+        }),
+        ..ChatRequest::default()
+    };
+    match channel.upstream.count_tokens(&credential, &request).await {
+        Ok(n) => {
+            let usage = Usage {
+                input_tokens: u32::try_from(n).unwrap_or(u32::MAX),
+                ..Usage::default()
+            };
+            channel
+                .lane
+                .report(&credential, model_label, Outcome::Ok(&usage));
+            Json(json!({ "input_tokens": n })).into_response()
+        }
+        Err(e) => {
+            channel
+                .lane
+                .report(&credential, model_label, Outcome::Err(&e));
+            err_json(dialect, e.status, &e.message)
+        }
+    }
+}
+
+/// 本地估算要扫到 system、工具说明和消息正文。解析层会把 system 收成一条消息，
+/// 但块上的非文本内容（schema）只有从原文里走一遍才不会漏。
+fn count_source(body: &Value) -> String {
+    let mut out = String::new();
+    fn walk(out: &mut String, v: &Value) {
+        match v {
+            Value::String(s) => {
+                out.push_str(s);
+                out.push('\n');
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(out, item);
+                }
+            }
+            Value::Object(map) => {
+                for key in [
+                    "text",
+                    "thinking",
+                    "name",
+                    "description",
+                    "content",
+                    "system",
+                    "messages",
+                    "tools",
+                    "input_schema",
+                    "parameters",
+                ] {
+                    if let Some(child) = map.get(key) {
+                        walk(out, child);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&mut out, body);
+    out
+}
+
+async fn models(
+    State(gw): State<Shared>,
+    Extension(scope): Extension<Scope>,
+    headers: HeaderMap,
+) -> Response {
     if !authorized(&gw, &headers) {
         return err_json(Dialect::OpenAiChat, 401, "invalid api key");
     }
@@ -682,36 +1009,60 @@ async fn models(State(gw): State<Shared>, headers: HeaderMap) -> Response {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let mut data: Vec<Value> = Vec::new();
-    let mut push = |channel: &str, vendor: &str, id: &str| {
-        let qid = crate::channel::qualify(channel, id);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut push_id = |id: String, vendor: &str| {
+        if !seen.insert(id.to_ascii_lowercase()) {
+            return;
+        }
         data.push(json!({
-            "id": qid,
+            "id": id,
             "object": "model",
             "type": "model",
             "created": created,
             "owned_by": vendor,
-            "display_name": qid,
+            "display_name": id,
         }));
     };
+    // 客户端作用域：先列这个客户端路由所在那条通道的裸名——在这个口里裸名就是走那条通道，
+    // 客户端的模型选择器里看到的应该是它能直接用的名字。
+    if let Some(client) = scope.0 {
+        let home = gw
+            .routes
+            .read()
+            .expect("client routes")
+            .get(client)
+            .map(|r| r.model.clone());
+        if let Some(home) = home.filter(|m| !m.trim().is_empty()) {
+            let ch = gw.channels.resolve(&home, Capability::Chat).channel;
+            let ids: Vec<String> = if ch.id == crate::channel::CURSOR {
+                STATIC_MODELS.iter().map(|s| s.to_string()).collect()
+            } else {
+                ch.gate.models(Capability::Chat)
+            };
+            for id in ids {
+                push_id(id, ch.vendor);
+            }
+        }
+    }
     for id in STATIC_MODELS {
-        push(crate::channel::CURSOR, "cursor", id);
+        push_id(qualify(crate::channel::CURSOR, id), "cursor");
     }
     for (id, _) in crate::models::IMAGE_MODELS {
-        push(crate::channel::CURSOR, "cursor", id);
+        push_id(qualify(crate::channel::CURSOR, id), "cursor");
     }
     // 订阅通道有号才报。同名并列：`cursor/gpt-5.6-sol` 和 `chatgpt/gpt-5.6-sol` 都在。
     for ch in gw.channels.extras() {
         if ch.gate.ready() {
             for id in ch.gate.models(Capability::Chat) {
-                push(ch.id, ch.vendor, &id);
+                push_id(qualify(ch.id, &id), ch.vendor);
             }
         }
         if ch.gate.media_ready() {
             for id in ch.gate.models(Capability::Image) {
-                push(ch.id, ch.vendor, &id);
+                push_id(qualify(ch.id, &id), ch.vendor);
             }
             for id in ch.gate.models(Capability::Video) {
-                push(ch.id, ch.vendor, &id);
+                push_id(qualify(ch.id, &id), ch.vendor);
             }
         }
     }
@@ -1170,6 +1521,8 @@ mod tests {
             api_key: None,
             ledger: None,
             media_jobs: Some(jobs.clone()),
+            routes: Arc::default(),
+            log: None,
         });
         let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = listener.local_addr().unwrap();

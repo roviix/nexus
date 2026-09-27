@@ -4,7 +4,8 @@
 //! 而且 grep 不出来谁在读谁在写。
 
 use nexus_core::{
-    AccountId, BackupId, ChatGptAccountId, GrokAccountId, KiroAccountId, ProfileId, ZcodeAccountId,
+    AccountId, BackupId, ChatGptAccountId, ClaudeAccountId, GrokAccountId, KiroAccountId, ProfileId,
+    QoderAccountId, ZcodeAccountId,
 };
 
 /// 一条秘密的引用。SQLite 里存的就是它的字符串形式。
@@ -197,6 +198,68 @@ pub fn zcode_secret(id: &ZcodeAccountId, kind: ZcodeSecret) -> SecretRef {
     SecretRef(format!("zcode/{}/{}", id.as_str(), kind.slug()))
 }
 
+/// Qoder 账号的三把凭证。PAT 是长期的；job token 是拿它换来的短票，过期再换。
+///
+/// 聊天请求不拿 PAT 签名，只拿 job token。两把分开存，续期时不会把 PAT 盖掉。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QoderSecret {
+    /// Personal Access Token（`pt-…`）。
+    Pat,
+    /// `jobToken/exchange` 换来的短票。
+    JobToken,
+    /// 短票的 refresh token。PAT 号续期走重新交换，这把留给设备登录的号。
+    JobRefresh,
+}
+
+impl QoderSecret {
+    fn slug(self) -> &'static str {
+        match self {
+            QoderSecret::Pat => "pat",
+            QoderSecret::JobToken => "job_token",
+            QoderSecret::JobRefresh => "job_refresh",
+        }
+    }
+
+    pub const ALL: [QoderSecret; 3] = [
+        QoderSecret::Pat,
+        QoderSecret::JobToken,
+        QoderSecret::JobRefresh,
+    ];
+}
+
+pub fn qoder_secret(id: &QoderAccountId, kind: QoderSecret) -> SecretRef {
+    SecretRef(format!("qoder/{}/{}", id.as_str(), kind.slug()))
+}
+
+/// Claude 账号的凭证。OAuth 用 access + refresh；setup-token 只占 access；
+/// Console Key 占 api_key。三种不混在同一格里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClaudeSecret {
+    Access,
+    Refresh,
+    ApiKey,
+}
+
+impl ClaudeSecret {
+    fn slug(self) -> &'static str {
+        match self {
+            ClaudeSecret::Access => "access",
+            ClaudeSecret::Refresh => "refresh",
+            ClaudeSecret::ApiKey => "api_key",
+        }
+    }
+
+    pub const ALL: [ClaudeSecret; 3] = [
+        ClaudeSecret::Access,
+        ClaudeSecret::Refresh,
+        ClaudeSecret::ApiKey,
+    ];
+}
+
+pub fn claude_secret(id: &ClaudeAccountId, kind: ClaudeSecret) -> SecretRef {
+    SecretRef(format!("claude/{}/{}", id.as_str(), kind.slug()))
+}
+
 /// 一个切号档的整套 `cursorAuth/*`（JSON）。
 pub fn profile_auth(id: &ProfileId) -> SecretRef {
     SecretRef(format!("switch/{}/auth", id.as_str()))
@@ -205,6 +268,11 @@ pub fn profile_auth(id: &ProfileId) -> SecretRef {
 /// 一份登录态备份。
 pub fn backup_auth(id: &BackupId) -> SecretRef {
     SecretRef(format!("backup/{}", id.as_str()))
+}
+
+/// 一把「用 Key 接入」的供应商 API Key。
+pub fn key_provider_secret(id: &str) -> SecretRef {
+    SecretRef(format!("keyprov/{id}/api_key"))
 }
 
 #[cfg(test)]
@@ -273,6 +341,16 @@ mod tests {
         );
         assert_eq!(KiroSecret::ALL.len(), 4);
         assert_eq!(ZcodeSecret::ALL.len(), 2);
+        assert_eq!(
+            qoder_secret(&QoderAccountId::from_raw(same), QoderSecret::Pat).as_str(),
+            "qoder/X1/pat"
+        );
+        assert_eq!(QoderSecret::ALL.len(), 3);
+        assert_eq!(
+            claude_secret(&ClaudeAccountId::from_raw(same), ClaudeSecret::Refresh).as_str(),
+            "claude/X1/refresh"
+        );
+        assert_eq!(ClaudeSecret::ALL.len(), 3);
     }
 
     #[test]

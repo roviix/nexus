@@ -50,6 +50,19 @@ pub fn derive_key(password: &str) -> [u8; 16] {
     key
 }
 
+/// 打成 Electron safeStorage 的 v10 信封。IV 固定，同一明文每次密文相同。
+pub fn encrypt(plain: &str, key: &[u8; 16]) -> String {
+    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+    use base64::Engine;
+
+    let iv = [0x20u8; 16];
+    let enc = cbc::Encryptor::<aes::Aes128>::new(key.into(), &iv.into());
+    let ct = enc.encrypt_padded_vec_mut::<Pkcs7>(plain.as_bytes());
+    let mut raw = ENVELOPE_PREFIX.to_vec();
+    raw.extend(ct);
+    base64::engine::general_purpose::STANDARD.encode(raw)
+}
+
 /// 解一个 safeStorage 字段。
 pub fn decrypt(value_b64: &str, key: &[u8; 16]) -> Result<String> {
     use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
@@ -76,17 +89,7 @@ pub fn decrypt(value_b64: &str, key: &[u8; 16]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
     use base64::Engine;
-
-    fn encrypt(plain: &str, key: &[u8; 16]) -> String {
-        let iv = [0x20u8; 16];
-        let enc = cbc::Encryptor::<aes::Aes128>::new(key.into(), &iv.into());
-        let ct = enc.encrypt_padded_vec_mut::<Pkcs7>(plain.as_bytes());
-        let mut raw = ENVELOPE_PREFIX.to_vec();
-        raw.extend(ct);
-        base64::engine::general_purpose::STANDARD.encode(raw)
-    }
 
     #[test]
     fn round_trip_matches_electron_safe_storage_shape() {

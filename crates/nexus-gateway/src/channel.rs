@@ -6,7 +6,7 @@
 //! ```
 //!
 //! 选路只有两条，对聊天 / 生图 / 生视频一致，不按模型名猜该走谁：
-//! 1. 显式前缀（`chatgpt/` `grok/` `kiro/` `cursor/`）→ 强制该通道，不看它有没有号；
+//! 1. 显式前缀（`chatgpt/` `grok/` `kiro/` `cursor/` `zcode/` `qoder/` `claude/`）→ 强制该通道，不看它有没有号；
 //! 2. 裸名或空模型 → 用户设的默认通道。空模型再填该通道此刻目录里的第一个。
 //!
 //! 对外目录的主键是 `{通道}/{模型}`（`cursor/claude-opus-5`）。裸名还能打进来，是因为
@@ -24,6 +24,11 @@ pub const CHATGPT: ChannelId = "chatgpt";
 pub const GROK: ChannelId = "grok";
 pub const KIRO: ChannelId = "kiro";
 pub const ZCODE: ChannelId = "zcode";
+pub const QODER: ChannelId = "qoder";
+/// Claude 订阅（OAuth / setup-token / Console API Key）。
+pub const CLAUDE: ChannelId = "claude";
+/// 用户自己的 API Key 供应商（`provider/`）。
+pub const PROVIDER: ChannelId = "provider";
 
 /// 规范通道 id。别名（`codex/` `xai/`）只在请求前缀里认，不进这一张表。
 pub fn parse_id(id: &str) -> Option<ChannelId> {
@@ -33,9 +38,15 @@ pub fn parse_id(id: &str) -> Option<ChannelId> {
         "grok" => Some(GROK),
         "kiro" => Some(KIRO),
         "zcode" | "glm" => Some(ZCODE),
+        "qoder" | "qoder-cn" => Some(QODER),
+        "claude" => Some(CLAUDE),
+        "provider" => Some(PROVIDER),
         _ => None,
     }
 }
+
+/// 设置里能填的通道 id，给报错用。
+pub const KNOWN_IDS: &str = "cursor / chatgpt / grok / kiro / zcode / qoder / claude / provider";
 
 /// 目录 / 接入用的主键：`{通道}/{模型}`。已经带了本通道前缀的原样返回，避免叠两层。
 pub fn qualify(channel: &str, model: &str) -> String {
@@ -82,6 +93,12 @@ pub trait ChannelGate: Send + Sync {
     /// 有号也不等于能出图。
     fn media_ready(&self) -> bool {
         self.ready()
+    }
+    /// 不带前缀的名字也归我吗。只有供应商通道认：它的模型清单是用户亲手写的名字，
+    /// 裸名对上就是指它；别的通道的裸名一律交给默认通道，不按名字猜。
+    fn claims_bare(&self, base_model: &str) -> bool {
+        let _ = base_model;
+        false
     }
 }
 
@@ -194,9 +211,7 @@ impl ChannelRegistry {
 
     pub fn set_default(&self, id: &str) -> Result<(), String> {
         let Some(parsed) = parse_id(id) else {
-            return Err(format!(
-                "默认通道只能是 cursor / chatgpt / grok / kiro / zcode，给的是 {id}"
-            ));
+            return Err(format!("默认通道只能是 {KNOWN_IDS}，给的是 {id}"));
         };
         if self.get(parsed).is_none() {
             return Err(format!("没有这条通道：{parsed}"));
@@ -236,6 +251,15 @@ impl ChannelRegistry {
                     channel: ch,
                     base_model: base,
                     forced: true,
+                };
+            }
+        }
+        if !model.is_empty() && cap == Capability::Chat {
+            if let Some(ch) = self.channels.iter().find(|ch| ch.gate.claims_bare(model)) {
+                return Resolved {
+                    channel: ch,
+                    base_model: model.to_string(),
+                    forced: false,
                 };
             }
         }

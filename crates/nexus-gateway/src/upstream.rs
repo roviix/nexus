@@ -22,6 +22,24 @@ pub trait Upstream: Send + Sync {
         on_delta: DeltaSink<'a>,
     ) -> BoxFuture<'a, Result<Completion, UpstreamError>>;
 
+    /// Anthropic `count_tokens`。默认不支持，server 就在本地估算。
+    /// Claude 订阅通道覆写：按即将发出去的请求体问 `api.anthropic.com`，
+    /// 本地估算和上游分词器对不上时，Claude Code 的上下文预算会算错。
+    fn count_tokens<'a>(
+        &'a self,
+        credential: &'a Credential,
+        request: &'a ChatRequest,
+    ) -> BoxFuture<'a, Result<u64, UpstreamError>> {
+        let _ = (credential, request);
+        Box::pin(async {
+            Err(UpstreamError::new(
+                UpstreamKind::BadRequest,
+                400,
+                "这个后端不支持 count_tokens",
+            ))
+        })
+    }
+
     /// 出**一张**图（协议一次一张，`n` 张由 server 串行调 `n` 次）。
     ///
     /// 默认实现是「这个后端不出图」而不是让每个实现都写一遍：聊天是所有后端都得有的能力，

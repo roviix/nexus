@@ -1,0 +1,31 @@
+[package]
+name = "nexus-qoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+nexus-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+sha2.workspace = true
+base64.workspace = true
+uuid.workspace = true
+time.workspace = true
+tracing.workspace = true
+# COSY 头：AES-128-CBC 包住身份，RSA PKCS#1 v1.5 包住那把 AES 钥匙，MD5 做请求签名。
+# ring 没有 RSA 公钥加密，所以这三样单独带。只在出站签名里用。
+rsa = { version = "0.9.8", features = ["pem", "sha2"] }
+aes = "0.8.4"
+cbc = "0.1.2"
+md-5 = "0.10.6"
+cipher = { version = "0.4.4", features = ["alloc"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

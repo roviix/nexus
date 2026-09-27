@@ -9,7 +9,7 @@
 //!
 //! **写进去的键与前端 `relay/snippets.ts::codexToml` 一致。**
 
-use crate::Target;
+use crate::{Seen, Target};
 use nexus_core::{AppError, Result};
 use serde_json::{Map, Value};
 use toml_edit::{value, DocumentMut, Item, Table};
@@ -52,7 +52,7 @@ pub fn merge_config(existing: Option<&str>, t: &Target) -> Result<String> {
     let ours = ours.as_table_mut().expect("刚确认过是表");
     ours["name"] = value(PROVIDER);
     ours["base_url"] = value(t.v1_url());
-    ours["wire_api"] = value("responses");
+    ours["wire_api"] = value(t.wire_api.as_str());
     ours["requires_openai_auth"] = value(false);
     ours["experimental_bearer_token"] = value(t.api_key.as_str());
     Ok(doc.to_string())
@@ -85,24 +85,26 @@ pub fn strip_config(existing: &str) -> Result<Option<String>> {
     Ok(Some(text))
 }
 
-/// 现在指向哪：只在 `model_provider = "nexus"` 时给出 `(base_url, model)`；用别的 provider
-/// 算「没接」。
-pub fn inspect_config(existing: Option<&str>) -> (Option<String>, Option<String>) {
+/// 现在指向哪：只在 `model_provider = "nexus"` 时给出地址和模型；用别的 provider 算「没接」。
+pub fn inspect_config(existing: Option<&str>) -> Seen {
     let Ok(doc) = parse(existing) else {
-        return (None, None);
+        return Seen::default();
     };
     let provider = doc.get("model_provider").and_then(Item::as_str);
     if provider != Some(PROVIDER) {
-        return (None, None);
+        return Seen::default();
     }
-    let base = doc
-        .get("model_providers")
-        .and_then(|p| p.get(PROVIDER))
-        .and_then(|p| p.get("base_url"))
-        .and_then(Item::as_str)
-        .map(str::to_string);
-    let model = doc.get("model").and_then(Item::as_str).map(str::to_string);
-    (base, model)
+    let ours = doc.get("model_providers").and_then(|p| p.get(PROVIDER));
+    let field = |k: &str| {
+        ours.and_then(|p| p.get(k))
+            .and_then(Item::as_str)
+            .map(str::to_string)
+    };
+    Seen {
+        base_url: field("base_url"),
+        model: doc.get("model").and_then(Item::as_str).map(str::to_string),
+        api_key: field("experimental_bearer_token"),
+    }
 }
 
 /// `auth.json`：只动 `OPENAI_API_KEY`。
@@ -144,11 +146,7 @@ mod tests {
     use super::*;
 
     fn target() -> Target {
-        Target {
-            base_url: "http://127.0.0.1:8787".into(),
-            api_key: "nx-key".into(),
-            model: "gpt-5.6-sol".into(),
-        }
+        Target::simple("http://127.0.0.1:8787", "nx-key", "gpt-5.6-sol")
     }
 
     #[test]
@@ -177,9 +175,10 @@ base_url = "https://work.example/v1"
             "不该打空表头：{out}"
         );
 
-        let (base, model) = inspect_config(Some(&out));
-        assert_eq!(base.as_deref(), Some("http://127.0.0.1:8787/v1"));
-        assert_eq!(model.as_deref(), Some("gpt-5.6-sol"));
+        let seen = inspect_config(Some(&out));
+        assert_eq!(seen.base_url.as_deref(), Some("http://127.0.0.1:8787/v1"));
+        assert_eq!(seen.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(seen.api_key.as_deref(), Some("nx-key"));
     }
 
     #[test]
@@ -213,10 +212,10 @@ name = "work"
     fn inspect_ignores_other_providers_and_broken_files() {
         assert_eq!(
             inspect_config(Some(r#"model_provider = "openai""#)),
-            (None, None)
+            Seen::default()
         );
-        assert_eq!(inspect_config(Some("= broken")), (None, None));
-        assert_eq!(inspect_config(None), (None, None));
+        assert_eq!(inspect_config(Some("= broken")), Seen::default());
+        assert_eq!(inspect_config(None), Seen::default());
     }
 
     #[test]

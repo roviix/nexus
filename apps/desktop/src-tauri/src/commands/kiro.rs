@@ -88,14 +88,14 @@ pub async fn kiro_import_text(
     text: String,
     note: Option<String>,
 ) -> Result<KiroAccount> {
-    let up = state.kiro.import_text(&text, note.as_deref()).await?;
-    activity::info(
-        &state.db,
-        "kiro",
-        Some(&up.account.label()),
-        "已导入 Kiro 账号",
-    );
-    Ok(up.account)
+    let report = state.kiro.import_dump(&text, note.as_deref()).await?;
+    let message = match (report.accepted, report.failed) {
+        (n, 0) if n > 1 => format!("已导入 {n} 个 Kiro 账号"),
+        (n, f) if n > 1 => format!("已导入 {n} 个 Kiro 账号，{f} 个没进去"),
+        _ => "已导入 Kiro 账号".to_string(),
+    };
+    activity::info(&state.db, "kiro", Some(&report.account.label()), message);
+    Ok(report.account)
 }
 
 #[tauri::command(async)]

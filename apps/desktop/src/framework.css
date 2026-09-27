@@ -1711,6 +1711,9 @@
 }
 
 .connect-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin: 0 0 10px;
   color: var(--color-ink);
   font-size: 13.5px;
@@ -1726,6 +1729,319 @@
 /* 状态提示与内容卡保持同宽，不再为步骤轨道预留左侧空白。 */
 .connect > .banner {
   margin: -8px 0 24px;
+}
+
+/* 客户端卡：选谁 + 它现在的样子（接好了 / 指着别处 / 口令过期）。一排五张。 */
+.ctiles {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1100px) {
+  .ctiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.ctile {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin: 0;
+  padding: 12px 14px;
+  min-width: 0;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    transform 0.12s ease;
+}
+
+.ctile + .ctile {
+  margin-top: 0;
+}
+
+.ctile:hover:not(.is-active) {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+
+.ctile-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ctile .toolcard-glyph {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.ctile.is-active .toolcard-glyph {
+  background: var(--accent-soft);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.ctile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ctile.is-active .ctile-name {
+  color: var(--accent);
+}
+
+.ctile-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-2);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+
+.ctile-status.is-inline {
+  margin-left: 4px;
+  color: var(--color-muted);
+  font-weight: 500;
+}
+
+.ctile-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-faint);
+}
+
+.ctile-dot.is-ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ok) 18%, transparent);
+}
+
+.ctile-dot.is-warn {
+  background: var(--warn);
+}
+
+.ctile-dot.is-bad {
+  background: var(--bad);
+}
+
+.ctile-env {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--warn) 22%, transparent);
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ctile-line {
+  min-width: 0;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+/* 路由：左边一格小标题，右边控件。和卡头之间只有一条细线。 */
+.croute {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.croute-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.croute-k {
+  padding-top: 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.croute-v {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.croute-hint {
+  color: var(--color-faint);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.croute-more {
+  align-self: flex-start;
+  margin-top: 7px;
+  font-size: 12px;
+}
+
+.croles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.crole {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.crole-k {
+  color: var(--color-ink-2);
+  font-size: 12px;
+}
+
+.crole-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+
+.crole-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 会架空配置的环境变量：一块淡黄底，一行一个。 */
+.cenv {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 18px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--warn) 30%, var(--color-line));
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--warn) 7%, transparent);
+}
+
+.cenv-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cenv-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
+  gap: 2px 10px;
+  font-size: 11.5px;
+}
+
+.cenv-row > code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cenv-effect {
+  grid-column: 1 / -1;
+  color: var(--color-muted);
+  line-height: 1.55;
+}
+
+/* 测一下的结果：成功带主色细边，失败带红边。 */
+.ctest {
+  margin: 12px 18px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 9px;
+  background: var(--color-canvas);
+}
+
+.ctest.is-ok {
+  border-color: color-mix(in oklab, var(--ok) 35%, var(--color-line));
+}
+
+.ctest.is-bad {
+  border-color: color-mix(in oklab, var(--bad) 35%, var(--color-line));
+}
+
+.ctest-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ctest-head > code {
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.ctest-text {
+  margin: 6px 0 0;
+  color: var(--color-ink-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.ctest-text.is-bad {
+  color: var(--bad);
+}
+
+/* 配置正文默认收着：一键接入之后很少有人要看，要手抄的人点开。 */
+.cpreview {
+  padding: 12px 18px 14px;
+}
+
+.cpreview > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cpreview > summary:hover {
+  color: var(--color-ink);
+}
+
+.cpreview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
 }
 
 /* 工具卡：五张一行，和线上接入页同一副样子。 */
@@ -3103,4 +3419,336 @@
 
 .main-flush::before {
   display: none;
+}
+
+.connect-chans-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.prov-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 14px;
+}
+
+.prov-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prov-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.prov-list .card + .card {
+  margin-top: 0;
+}
+
+.prov-card-main {
+  min-width: 0;
+}
+
+.prov-card-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.prov-card-sub {
+  margin-top: 3px;
+  color: var(--color-muted);
+  font-size: 12.5px;
+}
+
+.chan-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--color-line);
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chan-chip.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.chan-chip .role-meta {
+  color: var(--color-faint);
+  font-size: 11px;
+}
+
+.cfg {
+  border-radius: 12px;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+/* 网关页「最近请求」：一行一次尝试，失败的点开看上游原话。 */
+.gw-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.gw-log-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 460px;
+  overflow: auto;
+}
+
+.gw-log-row + .gw-log-row {
+  border-top: 1px solid var(--color-line);
+}
+
+.gw-log-main {
+  display: grid;
+  grid-template-columns: 7px 64px 84px minmax(0, 1.4fr) minmax(0, 1fr) 96px 46px 11px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink-2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gw-log-main:hover {
+  background: var(--wash-1);
+}
+
+.gw-log-time,
+.gw-log-num {
+  color: var(--color-faint);
+  font-size: 11px;
+}
+
+.gw-log-num {
+  text-align: right;
+}
+
+.gw-log-client {
+  color: var(--color-muted);
+  font-size: 11.5px;
+}
+
+.gw-log-model {
+  font-size: 11.5px;
+}
+
+.gw-log-where {
+  color: var(--color-muted);
+  font-size: 11.5px;
+}
+
+.gw-log-row.is-bad .gw-log-num {
+  color: var(--bad);
+}
+
+.gw-log-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 14px 10px 31px;
+}
+
+.gw-log-detail > p {
+  margin: 0;
+  color: var(--bad);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* 供应商卡：左边是这家的身份与清单，右边是开关和动作。 */
+.prov-intro {
+  margin: 0 0 14px;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.prov-card {
+  align-items: flex-start;
+}
+
+.prov-card.is-off .prov-card-main {
+  opacity: 0.55;
+}
+
+.prov-card-main {
+  flex: 1;
+}
+
+.prov-card-name .role-meta {
+  color: var(--color-faint);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.prov-card-acts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex: none;
+}
+
+.prov-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.prov-health > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.prov-health.is-ok,
+.prov-note.is-ok {
+  color: var(--accent);
+}
+
+.prov-health.is-warn,
+.prov-note.is-warn {
+  color: var(--warn);
+}
+
+.prov-health.is-bad,
+.prov-note.is-bad {
+  color: var(--bad);
+}
+
+.prov-models {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.prov-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* 模型清单的小片：表单里能删，卡片上只读。 */
+.pchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 4px 0 9px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  background: var(--color-canvas);
+  color: var(--color-ink-2);
+  font-size: 11.5px;
+}
+
+.pchip.is-static {
+  height: 22px;
+  padding: 0 8px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.pchip > button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-faint);
+  cursor: pointer;
+}
+
+.pchip > button:hover {
+  background: var(--wash-1);
+  color: var(--color-ink);
+}
+
+/* 从供应商拉回来的目录：可筛、可勾。 */
+.pcat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 9px;
+  background: var(--color-canvas);
+}
+
+.pcat-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 2px 10px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.pcat-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: var(--color-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pcat-row:hover {
+  background: var(--wash-1);
+}
+
+.pcat-row.is-on {
+  color: var(--color-ink);
+}
+
+.pform-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }

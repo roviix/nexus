@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { channelOf, laneOf } from "../../gateway/channels";
-import { gateway, grok, kiro, onGrokLogin, onKiroLogin, zcode } from "../../ipc/api";
+import { claude, gateway, grok, kiro, onClaudeLogin, onGrokLogin, onKiroLogin, qoder, zcode } from "../../ipc/api";
 import type {
   GatewayChannelId,
   DeviceAccount,
@@ -28,6 +28,7 @@ import { confirm } from "../../ui/confirm";
 import { timeAgo, timeUntil } from "../../ui/format";
 import { resetInShort } from "../../ui/usage";
 import { Banner, CopyButton, Empty, ErrorNote, Gauge, Icon, Modal, Switch, Tag } from "../../ui/primitives";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { laneBadge } from "./chatgpt";
 
 type DeviceApi = {
@@ -40,8 +41,8 @@ type DeviceApi = {
    *
    * 回值没人用：导入完一律重拉列表。ZCode 一次能带回好几个号，所以不限定成单个。
    */
-  importLocal: () => Promise<unknown>;
-  importText: (text: string, note?: string) => Promise<unknown>;
+  importLocal?: () => Promise<unknown>;
+  importText: (text: string, note?: string, backend?: string) => Promise<unknown>;
   remove: (id: string) => Promise<void>;
   setEnabled: (id: string, enabled: boolean) => Promise<DeviceAccount>;
   setCurrent: (label: string) => Promise<GatewayStatus>;
@@ -65,6 +66,8 @@ interface Spec {
   cliTab: string;
   cliHint: ReactNode;
   pastePlaceholder: string;
+  /** 粘贴时要先选一边（Qoder 国际 / 国内）。没有就不出。 */
+  pasteBackends?: { id: string; label: string }[];
   /** 「API Key」页签的提示；没有就不出这个页签。 */
   apiKeyHint?: ReactNode;
   labelPrefix: string;
@@ -72,10 +75,20 @@ interface Spec {
   /** 设备码授权的进度事件。和 `api.loginStart` 同进同退。 */
   listen?: (cb: (s: DeviceLoginState) => void) => Promise<() => void>;
   /**
+   * PKCE 授权：先打开授权页。本机回调口在听时同意后自动完成；
+   * 口被占了再把地址栏贴回来。和设备码二选一。
+   * 返回的地址由弹窗自己打开；取消时调 `api.loginCancel`。
+   */
+  prepareOauth?: (note?: string) => Promise<{
+    authorizeUrl: string;
+    loginId?: string;
+    callbackListening?: boolean;
+  }>;
+  /**
    * 本机那个客户端在不在。给了就在「从本机导入」页签上先说清楚，
    * 而不是让用户点一下再吃一个「读不到文件」。
    */
-  probeLocal?: () => Promise<{ present: boolean; path: string }>;
+  probeLocal?: () => Promise<{ present: boolean; path: string; also?: string | null }>;
 }
 
 const GROK: Spec = {
@@ -126,7 +139,7 @@ const KIRO: Spec = {
     </>
   ),
   pastePlaceholder:
-    "三种写法都认：\n· kiro-auth-token.json 的原文\n· CLIProxyAPI 的 JSON\n· access_token----refresh_token",
+    "四种写法都认：\n· kiro-auth-token.json 的原文\n· sub2api 导出的 accounts JSON（只收 platform 为 kiro 的）\n· CLIProxyAPI 的 JSON\n· access_token----refresh_token",
   labelPrefix: "kiro",
   api: kiro,
   listen: onKiroLogin,
@@ -161,6 +174,74 @@ const ZCODE: Spec = {
   probeLocal: zcode.probeClient,
 };
 
+const QODER: Spec = {
+  id: "qoder",
+  title: "Qoder",
+  emptyTitle: "还没有 Qoder 账号",
+  emptyBody:
+    "Qoder 的号。贴一把 Personal Access Token，这里换成能签名的短票，qoder/Qwen3.8-Max 这类模型走这条通道。国际版和国内版是两条号，目录不一样。凭证只在这台电脑上。",
+  bannerHint: "Qoder 的号只有一个用途：给本机网关跑 qoder/…。在「接入」里把客户端的通道选成 Qoder 就走这里。不经过 qodercli。",
+  usableHint: "个可接 · qoder/… 走这里",
+  addSubtitle: "在 Qoder 的集成页创建一把 Personal Access Token。国际版和国内版要分开贴，各算一个号。",
+  oauthHint: "",
+  waitingHint: "",
+  cliTab: "",
+  cliHint: null,
+  pastePlaceholder: "一行一把 Personal Access Token。\n某一行想换边，写成 cn pt-… 或 global pt-…",
+  pasteBackends: [
+    { id: "global", label: "国际版" },
+    { id: "cn", label: "国内版" },
+  ],
+  labelPrefix: "qoder",
+  api: qoder,
+};
+
+const CLAUDE: Spec = {
+  id: "claude",
+  title: "Claude",
+  emptyTitle: "还没有 Claude 账号",
+  emptyBody:
+    "Claude Pro / Max / Team 的订阅，或一把 Console API Key。加进来后，claude/claude-opus-4-6 这类模型走这条通道，直连 api.anthropic.com。凭证只在这台电脑上。",
+  bannerHint:
+    "Claude 的号只有一个用途：给本机网关跑 claude/…。在「接入」里把客户端指到本机网关，模型写成 claude/claude-sonnet-4-6。OAuth / setup-token 出站按 Claude Code 的指纹发，用量记在套餐额度里，不进 extra usage。",
+  usableHint: "个可接 · claude/… 走这里",
+  addSubtitle: "Pro / Max 走 Claude 的授权页；也可以导入本机 Claude Code 的凭证、setup-token，或贴一把 Console API Key。",
+  oauthHint:
+    "和 claude 登录走同一条路：系统浏览器里用 Claude 账号同意，授权码会回到本机 54545。54545 被占时，把跳转后的地址栏整条贴回来。",
+  waitingHint: "浏览器已打开。同意之后会自动回到这里。",
+  cliTab: "从本机 Claude Code",
+  cliHint: (
+    <>
+      读取 <code className="mono">~/.claude/.credentials.json</code>。macOS 上如果 token 只在钥匙串
+      「Claude Code-credentials」里，导入时会再读那里（可能弹出一次钥匙串确认）。文件和钥匙串都不动，只把凭证收进 Nexus。
+    </>
+  ),
+  pastePlaceholder:
+    "这几种都认：\n· 授权完成后地址栏里的整段地址\n· ~/.claude/.credentials.json 的原文\n· claude setup-token 打出来的 sk-ant-oat…\n· Console 的 sk-ant-api…",
+  labelPrefix: "claude",
+  api: {
+    list: claude.list,
+    loginCancel: claude.loginCancel,
+    importLocal: claude.importLocal,
+    importText: claude.importText,
+    refreshQuota: claude.refreshQuota,
+    remove: claude.remove,
+    setEnabled: claude.setEnabled,
+    setCurrent: claude.setCurrent,
+    resetLane: claude.resetLane,
+  },
+  prepareOauth: (note) => claude.loginStart(note),
+  probeLocal: claude.probeLocal,
+};
+
+export function ClaudeAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
+  return <DeviceAccounts spec={CLAUDE} tabs={tabs} onGo={onGo} />;
+}
+
+export function QoderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
+  return <DeviceAccounts spec={QODER} tabs={tabs} onGo={onGo} />;
+}
+
 export function GrokAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
   return <DeviceAccounts spec={GROK} tabs={tabs} onGo={onGo} />;
 }
@@ -193,6 +274,7 @@ function labelOf(a: Pick<DeviceAccount, "email" | "accountRef" | "label">, prefi
  * `hasRefresh` 那一位，因为压根没有续期这回事。
  */
 function deviceCanServe(a: DeviceAccount): boolean {
+  if (a.hasToken) return true;
   if (a.hasRefresh !== undefined) return a.hasRefresh;
   return (a.hasApiKey ?? false) || (a.hasJwt ?? false);
 }
@@ -442,7 +524,7 @@ function AccountRow({
           <div className="row" style={{ gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <Gauge
-                label={quota.periodType === "monthly" ? "本月额度" : "本周额度"}
+                label={quota.periodType === "monthly" ? "本月额度" : quota.periodType === "five_hour" ? "5 小时额度" : "本周额度"}
                 percent={quota.creditUsagePercent}
                 compact
                 note={
@@ -522,18 +604,32 @@ function AccountRow({
 type Mode = "oauth" | "cli" | "paste" | "apikey";
 
 function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void; onAdded: () => Promise<void> }) {
-  const canOauth = !!spec.api.loginStart && !!spec.listen;
-  const [mode, setMode] = useState<Mode>(canOauth ? "oauth" : "cli");
+  const canOauth = (!!spec.api.loginStart && !!spec.listen) || !!spec.prepareOauth;
+  const canCli = !!spec.api.importLocal;
+  const [mode, setMode] = useState<Mode>(canOauth ? "oauth" : canCli ? "cli" : "paste");
   const [error, setError] = useState<unknown>(null);
   const [working, setWorking] = useState(false);
   const [handle, setHandle] = useState<DeviceLoginHandle | null>(null);
   const [waitSecs, setWaitSecs] = useState(0);
   const [paste, setPaste] = useState("");
+  const [callback, setCallback] = useState("");
+  const [pkceUrl, setPkceUrl] = useState<string | null>(null);
+  const [pkceListening, setPkceListening] = useState(false);
+  const [pkceId, setPkceId] = useState<string | null>(null);
+  const [backend, setBackend] = useState(spec.pasteBackends?.[0]?.id ?? "global");
   const [apiKey, setApiKey] = useState("");
   const [note, setNote] = useState("");
-  const [probe, setProbe] = useState<{ present: boolean; path: string } | null>(null);
+  const [probe, setProbe] = useState<{ present: boolean; path: string; also?: string | null } | null>(null);
   const handleRef = useRef<DeviceLoginHandle | null>(null);
   handleRef.current = handle;
+  const pkceRef = useRef<string | null>(null);
+  pkceRef.current = pkceUrl;
+
+  useEffect(() => {
+    return () => {
+      if (pkceRef.current) void spec.api.loginCancel?.("");
+    };
+  }, [spec.api]);
 
   useEffect(() => {
     const p = spec.probeLocal;
@@ -548,6 +644,33 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
       alive = false;
     };
   }, [spec]);
+
+  useEffect(() => {
+    if (!pkceListening || !pkceId) return;
+    let unlisten: (() => void) | null = null;
+    void onClaudeLogin((st) => {
+      if (st.sessionId !== pkceId) return;
+      if (st.state === "waiting") setWaitSecs(st.elapsedSecs);
+      if (st.state === "succeeded") {
+        pkceRef.current = null;
+        void onAdded();
+      }
+      if (st.state === "failed") {
+        setError({ code: "upstream", message: st.message, hint: st.hint ?? undefined });
+        setPkceUrl(null);
+        setPkceListening(false);
+      }
+      if (st.state === "cancelled") {
+        setPkceUrl(null);
+        setPkceListening(false);
+      }
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [onAdded, pkceId, pkceListening]);
 
   useEffect(() => {
     const listen = spec.listen;
@@ -595,9 +718,45 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
       footer={
         <>
           <button type="button" className="btn" onClick={onClose}>
-            {handle ? "关闭" : "取消"}
+            {handle || pkceUrl ? "关闭" : "取消"}
           </button>
-          {mode === "oauth" && !handle && spec.api.loginStart ? (
+          {mode === "oauth" && !handle && spec.prepareOauth ? (
+            pkceUrl && !pkceListening ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={working || !callback.trim()}
+                onClick={() =>
+                  void go(async () => {
+                    await spec.api.importText(callback, note.trim() || undefined);
+                    pkceRef.current = null;
+                    await onAdded();
+                  })
+                }
+              >
+                完成授权
+              </button>
+            ) : pkceUrl ? null : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={working}
+                onClick={() =>
+                  void go(async () => {
+                    const started = await spec.prepareOauth!(note.trim() || undefined);
+                    setPkceUrl(started.authorizeUrl);
+                    setPkceId(started.loginId ?? null);
+                    setPkceListening(!!started.callbackListening);
+                    await openUrl(started.authorizeUrl);
+                  })
+                }
+              >
+                <Icon name="external" size={13} />
+                打开浏览器授权
+              </button>
+            )
+          ) : null}
+          {mode === "oauth" && !handle && !spec.prepareOauth && spec.api.loginStart ? (
             <button
               type="button"
               className="btn btn-primary"
@@ -608,14 +767,14 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
               打开浏览器授权
             </button>
           ) : null}
-          {mode === "cli" ? (
+          {mode === "cli" && spec.api.importLocal ? (
             <button
               type="button"
               className="btn btn-primary"
-              disabled={working || probe?.present === false}
+              disabled={working || (probe != null && !probe.present && !probe.also)}
               onClick={() =>
                 void go(async () => {
-                  await spec.api.importLocal();
+                  await spec.api.importLocal!();
                   await onAdded();
                 })
               }
@@ -631,7 +790,7 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
               disabled={working || !paste.trim()}
               onClick={() =>
                 void go(async () => {
-                  await spec.api.importText(paste, note.trim() || undefined);
+                  await spec.api.importText(paste, note.trim() || undefined, spec.pasteBackends ? backend : undefined);
                   await onAdded();
                 })
               }
@@ -662,7 +821,7 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
           {(
             [
               ...(canOauth ? [["oauth", "授权登录"] as [Mode, string]] : []),
-              ["cli", spec.cliTab],
+              ...(canCli ? [["cli", spec.cliTab] as [Mode, string]] : []),
               ["paste", "粘贴 token"],
               ...(spec.apiKeyHint && spec.api.addApiKey ? [["apikey", "API Key"] as [Mode, string]] : []),
             ] as Array<[Mode, string]>
@@ -673,7 +832,7 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
               role="radio"
               aria-checked={mode === id}
               className={`gwset-option${mode === id ? " is-active" : ""}`}
-              disabled={working || !!handle}
+              disabled={working || !!handle || !!pkceUrl}
               onClick={() => setMode(id)}
             >
               {label}
@@ -683,7 +842,50 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
 
         <ErrorNote error={error} />
 
-        {mode === "oauth" ? (
+        {mode === "oauth" && spec.prepareOauth ? (
+          <div className="stack" style={{ gap: 10 }}>
+            {!pkceUrl ? (
+              <p className="muted" style={{ margin: 0 }}>
+                {spec.oauthHint}
+              </p>
+            ) : null}
+            {pkceUrl ? (
+              pkceListening ? (
+                <>
+                  <p className="muted" style={{ margin: 0 }}>
+                    {spec.waitingHint}
+                    {waitSecs > 0 ? <span className="faint tiny">（已等待 {waitSecs} 秒）</span> : null}
+                  </p>
+                  <div className="row" style={{ gap: 6 }}>
+                    <span className="faint tiny">没自动打开？</span>
+                    <CopyButton value={pkceUrl} label="复制授权链接" />
+                  </div>
+                </>
+              ) : (
+              <>
+                <p className="muted" style={{ margin: 0 }}>
+                  本机 54545 端口被占着，没法自动收回调。浏览器跳到打不开的 localhost:54545 之后，把地址栏整条复制过来。
+                </p>
+                <textarea
+                  className="textarea mono"
+                  rows={3}
+                  placeholder="http://localhost:54545/callback?code=…&state=…"
+                  value={callback}
+                  onChange={(e) => setCallback(e.target.value)}
+                  spellCheck={false}
+                />
+                <div className="row" style={{ gap: 6 }}>
+                  <span className="faint tiny">没自动打开？</span>
+                  <CopyButton value={pkceUrl} label="复制授权链接" />
+                </div>
+              </>
+              )
+            ) : null}
+            {pkceUrl ? null : (
+              <input className="input" placeholder="备注（可选）" value={note} onChange={(e) => setNote(e.target.value)} />
+            )}
+          </div>
+        ) : mode === "oauth" ? (
           handle ? (
             <div className="stack" style={{ gap: 12 }}>
               <p className="muted" style={{ margin: 0 }}>
@@ -719,6 +921,12 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
             {probe ? (
               probe.present ? (
                 <Banner tone="ok" title="找到本机的凭证了，可以直接导入。" hint={probe.path} />
+              ) : probe.also ? (
+                <Banner
+                  tone="warn"
+                  title="凭证文件不在，导入时会再读钥匙串。"
+                  hint={`${probe.path}；${probe.also}`}
+                />
               ) : (
                 <Banner
                   tone="warn"
@@ -732,6 +940,23 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
 
         {mode === "paste" ? (
           <div className="stack" style={{ gap: 10 }}>
+            {spec.pasteBackends ? (
+              <div className="gwset-options" role="radiogroup" aria-label={`${spec.title} 版本`}>
+                {spec.pasteBackends.map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={backend === b.id}
+                    className={`gwset-option${backend === b.id ? " is-active" : ""}`}
+                    disabled={working}
+                    onClick={() => setBackend(b.id)}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <textarea
               className="textarea mono"
               rows={5}

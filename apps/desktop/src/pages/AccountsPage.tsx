@@ -1,7 +1,7 @@
 /**
  * 我的账号（ARCHITECTURE §5.1）。
  *
- * 顶部按**平台**分页签：Cursor、ChatGPT、Grok Build、Kiro。号形状不同（Cursor 的能切进 IDE、
+ * 顶部按**平台**分页签：Cursor、ChatGPT、Grok Build、Kiro、ZCode、Qoder，外加供应商（API Key）。号形状不同（Cursor 的能切进 IDE、
  * 进三种池；其余只喂本机网关），混在一列里两边都看不懂，所以各占一页签。
  * 地址是 `#accounts` / `#accounts/chatgpt` / `#accounts/grok` / `#accounts/kiro`。
  *
@@ -42,6 +42,7 @@ import type {
   ProvisionReport,
 } from "../ipc/types";
 import { ACCOUNT_PLATFORMS, go, type AccountPlatform, type Route } from "../shell/nav";
+import { ProviderAccounts } from "./accounts/ProviderAccounts";
 import { maskEmail } from "../ui/format";
 import {
   BUILTIN_VIEWS,
@@ -86,7 +87,7 @@ import { CopySelectedModal } from "./accounts/CopySelectedModal";
 import { LookupModal } from "./accounts/LookupModal";
 import { ProvisionModal } from "./accounts/ProvisionModal";
 import { ChatGptAccounts } from "./accounts/ChatGptAccounts";
-import { GrokAccounts, KiroAccounts, ZcodeAccounts } from "./accounts/DeviceAccounts";
+import { ClaudeAccounts, GrokAccounts, KiroAccounts, QoderAccounts, ZcodeAccounts } from "./accounts/DeviceAccounts";
 
 const SORTS: AccountSort[] = ["added", "reset", "botReset", "checked"];
 const POOL_FILTERS: PoolFilter[] = ["any", "switcher", "gateway", "unpooled"];
@@ -123,6 +124,12 @@ export function AccountsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
         <KiroAccounts tabs={tabs} onGo={onGo} />
       ) : platform === "zcode" ? (
         <ZcodeAccounts tabs={tabs} onGo={onGo} />
+      ) : platform === "qoder" ? (
+        <QoderAccounts tabs={tabs} onGo={onGo} />
+      ) : platform === "claude" ? (
+        <ClaudeAccounts tabs={tabs} onGo={onGo} />
+      ) : platform === "provider" ? (
+        <ProviderAccounts tabs={tabs} onGo={onGo} />
       ) : (
         <CursorAccounts tabs={tabs} onGo={onGo} />
       )}

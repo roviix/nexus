@@ -3,8 +3,11 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  CLAUDE_ALIASES,
   claudeSettings,
+  clientEndpoint,
   clientModelId,
+  roleModel,
   clineFields,
   codexToml,
   endpointOf,
@@ -35,13 +38,34 @@ describe("endpointOf", () => {
 });
 
 describe("Claude Code settings", () => {
-  it("pins every model slot, old and new names alike", () => {
-    const env = JSON.parse(claudeSettings(CLOUD, "sk-x", "claude-sonnet-5")).env as Record<string, string>;
-    expect(env.ANTHROPIC_BASE_URL).toBe("https://relay.example.com");
+  it("points at its own client scope and writes stable role aliases with real display names", () => {
+    const env = JSON.parse(
+      claudeSettings(LOCAL, "sk-x", { model: "cursor/claude-sonnet-5", opus: "cursor/claude-opus-5", haiku: "zcode/glm-4.7" }),
+    ).env as Record<string, string>;
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:8787/client/claude");
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe("sk-x");
-    for (const k of Object.keys(env).filter((k) => k.includes("MODEL"))) expect(env[k]).toBe("claude-sonnet-5");
-    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME).toBeDefined();
-    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeDefined();
+    expect(env.ANTHROPIC_MODEL).toBeUndefined();
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(CLAUDE_ALIASES.sonnet);
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe(CLAUDE_ALIASES.opus);
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe(CLAUDE_ALIASES.haiku);
+    expect(env.ANTHROPIC_SMALL_FAST_MODEL).toBe(CLAUDE_ALIASES.haiku);
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME).toBe("cursor/claude-sonnet-5");
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME).toBe("zcode/glm-4.7");
+    // Fable 没配：跟 Opus。
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME).toBe("cursor/claude-opus-5");
+  });
+
+  it("marks 1M context on every role but Haiku", () => {
+    const env = JSON.parse(claudeSettings(LOCAL, "k", { model: "cursor/claude-sonnet-5", context1m: true })).env as Record<string, string>;
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe(`${CLAUDE_ALIASES.sonnet}[1M]`);
+    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe(`${CLAUDE_ALIASES.fable}[1M]`);
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe(CLAUDE_ALIASES.haiku);
+  });
+
+  it("follows the same role fallback as the gateway", () => {
+    const route = { model: "a/x", opus: " ", fable: null };
+    expect(roleModel(route, "opus")).toBe("a/x");
+    expect(roleModel({ ...route, opus: "b/y" }, "fable")).toBe("b/y");
   });
 });
 
@@ -60,6 +84,22 @@ describe("Codex config", () => {
     expect(clientModelId("chatgpt/gpt-6-astra")).toBe("gpt-6-astra");
     expect(codexToml(LOCAL, "k", "chatgpt/gpt-5.4")).toContain('model = "gpt-5.4"');
     expect(codexToml(LOCAL, "k", "chatgpt/gpt-5.4")).not.toContain("chatgpt/");
+  });
+
+  it("strips every channel prefix but keeps slashes that belong to the model", () => {
+    expect(clientModelId("provider/deepseek-v4-pro")).toBe("deepseek-v4-pro");
+    expect(clientModelId("qoder/Qwen3.8-Max")).toBe("Qwen3.8-Max");
+    expect(clientModelId("codex/gpt-5.5")).toBe("gpt-5.5");
+    expect(clientModelId("anthropic/claude-sonnet")).toBe("anthropic/claude-sonnet");
+  });
+
+  it("keeps the channel prefix for clients that hit the unscoped /v1", () => {
+    expect(clineFields(LOCAL, "k", "chatgpt/gpt-5.4")[3]!.value).toBe("chatgpt/gpt-5.4");
+    expect(sdkSnippet("curl", "openai", LOCAL, "k", "provider/deepseek-v4-pro", "macos")).toContain('"model":"provider/deepseek-v4-pro"');
+  });
+
+  it("points at the codex client scope", () => {
+    expect(codexToml(clientEndpoint(LOCAL, "codex"), "k", "gpt-5.4")).toContain('base_url = "http://127.0.0.1:8787/client/codex/v1"');
   });
 });
 

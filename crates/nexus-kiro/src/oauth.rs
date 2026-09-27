@@ -49,6 +49,8 @@ pub struct Identity {
     pub subject: String,
     pub email: Option<String>,
     pub auth_method: Option<String>,
+    /// 社交登录的 `profileArn`。Builder ID 留空。
+    pub profile_arn: Option<String>,
 }
 
 pub struct TokenClient {
@@ -309,6 +311,9 @@ pub fn identity_from_tokens(tokens: &TokenSet, fallback_ref: Option<&str>) -> Id
         if let Some(cid) = tokens.client_id.as_ref() {
             id.subject = format!("client:{}", cid.expose());
         }
+    }
+    if let Some(arn) = fallback_ref.map(str::trim).filter(|s| s.starts_with("arn:")) {
+        id.profile_arn = Some(arn.to_string());
     }
     id
 }
