@@ -3472,6 +3472,7 @@ h2 {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .acct-filters-group .picker-btn {
@@ -3487,26 +3488,22 @@ h2 {
   background: var(--wash-1);
 }
 
-.is-archive-btn.is-active {
-  color: var(--color-ink);
-  background: var(--wash-3);
-  border-color: var(--accent);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-}
+@media (max-width: 960px) {
+  .unified-toolbar-controls {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+  }
 
-.is-archive-btn .pill-n {
-  font-size: 11px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--wash-2);
-  color: var(--color-ink-2);
-}
+  .acct-search-box {
+    flex: 1;
+    min-width: 180px;
+  }
 
-.is-archive-btn.is-active .pill-n {
-  background: var(--accent);
-  color: #fff;
+  .acct-search-box .search {
+    flex: 1;
+    width: 100%;
+  }
 }
 
 .acct-count-summary {
