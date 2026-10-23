@@ -38,8 +38,10 @@ impl ChannelGate for MeshGate {
             return true;
         }
         for peer in self.service.blocking_peers() {
-            let prefix = format!("{}/", peer.device_name.trim().to_ascii_lowercase());
-            if stripped.starts_with(&prefix) {
+            let name_clean = peer.device_name.trim().to_ascii_lowercase();
+            let prefix = format!("{name_clean}/");
+            let prefix_slug = format!("{}/", name_clean.replace(' ', "-"));
+            if stripped.starts_with(&prefix) || stripped.starts_with(&prefix_slug) {
                 return true;
             }
             let id_prefix = format!("{}/", peer.node_id.trim().to_ascii_lowercase());
@@ -60,8 +62,10 @@ impl ChannelGate for MeshGate {
         let m = base_model.trim().to_ascii_lowercase();
         let stripped = m.strip_prefix("mesh/").unwrap_or(&m);
         for peer in self.service.blocking_peers() {
-            let prefix = format!("{}/", peer.device_name.trim().to_ascii_lowercase());
-            if stripped.starts_with(&prefix) {
+            let name_clean = peer.device_name.trim().to_ascii_lowercase();
+            let prefix = format!("{name_clean}/");
+            let prefix_slug = format!("{}/", name_clean.replace(' ', "-"));
+            if stripped.starts_with(&prefix) || stripped.starts_with(&prefix_slug) {
                 return true;
             }
             let id_prefix = format!("{}/", peer.node_id.trim().to_ascii_lowercase());
@@ -204,10 +208,16 @@ impl Upstream for MeshUpstream {
             let mut sub_model = stripped.to_string();
 
             for peer in &peers {
-                let dev_prefix = format!("{}/", peer.device_name.trim().to_ascii_lowercase());
+                let name_clean = peer.device_name.trim().to_ascii_lowercase();
+                let dev_prefix = format!("{name_clean}/");
+                let dev_prefix_slug = format!("{}/", name_clean.replace(' ', "-"));
                 let node_prefix = format!("{}/", peer.node_id.trim().to_ascii_lowercase());
                 if m_lower.starts_with(&dev_prefix) {
                     sub_model = stripped[dev_prefix.len()..].to_string();
+                    target_peer = Some(peer.clone());
+                    break;
+                } else if m_lower.starts_with(&dev_prefix_slug) {
+                    sub_model = stripped[dev_prefix_slug.len()..].to_string();
                     target_peer = Some(peer.clone());
                     break;
                 } else if m_lower.starts_with(&node_prefix) {
@@ -583,25 +593,43 @@ mod tests {
     #[tokio::test]
     async fn test_mesh_gate_owns_and_claims_bare() {
         let mut config = MeshConfig::default();
-        config.peers = vec![MeshPeer {
-            node_id: "node_remote_999".to_string(),
-            device_name: "Kiro-share".to_string(),
-            status: "connected".to_string(),
-            latency_ms: 12,
-            is_self: true,
-            shared_channels: vec!["kiro".to_string()],
-            remote_models: vec!["kiro-claude-sonnet-5".to_string()],
-            paired_at: 0,
-            last_seen_at: 0,
-        }];
+        config.peers = vec![
+            MeshPeer {
+                node_id: "node_remote_999".to_string(),
+                device_name: "Kiro-share".to_string(),
+                status: "connected".to_string(),
+                latency_ms: 12,
+                is_self: true,
+                shared_channels: vec!["kiro".to_string()],
+                remote_models: vec!["kiro-claude-sonnet-5".to_string()],
+                paired_at: 0,
+                last_seen_at: 0,
+            },
+            MeshPeer {
+                node_id: "node_remote_888".to_string(),
+                device_name: "Nexus afb8dc4".to_string(),
+                status: "connected".to_string(),
+                latency_ms: 30,
+                is_self: false,
+                shared_channels: vec!["kiro".to_string()],
+                remote_models: vec!["kro-claude-opus-4.5".to_string()],
+                paired_at: 0,
+                last_seen_at: 0,
+            },
+        ];
 
         let service = Arc::new(MeshService::new(config));
         let gate = MeshGate::new(service);
 
-        // 1. 带别名前缀
+        // 1. 带别名前缀（含连字符与空格兼容）
         assert!(gate.owns(Capability::Chat, "kiro-share/kiro-claude-sonnet-5"));
         assert!(gate.owns(Capability::Chat, "mesh/kiro-share/kiro-claude-sonnet-5"));
         assert!(gate.claims_bare("kiro-share/kiro-claude-sonnet-5"));
+
+        assert!(gate.owns(Capability::Chat, "nexus-afb8dc4/kro-claude-opus-4.5"));
+        assert!(gate.owns(Capability::Chat, "nexus afb8dc4/kro-claude-opus-4.5"));
+        assert!(gate.claims_bare("nexus-afb8dc4/kro-claude-opus-4.5"));
+        assert!(gate.claims_bare("nexus afb8dc4/kro-claude-opus-4.5"));
 
         // 2. 带 node_id 前缀
         assert!(gate.owns(Capability::Chat, "node_remote_999/kiro-claude-sonnet-5"));

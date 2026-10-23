@@ -84,13 +84,18 @@ export function isChannelId(id: string | null | undefined, channels?: LocalChann
   if (!id) return false;
   const lower = id.toLowerCase();
   if ((CHANNEL_IDS as readonly string[]).includes(lower)) return true;
-  if (channels && channels.some((c) => c.id.toLowerCase() === lower)) return true;
+  if (channels && channels.some((c) => {
+    const cid = c.id.toLowerCase();
+    return cid === lower || cid.replace(/\s+/g, "-") === lower;
+  })) return true;
   return false;
 }
 
 export function defaultChannelId(status: GatewayStatus | null | undefined, channels?: LocalChannel[]): LocalChannelId {
   const id = status?.settings.defaultChannel;
-  return isChannelId(id, channels) ? id : CURSOR;
+  if (isChannelId(id, channels)) return id;
+  if (channels && channels.length > 0) return channels[0].id;
+  return CURSOR;
 }
 
 /** `{通道}/{模型}` 的第一段。对不上已知通道时当裸名（供应商的模型 id 自己也可能带斜杠）。 */
@@ -101,7 +106,15 @@ export function splitModelId(id: string, channels?: LocalChannel[]): { channel: 
   const channel = PREFIX_ALIASES[prefix] ?? null;
   if (channel) return { channel, name: id.slice(slash + 1) };
   if (channels) {
-    const ch = channels.find((c) => c.id.toLowerCase() === prefix);
+    const ch = channels.find((c) => {
+      const cid = c.id.toLowerCase();
+      if (cid === prefix || cid.replace(/\s+/g, "-") === prefix) return true;
+      if (c.prefixes.some((p) => {
+        const clean = p.toLowerCase().replace(/\/$/, "");
+        return clean === prefix || clean.replace(/\s+/g, "-") === prefix;
+      })) return true;
+      return false;
+    });
     if (ch) return { channel: ch.id, name: id.slice(slash + 1) };
   }
   return { channel: null, name: id };
@@ -237,6 +250,7 @@ export function localChannels(
   if (peers && peers.length > 0) {
     for (const p of peers) {
       const pid = p.device_name.toLowerCase();
+      const pidSlug = pid.replace(/\s+/g, "-");
       extras.push({
         id: pid,
         label: p.device_name,
@@ -246,10 +260,13 @@ export function localChannels(
         ready: true,
         mediaReady: false,
         lane: { current: null, candidates: [], missing: [], available: [] },
-        chatModels: p.remote_models.map((m) => (m.toLowerCase().startsWith(`${pid}/`) ? m : `${pid}/${m}`)),
+        chatModels: p.remote_models.map((m) => {
+          if (m.toLowerCase().startsWith(`${pid}/`) || m.toLowerCase().startsWith(`${pidSlug}/`)) return m;
+          return `${pidSlug}/${m}`;
+        }),
         imageModels: [],
         videoModels: [],
-        prefixes: [`${pid}/`, `mesh/${pid}/`],
+        prefixes: [`${pid}/`, `${pidSlug}/`, `mesh/${pid}/`, `mesh/${pidSlug}/`],
         kind: "mesh" as const,
         latencyMs: p.latency_ms,
         peerInfo: p,

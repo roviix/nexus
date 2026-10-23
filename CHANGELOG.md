@@ -8,6 +8,15 @@
 
 ## [未发布]
 
+## [0.9.1] — 2026-10-23
+
+### 修复
+
+- **修复 Mesh 共享节点接入与路由穿透问题**：
+  - 修复「接入」页在校验 Mesh 远端节点模型时遗漏上下文、误判为裸模型回退至 Cursor 墓碑通道的问题，彻底解除接入配置保存按钮的死锁。
+  - 优化网关层核心解析逻辑（`ChannelRegistry::resolve`）：针对明确指向 Mesh 节点的模型请求优先放行直通，避免被全局默认通道停用熔断误杀。
+  - 全面支持 Mesh 节点设备名在空格与连字符 (`-`) 形式下的双向兼容与前缀识别，其他接入用户无需手动拼接 `mesh/` 根前缀即可一键接入并连通测试。
+
 ### 新增
 
 - **全面支持 Google 反重力 (Google Antigravity / AGY) 生产级接入。**
@@ -584,7 +593,8 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.9.0...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/roviix/nexus/releases/tag/v0.9.1
 [0.9.0]: https://github.com/roviix/nexus/releases/tag/v0.9.0
 [0.8.0]: https://github.com/roviix/nexus/releases/tag/v0.8.0
 [0.7.6]: https://github.com/roviix/nexus/releases/tag/v0.7.6

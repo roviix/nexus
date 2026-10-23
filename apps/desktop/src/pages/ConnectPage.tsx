@@ -543,11 +543,11 @@ function ClientPanel({
     ["Fable", draft.fable],
   ].flatMap(([label, value]) => {
     if (!value) return [];
-    const target = splitModelId(value).channel ?? channel;
+    const target = splitModelId(value, channels).channel ?? channel;
     return channels.find((c) => c.id === target)?.unavailableReason ? [label] : [];
   });
   const blockedRouteReason = blockedRouteFields.length
-    ? channels.find((c) => c.unavailableReason && (c.id === channel || [draft.model, draft.opus, draft.haiku, draft.fable].some((v) => v && splitModelId(v).channel === c.id)))?.unavailableReason ?? "这条路由包含不可用通道。"
+    ? channels.find((c) => c.unavailableReason && (c.id === channel || [draft.model, draft.opus, draft.haiku, draft.fable].some((v) => v && splitModelId(v, channels).channel === c.id)))?.unavailableReason ?? "这条路由包含不可用通道。"
     : null;
 
   const options: PickerOption[] = useMemo(() => inChannel.map((id) => ({ id })), [inChannel]);
@@ -592,7 +592,7 @@ function ClientPanel({
   async function apply() {
     const next = routeToSave();
     if (blockedRouteReason) {
-      setError(`不能保存：${blockedRouteFields.join("、")} 仍指向 Cursor。${blockedRouteReason}`);
+      setError(`不能保存：${blockedRouteFields.join("、")} 包含不可用通道。${blockedRouteReason}`);
       return;
     }
     if (!next.model) {
@@ -787,7 +787,7 @@ function ClientPanel({
           <p className="cfg-note is-bad">
             <i aria-hidden />
             <span>
-              {blockedRouteFields.join("、")} 仍指向 Cursor。{blockedRouteReason}
+              {blockedRouteFields.join("、")} 包含不可用通道。{blockedRouteReason}
             </span>
           </p>
         ) : null}

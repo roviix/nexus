@@ -311,19 +311,28 @@ impl ChannelRegistry {
             }
         }
         let default = self.default_channel();
-        // 用户保留的默认通道若是平台级墓碑，裸模型也必须确定落回它：否则供应商对同名
-        // 模型的兼容认领会先抢占请求，造成静默外送和意外计费。显式 `provider/…` 已在上面
-        // 命中，不受影响；默认通道可用时继续保留旧版裸供应商模型兼容。
-        if !model.is_empty()
-            && cap == Capability::Chat
-            && default.gate.unavailable_reason().is_none()
-        {
-            if let Some(ch) = self.channels.iter().find(|ch| ch.gate.claims_bare(model)) {
+        if !model.is_empty() && cap == Capability::Chat {
+            // Mesh 明确匹配了对端节点指纹/设备名的请求，无论默认通道是否停用都应当直接放行并路由至 Mesh，
+            // 避免被默认通道的墓碑误杀拦截。
+            if let Some(mesh_ch) = self.channels.iter().find(|ch| ch.id == MESH && ch.gate.claims_bare(model)) {
                 return Resolved {
-                    channel: ch,
+                    channel: mesh_ch,
                     base_model: model.to_string(),
                     forced: false,
                 };
+            }
+
+            // 用户保留的默认通道若是平台级墓碑，裸模型也必须确定落回它：否则供应商对同名
+            // 模型的兼容认领会先抢占请求，造成静默外送和意外计费。显式 `provider/…` 已在上面
+            // 命中，不受影响；默认通道可用时继续保留旧版裸供应商模型兼容。
+            if default.gate.unavailable_reason().is_none() {
+                if let Some(ch) = self.channels.iter().find(|ch| ch.gate.claims_bare(model)) {
+                    return Resolved {
+                        channel: ch,
+                        base_model: model.to_string(),
+                        forced: false,
+                    };
+                }
             }
         }
         let ch = default;
