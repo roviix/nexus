@@ -164,7 +164,7 @@ nexus/
 <div align="center">
   <img src="docs/images/wechat_qr.jpg" width="220" alt="WeChat Community QR Code" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
   <p style="margin-top: 10px; font-size: 13.5px; color: #555;">
-    微信扫码添加好友（微信号：<code>ouyzam</code>，昵称：<code>ouyz</code>），备注 <strong>AI 交流</strong> 或 <strong>Nexus</strong> 即可受邀进群。
+    微信扫码添加好友（微信号：<code>ouyzam</code>），备注 <strong>AI 交流</strong> 或 <strong>Nexus</strong> 即可受邀进群。
   </p>
 </div>
 

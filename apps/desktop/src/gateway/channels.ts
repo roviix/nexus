@@ -94,7 +94,8 @@ export function isChannelId(id: string | null | undefined, channels?: LocalChann
 export function defaultChannelId(status: GatewayStatus | null | undefined, channels?: LocalChannel[]): LocalChannelId {
   const id = status?.settings.defaultChannel;
   if (isChannelId(id, channels)) return id;
-  if (channels && channels.length > 0) return channels[0].id;
+  const first = channels?.[0]?.id;
+  if (first) return first;
   return CURSOR;
 }
 

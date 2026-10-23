@@ -163,7 +163,7 @@ Join our community to discuss AI developments, LLM engineering, Cursor & Claude 
 <div align="center">
   <img src="docs/images/wechat_qr.jpg" width="220" alt="WeChat Community QR Code" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
   <p style="margin-top: 10px; font-size: 13.5px; color: #555;">
-    Scan the WeChat QR code above to connect (WeChat ID: <code>ouyzam</code>, nickname: <code>ouyz</code>) with note <strong>AI</strong> or <strong>Nexus</strong> to join the community group, or join conversations on <a href="https://github.com/roviix/nexus/discussions">GitHub Discussions</a>.
+    Scan the WeChat QR code above to connect (WeChat ID: <code>ouyzam</code>) with note <strong>AI</strong> or <strong>Nexus</strong> to join the community group, or join conversations on <a href="https://github.com/roviix/nexus/discussions">GitHub Discussions</a>.
   </p>
 </div>
 

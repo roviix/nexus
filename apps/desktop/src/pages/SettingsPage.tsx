@@ -669,7 +669,6 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
             </div>
             <div style={{ fontSize: 12, color: "var(--color-ink-2)", marginBottom: 6 }}>
               微信号：<strong style={{ fontFamily: "var(--font-mono)", color: "var(--color-ink)" }}>ouyzam</strong>
-              <span style={{ color: "var(--color-faint)", marginLeft: 6 }}>(昵称：ouyz)</span>
             </div>
             <div style={{ fontSize: 12, color: "var(--color-muted)", lineHeight: 1.6, maxWidth: 300 }}>
               备注 <strong style={{ color: "var(--accent)", fontWeight: 600 }}>AI 交流</strong> 或 <strong style={{ color: "var(--accent)", fontWeight: 600 }}>Nexus</strong> 邀请进群<br />
