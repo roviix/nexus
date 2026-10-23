@@ -548,15 +548,20 @@ function ChannelsMainView({
               {/* Source & Capacity Info */}
               <div className="channel-detail-box" style={{ padding: 0, background: "transparent", border: "none" }}>
                 <div className="chan-metrics-grid">
-                  <div className="chan-metric-box" title={`远端节点 ID: ${peer.node_id}`}>
+                  <div
+                    className="chan-metric-box"
+                    title={`远端设备: ${peer.device_name}\n节点指纹: ${peer.node_id}\n链路 RTT: ${peer.latency_ms}ms`}
+                  >
                     <div className="chan-metric-head-row">
-                      <span className="chan-metric-label">节点来源</span>
-                      <span className="pill tiny chan-strategy-pill">远端直连</span>
+                      <span className="chan-metric-label">节点与拓扑</span>
+                      <span className="pill tiny chan-strategy-pill">
+                        {peer.latency_ms > 0 && peer.latency_ms < 30 ? "⚡ LAN 直连" : "🛡️ 加密隧道"}
+                      </span>
                     </div>
                     <div className="chan-metric-content">
                       <span className="pod-dot is-live" />
                       <span className="chan-metric-val mono" title={peer.node_id}>
-                        {peer.node_id.slice(0, 8)}…
+                        node_{peer.node_id.slice(0, 8)}
                       </span>
                     </div>
                   </div>

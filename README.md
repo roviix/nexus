@@ -52,8 +52,9 @@
 
 ### 3. 🌐 Nexus Mesh 去中心化对等共享 (P2P Mesh Network)
 通过端端加密反向隧道，一键将本地多余通道“出借”给自己的多台设备（如家庭台式机）或团队好友。
-- **零网络门槛**：6 位动态配对码建立安全直连，无需公网 IP，无需配置内网穿透与路由器端口映射；
-- **本地所有者保护**：本地发起请求时自动启动抢占保护机制，永远优先保障本机使用体验，外部分享绝不卡顿。
+- **极简配对**：勾选想要共享的模型通道，一键生成 6 位动态配对码（如 `NX-882190`），远端设备输入即可瞬间建立直连；
+- **零网络门槛**：无需公网 IP，无需配置复杂的内网穿透与路由器端口映射，局域网走超低延迟直接互通，跨公网自动建立端到端加密穿透隧道；
+- **本地所有者保护 (Preemption)**：本地发起请求时自动启动抢占保护机制，永远优先保障本机使用体验，外部分享绝不卡顿。
 
 ### 4. ⚡ 客户端一键无损接入 (One-Click Client Injection)
 告别繁琐的手动编辑配置文件。Nexus 深度适配主流开发工具，改动前自动创建完整快照备份，随时一键还原：
@@ -153,6 +154,19 @@ nexus/
 ```
 
 </details>
+
+---
+
+## 💬 社区与交流 (Community & Feedback)
+
+欢迎加入 Nexus 开发者技术社群，获取最新模型通道适配规则、探讨高阶多机玩法与 Bug 快速反馈！
+
+<div align="center">
+  <img src="docs/images/wechat_qr.jpg" width="220" alt="WeChat Community QR Code" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
+  <p style="margin-top: 10px; font-size: 13.5px; color: #555;">
+    微信扫码添加作者好友（微信名：<strong>ouyz</strong>），备注 <strong>Nexus</strong> 即可进入官方技术交流群。
+  </p>
+</div>
 
 ---
 

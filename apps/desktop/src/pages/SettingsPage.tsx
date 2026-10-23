@@ -20,7 +20,7 @@ import type { ActivityEntry, AppStatus } from "../ipc/types";
 import { go, SETTINGS_TABS, type Route, type SettingsTab } from "../shell/nav";
 import { timeAgo } from "../ui/format";
 import { Mark } from "../ui/Mark";
-import { Banner, Empty, ErrorNote, Health, Icon, Opt, Spinner, Switch, Tag } from "../ui/primitives";
+import { Banner, Empty, ErrorNote, Health, Icon, Modal, Opt, Spinner, Switch, Tag } from "../ui/primitives";
 import { Appearance } from "./settings/Appearance";
 import { LocalBackups } from "./settings/LocalBackups";
 import { PermissionList, pendingItems, usePermissions } from "./settings/Permissions";
@@ -509,6 +509,8 @@ const REPO_URL = "https://github.com/roviix/nexus";
 
 function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }) {
   const [upd, setUpd] = useState<UpdateState>({ kind: "idle" });
+  const [qrOpen, setQrOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const found = useRef<Update | null>(null);
 
   async function lookForUpdate() {
@@ -549,9 +551,7 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
 
   return (
     <>
-      {/* 关于这一行和别的设置行长一个样：品牌标坐进 `.opt` 那个 30px 的图标框里。
-          上一版是一块 56px 圆角底 + 40px 标 + 17px 大字的「英雄区」，它下面紧跟着一列
-          54px 的普通行，两种版式摞在一起就是「别扭」的来源 —— 这一页只该有一种行。 */}
+      {/* 关于这一行和别的设置行长一个样：品牌标坐进 `.opt` 那个 30px 的图标框里。 */}
       <Sect icon="box" title="关于">
         <div className="opts">
           <Opt
@@ -588,6 +588,22 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
               <Icon name="external" size={13} />
             </button>
           </Opt>
+
+          <Opt
+            icon={<Icon name="chat" size={16} />}
+            title="技术交流群"
+            desc="加入 Nexus 官方开发者社群，交流 Cursor、Claude Code 与 Mesh 算力网关使用心得"
+          >
+            <button
+              type="button"
+              className="btn btn-sm btn-soft"
+              onClick={() => setQrOpen(true)}
+              style={{ gap: 6 }}
+            >
+              <Icon name="chat" size={13} />
+              扫码加群 / 交流
+            </button>
+          </Opt>
         </div>
       </Sect>
 
@@ -599,6 +615,65 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
           </Opt>
         </div>
       </Sect>
+
+      {/* 交流群与作者二维码弹窗 */}
+      {qrOpen ? (
+        <Modal
+          title="扫码加入 Nexus 开发者技术交流群"
+          onClose={() => setQrOpen(false)}
+          compact
+          footer={
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", width: "100%" }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-soft"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText("ouyz");
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  } catch {}
+                }}
+              >
+                {copied ? "已复制微信号 ✓" : "复制作者微信号 (ouyz)"}
+              </button>
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => setQrOpen(false)}>
+                知道了
+              </button>
+            </div>
+          }
+        >
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "10px 4px 6px" }}>
+            <div
+              style={{
+                background: "#ffffff",
+                padding: "12px",
+                borderRadius: "14px",
+                boxShadow: "0 4px 20px rgba(0, 0, 0, 0.25)",
+                marginBottom: 14,
+                display: "inline-flex",
+              }}
+            >
+              <img
+                src="/wechat_qr.jpg"
+                alt="WeChat QR Code"
+                style={{ width: 220, height: 260, objectFit: "contain", display: "block" }}
+                onError={(e) => {
+                  // 兜底路径
+                  (e.currentTarget as HTMLImageElement).src = "./wechat_qr.jpg";
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 13.5, fontWeight: 650, color: "var(--color-ink)", marginBottom: 6 }}>
+              微信扫码 · 添加作者为朋友
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-muted)", lineHeight: 1.6, maxWidth: 300 }}>
+              备注 <strong style={{ color: "var(--accent)", fontWeight: 600 }}>Nexus</strong> 邀请加入官方微信技术交流群<br />
+              实时反馈 Bug、探讨高阶玩法、获取最新模型通道支持规则
+            </div>
+          </div>
+        </Modal>
+      ) : null}
     </>
   );
 }

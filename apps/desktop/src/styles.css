@@ -3419,77 +3419,72 @@ h2 {
   background: rgba(255, 255, 255, 0.18);
 }
 
-/* ── 统一账号控制栏（单一高级收敛控制台） ────────────────────────────────── */
+/* ── 统一账号控制栏（高内聚紧凑控制台） ────────────────────────────────── */
 
 .unified-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
-.unified-toolbar-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.status-pill-sep {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--color-line);
+  opacity: 0.7;
 }
 
-.unified-toolbar-subrow {
+.status-pill-archive {
+  color: var(--color-muted);
+}
+
+.status-pill-archive:hover {
+  color: var(--color-ink);
+}
+
+.unified-toolbar-controls {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .acct-search-box {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
 .acct-search-box .search {
   flex: none;
-  width: 240px;
+  width: 210px;
   min-width: 0;
 }
 
 .acct-filters-group {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.acct-subrow-meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.is-archive-btn {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  border-radius: var(--radius-control, 8px);
-  border: 1px solid var(--color-line);
-  background: var(--color-surface);
-  color: var(--color-muted);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.12s ease;
-  user-select: none;
 }
 
-.is-archive-btn:hover {
-  color: var(--color-ink);
-  background: var(--wash-2);
-  border-color: var(--line-strong);
+.acct-filters-group .picker-btn {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: var(--radius-control, 8px);
+  background: var(--color-surface);
+  box-shadow: var(--lift-1);
+}
+
+.acct-filters-group .picker-btn:hover {
+  background: var(--wash-1);
 }
 
 .is-archive-btn.is-active {

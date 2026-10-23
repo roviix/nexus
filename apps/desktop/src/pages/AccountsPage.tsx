@@ -778,39 +778,53 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
         />
       ) : (
         <>
-          {/* 统一高级控制台：两层清晰布局，避免宽窄屏下元素挤压换行错位 */}
+          {/* 统一紧凑控制台：状态胶囊整合已归档，右侧高内聚集成搜索与微型筛选，自适应不截断 */}
           <div className="unified-toolbar">
-            <div className="unified-toolbar-row">
-              <div className="status-pills" role="tablist" aria-label="账号状态视图">
+            <div className="status-pills" role="tablist" aria-label="账号状态视图">
+              <button
+                type="button"
+                className={`status-pill${avail === "all" && !archived ? " is-active" : ""}`}
+                onClick={() => setSpec({ avail: "all", archived: false })}
+              >
+                <span>全部</span>
+                <span className="pill-n">{stats.total}</span>
+              </button>
+
+              {/* 一档一枚，顺序照 AVAIL_ORDER（从好到坏） */}
+              {AVAIL_ORDER.filter((k) => stats.by[k] > 0 || k === "long_lived" || avail === k).map((k) => (
                 <button
+                  key={k}
                   type="button"
-                  className={`status-pill${avail === "all" && !archived ? " is-active" : ""}`}
-                  onClick={() => setSpec({ avail: "all", archived: false })}
+                  className={`status-pill${avail === k && !archived ? " is-active" : ""}`}
+                  onClick={() => setSpec({ avail: k, archived: false })}
                 >
-                  <span>全部</span>
-                  <span className="pill-n">{stats.total}</span>
+                  <i className={`status-dot is-${k}`} />
+                  <span>{AVAIL_LABEL[k]}</span>
+                  <span className="pill-n">{stats.by[k]}</span>
                 </button>
+              ))}
 
-                {/* 一档一枚，顺序照 AVAIL_ORDER（从好到坏）。空的那一档不占位 ——
-                    但「可用」和正筛着的那一档留着：前者是这排的主角，后者一消失就把自己的
-                    筛子也带走了，用户会以为号丢了。 */}
-                {AVAIL_ORDER.filter((k) => stats.by[k] > 0 || k === "long_lived" || avail === k).map((k) => (
+              {/* 已归档直接融入状态栏，消除孤立浮动 */}
+              {archivedCount > 0 || archived ? (
+                <>
+                  <i className="status-pill-sep" aria-hidden />
                   <button
-                    key={k}
                     type="button"
-                    className={`status-pill${avail === k && !archived ? " is-active" : ""}`}
-                    onClick={() => setSpec({ avail: k, archived: false })}
+                    className={`status-pill status-pill-archive${archived ? " is-active" : ""}`}
+                    onClick={() => setSpec({ archived: !archived, avail: "all" })}
+                    title={archived ? "点击切换回活跃账号" : "查看已归档的账号"}
                   >
-                    <i className={`status-dot is-${k}`} />
-                    <span>{AVAIL_LABEL[k]}</span>
-                    <span className="pill-n">{stats.by[k]}</span>
+                    <Icon name="archive" size={12} style={{ opacity: 0.75 }} />
+                    <span>已归档</span>
+                    <span className="pill-n">{archivedCount}</span>
                   </button>
-                ))}
-              </div>
+                </>
+              ) : null}
+            </div>
 
+            <div className="unified-toolbar-controls">
               <div className="acct-search-box">
                 {lookup && lookupResult ? (
-                  // 清单生效时搜索框让位给一枚标签：清单和关键字不叠加，一次只按一种方式找。
                   <div className="search is-lookup" role="status">
                     <Icon name="clipboard" size={14} />
                     <button
@@ -832,7 +846,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       onPaste={(e) => {
-                        // 粘进来的是一份清单（两个以上邮箱）就别当关键字搜了，直接转批量查找。
                         const text = e.clipboardData.getData("text");
                         if (looksLikeLookupPaste(text)) {
                           e.preventDefault();
@@ -859,9 +872,7 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                   <Icon name="clipboard" size={14} />
                 </button>
               </div>
-            </div>
 
-            <div className="unified-toolbar-subrow">
               <div className="acct-filters-group">
                 <Picker<PlanFilter>
                   icon="crown"
@@ -879,7 +890,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                     onChange={(t) => setSpec({ tag: t })}
                   />
                 ) : null}
-                <i className="acct-controls-sep" aria-hidden />
                 <Picker<AccountSort>
                   icon="sort"
                   label="排序"
@@ -924,19 +934,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
                     存为视图
                   </button>
                 ) : null}
-              </div>
-
-              <div className="acct-subrow-meta">
-                <button
-                  type="button"
-                  className={`is-archive-btn${archived ? " is-active" : ""}`}
-                  onClick={() => setSpec({ archived: !archived, avail: "all" })}
-                  title={archived ? "点击切换回活跃账号" : "查看已归档的账号"}
-                >
-                  <Icon name="archive" size={13} />
-                  <span>已归档</span>
-                  {archivedCount > 0 ? <span className="pill-n">{archivedCount}</span> : null}
-                </button>
               </div>
             </div>
           </div>

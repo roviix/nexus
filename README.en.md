@@ -156,6 +156,19 @@ nexus/
 
 ---
 
+## 💬 Community & Feedback
+
+Join our developer community to share workflows, explore multi-device mesh setups, and report issues:
+
+<div align="center">
+  <img src="docs/images/wechat_qr.jpg" width="220" alt="WeChat Community QR Code" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
+  <p style="margin-top: 10px; font-size: 13.5px; color: #555;">
+    Scan the WeChat QR code above to connect with the author (ID: <strong>ouyz</strong>) with note <strong>Nexus</strong> to join the developer group, or open a discussion on <a href="https://github.com/roviix/nexus/discussions">GitHub Discussions</a>.
+  </p>
+</div>
+
+---
+
 ## ⚠️ Disclaimer
 
 - Nexus is intended solely for personal study, research, and legitimate multi-device workflow management.
