@@ -591,8 +591,8 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
 
           <Opt
             icon={<Icon name="chat" size={16} />}
-            title="技术交流群"
-            desc="加入 Nexus 官方开发者社群，交流 Cursor、Claude Code 与 Mesh 算力网关使用心得"
+            title="AI 探索与技术交流群"
+            desc="围绕 AI 前沿应用、Claude Code、Cursor 实战与模型工程心得，交流分享探索经验"
           >
             <button
               type="button"
@@ -619,7 +619,7 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
       {/* 交流群与作者二维码弹窗 */}
       {qrOpen ? (
         <Modal
-          title="扫码加入 Nexus 开发者技术交流群"
+          title="扫码加入 AI 探索与技术交流群"
           onClose={() => setQrOpen(false)}
           compact
           footer={
@@ -629,13 +629,13 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
                 className="btn btn-sm btn-soft"
                 onClick={async () => {
                   try {
-                    await navigator.clipboard.writeText("ouyz");
+                    await navigator.clipboard.writeText("ouyzam");
                     setCopied(true);
                     setTimeout(() => setCopied(false), 2000);
                   } catch {}
                 }}
               >
-                {copied ? "已复制微信号 ✓" : "复制作者微信号 (ouyz)"}
+                {copied ? "已复制微信号 ✓" : "复制微信号 (ouyzam)"}
               </button>
               <button type="button" className="btn btn-sm btn-primary" onClick={() => setQrOpen(false)}>
                 知道了
@@ -664,12 +664,16 @@ function AboutTab({ status, writable }: { status: AppStatus; writable: boolean }
                 }}
               />
             </div>
-            <div style={{ fontSize: 13.5, fontWeight: 650, color: "var(--color-ink)", marginBottom: 6 }}>
-              微信扫码 · 添加作者为朋友
+            <div style={{ fontSize: 13.5, fontWeight: 650, color: "var(--color-ink)", marginBottom: 4 }}>
+              微信扫码 · 添加好友进入交流群
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-ink-2)", marginBottom: 6 }}>
+              微信号：<strong style={{ fontFamily: "var(--font-mono)", color: "var(--color-ink)" }}>ouyzam</strong>
+              <span style={{ color: "var(--color-faint)", marginLeft: 6 }}>(昵称：ouyz)</span>
             </div>
             <div style={{ fontSize: 12, color: "var(--color-muted)", lineHeight: 1.6, maxWidth: 300 }}>
-              备注 <strong style={{ color: "var(--accent)", fontWeight: 600 }}>Nexus</strong> 邀请加入官方微信技术交流群<br />
-              实时反馈 Bug、探讨高阶玩法、获取最新模型通道支持规则
+              备注 <strong style={{ color: "var(--accent)", fontWeight: 600 }}>AI 交流</strong> 或 <strong style={{ color: "var(--accent)", fontWeight: 600 }}>Nexus</strong> 邀请进群<br />
+              分享大模型实操、Cursor / Claude Code 高阶玩法与技术落地心得
             </div>
           </div>
         </Modal>

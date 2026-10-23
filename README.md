@@ -157,14 +157,14 @@ nexus/
 
 ---
 
-## 💬 社区与交流 (Community & Feedback)
+## 💬 AI 探索与交流 (AI Sharing & Community)
 
-欢迎加入 Nexus 开发者技术社群，获取最新模型通道适配规则、探讨高阶多机玩法与 Bug 快速反馈！
+欢迎加入我们的 AI 探索与技术交流群，围绕大模型应用落地、Claude Code / Cursor 实战心得、AI 前沿分享与工程经验进行自由探讨！
 
 <div align="center">
   <img src="docs/images/wechat_qr.jpg" width="220" alt="WeChat Community QR Code" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.15);" />
   <p style="margin-top: 10px; font-size: 13.5px; color: #555;">
-    微信扫码添加作者好友（微信名：<strong>ouyz</strong>），备注 <strong>Nexus</strong> 即可进入官方技术交流群。
+    微信扫码添加好友（微信号：<code>ouyzam</code>，昵称：<code>ouyz</code>），备注 <strong>AI 交流</strong> 或 <strong>Nexus</strong> 即可受邀进群。
   </p>
 </div>
 
