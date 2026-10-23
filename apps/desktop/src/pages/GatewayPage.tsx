@@ -32,25 +32,31 @@ import { AccountCard } from "../accounts/AccountCard";
 import { AccountInspector } from "../accounts/AccountInspector";
 import { createCursorAccountView, type AccountView } from "../accounts/model";
 import { channelSummary, laneCount, localChannels, modelsOf, starved as isStarved, unitOf, type LocalChannel } from "../gateway/channels";
-import { accounts, gateway } from "../ipc/api";
+import { accounts, antigravity as agyApi, gateway } from "../ipc/api";
 import { models as modelsApi, type LocalModel } from "../ipc/models";
-import type { Account, GatewayAvailable, GatewayCandidate, GatewaySettings, GatewayStatus, MediaJob, RequestLogEntry } from "../ipc/types";
+import type { Account, DeviceAccount, GatewayAvailable, GatewayCandidate, GatewaySettings, GatewayStatus, MediaJob, RequestLogEntry } from "../ipc/types";
 import { RequestLog } from "./gateway/RequestLog";
-import { go, type AccountPlatform, type Route } from "../shell/nav";
+import { go, type Route } from "../shell/nav";
 import { ShellIcon } from "../shell/ShellIcon";
 import { confirm } from "../ui/confirm";
 import { timeAgo } from "../ui/format";
 import { Banner, CopyButton, Empty, ErrorNote, Icon, Modal, Opt, Switch, Tag } from "../ui/primitives";
 import { accountProblem, planLabel, planTone } from "../ui/usage";
+import { AntigravityAccountCard } from "./accounts/AntigravityAccountCard";
+import { AntigravityDrawer } from "./accounts/AntigravityDrawer";
 
 export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) => void }) {
-  const inPool = route.sub === "pool";
+  const inCursorPool = route.sub === "pool" || route.sub === "cursor";
+  const inAgyPool = route.sub === "antigravity";
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const [key, setKey] = useState<string | null>(null);
   /** 「账号」里的号，只用来给候选号显示额度（与切号页同一种纯展示关联）。 */
   const [known, setKnown] = useState<Account[]>([]);
+  /** Google 反重力账号列表，用于在下钻号池页展示 */
+  const [agyAccounts, setAgyAccounts] = useState<DeviceAccount[]>([]);
+  const [openAgyId, setOpenAgyId] = useState<string | null>(null);
   /** 本地目录，只为在通道行上写「N 个模型」。 */
   const [local, setLocal] = useState<LocalModel[] | null>(null);
   const [adding, setAdding] = useState(false);
@@ -67,10 +73,16 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
     } catch (e) {
       setError(e);
     }
-    const [k, l, r] = await Promise.allSettled([accounts.list(), modelsApi.local(), gateway.requests(100)]);
+    const [k, l, r, agy] = await Promise.allSettled([
+      accounts.list(),
+      modelsApi.local(),
+      gateway.requests(100),
+      agyApi.list(),
+    ]);
     setKnown(k.status === "fulfilled" ? k.value : []);
     setLocal(l.status === "fulfilled" ? l.value : null);
     setRequests(r.status === "fulfilled" ? r.value : []);
+    setAgyAccounts(agy.status === "fulfilled" ? agy.value : []);
   }, []);
 
   const byEmail = useMemo(() => {
@@ -92,6 +104,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
   const enrolled = candidates.length + missing.length;
   const openCandidate = candidates.find((candidate) => candidate.label === openLabel) ?? null;
   const openMissing = openLabel != null && missing.includes(openLabel) ? openLabel : null;
+  const openAgyAccount = openAgyId ? agyAccounts.find((a) => a.id === openAgyId) ?? null : null;
   const openView = useMemo(() => {
     if (openCandidate) {
       return gatewayAccountView(
@@ -116,11 +129,16 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
     return () => window.clearInterval(t);
   }, [status?.running, reload]);
 
-  async function run(action: () => Promise<GatewayStatus>) {
+  async function run(action: () => Promise<GatewayStatus | unknown>) {
     setBusy(true);
     setError(null);
     try {
-      setStatus(await action());
+      const res = await action();
+      if (res && typeof res === "object" && "settings" in res && "lane" in res) {
+        setStatus(res as GatewayStatus);
+      } else {
+        await reload();
+      }
     } catch (e) {
       setError(e);
     } finally {
@@ -268,6 +286,128 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
     </div>
   );
 
+  const agyCandidates = useMemo(() => {
+    const agyChan = channels.find((c) => c.id === "antigravity");
+    const list = agyChan?.lane.candidates ?? [];
+    return [...list].sort(
+      (a, b) => Number(b.state.kind === "current") - Number(a.state.kind === "current"),
+    );
+  }, [channels]);
+  const agyCurrentLabel = agyCandidates.find((c) => c.state.kind === "current")?.label ?? null;
+
+  const agyPool =
+    agyAccounts.length === 0 ? (
+      <Empty
+        title="Google 反重力号池为空"
+        action={
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => onGo(go("accounts", { platform: "antigravity" }))}
+          >
+            <Icon name="plus" size={13} />
+            添加账号
+          </button>
+        }
+      >
+        授权登录或导入 Google 反重力账号后，会自动进入网关号池参与 Gemini 与 Claude 模型的接力调度。
+      </Empty>
+    ) : (
+      <div className="accts">
+        {agyAccounts.map((a) => {
+          const cand =
+            agyCandidates.find(
+              (c) =>
+                c.label === a.label ||
+                c.label === a.email ||
+                c.label === a.id,
+            ) ?? null;
+          return (
+            <AntigravityAccountCard
+              key={a.id}
+              account={a}
+              prefix="antigravity"
+              lane={cand}
+              disabled={busy}
+              onToggle={(on) =>
+                void run(async () => {
+                  await agyApi.setEnabled(a.id, on);
+                  await reload();
+                })
+              }
+              onUse={() =>
+                void run(() =>
+                  gateway.channelSetCurrent(
+                    "antigravity",
+                    cand?.label || a.label || a.email || a.id,
+                  ),
+                )
+              }
+              onRelogin={() => onGo(go("accounts", { platform: "antigravity" }))}
+              onRemove={() =>
+                void run(async () => {
+                  await agyApi.remove(a.id);
+                  await reload();
+                })
+              }
+              onRefresh={async () => {
+                await agyApi.refreshQuota(a.id);
+                await reload();
+              }}
+              onNote={(note) =>
+                void run(async () => {
+                  await agyApi.setNote(a.id, note);
+                  await reload();
+                })
+              }
+              onOpen={() => setOpenAgyId(a.id)}
+            />
+          );
+        })}
+      </div>
+    );
+
+  /** 反重力号池页：面包屑回网关，右边是动作。 */
+  const agyPoolHead = (
+    <div className="page-head">
+      <div className="page-title-line">
+        <button type="button" className="btn btn-sm btn-quiet gw-crumb" onClick={() => onGo(go("gateway"))}>
+          <Icon name="back" size={13} />
+          本地网关
+        </button>
+        <span className="page-title-meta gw-crumb-here">
+          Google 反重力号池
+          {` · ${agyAccounts.length} 个号`}
+          {agyCurrentLabel ? ` · 正在用 ${agyCurrentLabel}` : ""}
+        </span>
+      </div>
+      <div className="row" style={{ gap: 8 }}>
+        {agyCandidates.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-sm btn-quiet"
+            disabled={busy}
+            onClick={() => void run(() => gateway.channelResetLane("antigravity"))}
+            title="清掉耗尽 / 冷却记录，让所有号重新可选"
+          >
+            重置状态
+          </button>
+        ) : null}
+        <button type="button" className="btn btn-sm btn-icon btn-soft" onClick={() => void reload()} disabled={busy} title="刷新" aria-label="刷新">
+          <Icon name="refresh" size={14} />
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={() => onGo(go("accounts", { platform: "antigravity" }))}
+        >
+          <Icon name="plus" size={13} />
+          添加账号
+        </button>
+      </div>
+    </div>
+  );
+
   const mainHead = (
     <div className="page-head">
       <div className="page-title-line">
@@ -292,11 +432,11 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
 
   return (
     <div>
-      {inPool ? poolHead : mainHead}
+      {inCursorPool ? poolHead : inAgyPool ? agyPoolHead : mainHead}
 
       <ErrorNote error={error} onRetry={() => void reload()} />
 
-      {inPool ? (
+      {inCursorPool ? (
         !status ? (
           <div className="accts">
             <div className="skeleton" style={{ height: 164 }} />
@@ -319,6 +459,30 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
               </div>
             ) : null}
             {pool}
+          </>
+        )
+      ) : inAgyPool ? (
+        !status ? (
+          <div className="accts">
+            <div className="skeleton" style={{ height: 164 }} />
+            <div className="skeleton" style={{ height: 164 }} />
+          </div>
+        ) : (
+          <>
+            {!running ? (
+              <div style={{ marginBottom: 14 }}>
+                <Banner
+                  tone="default"
+                  title="网关没开，这里的号暂时接不到请求"
+                  action={
+                    <button type="button" className="btn btn-sm" disabled={busy} onClick={() => void run(() => gateway.start())}>
+                      开启网关
+                    </button>
+                  }
+                />
+              </div>
+            ) : null}
+            {agyPool}
           </>
         )
       ) : !status ? (
@@ -420,42 +584,30 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
               其余通道进「账号」对应页签。行本身不展开 —— 通道这张卡只回答「几队号各什么光景」。 */}
           <div className="card card-flush gw-chans">
             <div className="gw-chans-head">
-              <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
-                <strong>通道</strong>
-                <span className="faint tiny">模型写成 通道/名称。不带前缀的走默认通道</span>
+              <div className="row-between" style={{ alignItems: "baseline" }}>
+                <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
+                  <strong>通道列表</strong>
+                  <span className="faint tiny">共 {channels.length} 条通道 · 未带前缀走默认通道</span>
+                </div>
               </div>
             </div>
             {channels.map((ch) => {
-              const isCursor = ch.id === "cursor";
               return (
                 <ChannelRow
                   key={ch.id}
                   ch={ch}
-                  onOpen={() => onGo(isCursor ? go("gateway", { sub: "pool" }) : go("accounts", { platform: ch.id as AccountPlatform }))}
+                  onOpen={() => onGo(go("channels", { channel: ch.id, sub: "pool" }))}
                   actions={
                     <>
-                      {ch.isDefault ? null : (
+                      {ch.isDefault || ch.unavailableReason ? null : (
                         <button type="button" className="btn btn-sm btn-quiet" disabled={busy} onClick={() => void saveSettings({ defaultChannel: ch.id })}>
                           设为默认
                         </button>
                       )}
-                      {isCursor ? (
-                        <>
-                          <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setAdding(true)}>
-                            <Icon name="plus" size={13} />
-                            添加号
-                          </button>
-                          <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("gateway", { sub: "pool" }))}>
-                            号池
-                            <Icon name="chevron" size={12} className="gw-chan-go" />
-                          </button>
-                        </>
-                      ) : (
-                        <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("accounts", { platform: ch.id as AccountPlatform }))}>
-                          {ch.id === "provider" ? "供应商" : "账号"}
-                          <Icon name="chevron" size={12} className="gw-chan-go" />
-                        </button>
-                      )}
+                      <button type="button" className="btn btn-sm btn-soft" onClick={() => onGo(go("channels", { channel: ch.id, sub: "pool" }))}>
+                        号池
+                        <Icon name="chevron" size={12} className="gw-chan-go" />
+                      </button>
                     </>
                   }
                 />
@@ -557,6 +709,46 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
           }}
         />
       ) : null}
+
+      {openAgyAccount ? (
+        <AntigravityDrawer
+          account={openAgyAccount}
+          lane={
+            agyCandidates.find(
+              (c) =>
+                c.label === openAgyAccount.label ||
+                c.label === openAgyAccount.email ||
+                c.label === openAgyAccount.id,
+            ) ?? null
+          }
+          onClose={() => setOpenAgyId(null)}
+          onRefresh={async () => {
+            await agyApi.refreshQuota(openAgyAccount.id);
+            await reload();
+          }}
+          onRelogin={() => onGo(go("accounts", { platform: "antigravity" }))}
+          onRemove={async () => {
+            await agyApi.remove(openAgyAccount.id);
+            await reload();
+            setOpenAgyId(null);
+          }}
+          onToggle={async (on) => {
+            await agyApi.setEnabled(openAgyAccount.id, on);
+            await reload();
+          }}
+          onUse={async () => {
+            await gateway.channelSetCurrent(
+              "antigravity",
+              openAgyAccount.label || openAgyAccount.email || openAgyAccount.id,
+            );
+            await reload();
+          }}
+          onNote={async (note) => {
+            await agyApi.setNote(openAgyAccount.id, note);
+            await reload();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -568,7 +760,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
  * 只会让人加完发现没生效。它们要先去「账号」处理，弹窗底下留一句话指过去。
  * 默认一个都不勾 —— 这一步的意义就是让用户亲手挑。
  */
-function EnrollModal({
+export function EnrollModal({
   available,
   byEmail,
   busy,
@@ -687,7 +879,7 @@ function gatewayMissingView(email: string, account: Account | null): AccountView
   });
 }
 
-function MissingRow({
+export function MissingRow({
   email,
   account,
   busy,
@@ -883,17 +1075,17 @@ function ChannelRowText({ ch, text, total, models }: { ch: LocalChannel; text: s
         {ch.isDefault ? <Tag>默认</Tag> : null}
         <span className="muted tiny truncate">{text}</span>
       </span>
-      <span className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+      <span className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
         {ch.prefixes.map((p) => (
           <code key={p} className="mono tiny">
             {p}
           </code>
         ))}
         <span className="faint tiny">
-          {total > 0 ? `${total} ${unitOf(ch.id)}` : ch.isDefault ? "还没有号" : ch.id === "provider" ? "还没有" : "没有号"}
-          {models > 0 ? ` · ${ch.chatModels.length} 个对话模型` : ""}
-          {ch.imageModels.length > 0 ? ` · ${ch.imageModels.length} 个生图` : ""}
-          {ch.videoModels.length > 0 ? ` · ${ch.videoModels.length} 个生视频` : ""}
+          {total > 0 ? `${total} ${unitOf(ch.id)}` : "未配置账号"}
+          {models > 0 ? ` · ${ch.chatModels.length} 对话` : ""}
+          {ch.imageModels.length > 0 ? ` · ${ch.imageModels.length} 生图` : ""}
+          {ch.videoModels.length > 0 ? ` · ${ch.videoModels.length} 视频` : ""}
         </span>
       </span>
     </span>
@@ -988,7 +1180,7 @@ function gatewayAccountView(
   });
 }
 
-function CandidateRow({
+export function CandidateRow({
   c,
   account,
   busy,

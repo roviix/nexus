@@ -21,9 +21,7 @@ import { createCursorAccountView } from "../accounts/model";
 import { PoolChips } from "../accounts/PoolChips";
 import {
   matchesPoolFilter,
-  POOL_FILTER_LABEL,
   usePools,
-  type PoolFilter,
 } from "../accounts/pools";
 import {
   accounts,
@@ -70,15 +68,12 @@ import {
   matchesQuery,
   PLAN_FILTER_LABEL,
   PLAN_FILTER_ORDER,
-  QUOTA_LABEL,
-  QUOTA_ORDER,
   SORT_LABEL,
   sortAccounts,
   summarize,
   type AccountFacets,
   type AccountSort,
   type PlanFilter,
-  type QuotaFilter,
 } from "../ui/accounts";
 import { Banner, Empty, ErrorNote, Icon, Picker } from "../ui/primitives";
 import { AddAccountModal } from "./accounts/AddAccountModal";
@@ -88,9 +83,10 @@ import { LookupModal } from "./accounts/LookupModal";
 import { ProvisionModal } from "./accounts/ProvisionModal";
 import { ChatGptAccounts } from "./accounts/ChatGptAccounts";
 import { ClaudeAccounts, GrokAccounts, KiroAccounts, QoderAccounts, ZcodeAccounts } from "./accounts/DeviceAccounts";
+import { AntigravityAccounts } from "./accounts/AntigravityAccounts";
+import { GeminiWebAccounts } from "./accounts/GeminiWebAccounts";
 
 const SORTS: AccountSort[] = ["added", "reset", "botReset", "checked"];
-const POOL_FILTERS: PoolFilter[] = ["any", "switcher", "gateway", "unpooled"];
 
 /**
  * 页头只有一行：平台页签站在标题的位置，动作贴右。这一页叫什么侧栏里已经写着，再摆一个大标题
@@ -128,6 +124,10 @@ export function AccountsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
         <QoderAccounts tabs={tabs} onGo={onGo} />
       ) : platform === "claude" ? (
         <ClaudeAccounts tabs={tabs} onGo={onGo} />
+      ) : platform === "antigravity" ? (
+        <AntigravityAccounts tabs={tabs} onGo={onGo} />
+      ) : platform === "gemini-web" ? (
+        <GeminiWebAccounts tabs={tabs} onGo={onGo} />
       ) : platform === "provider" ? (
         <ProviderAccounts tabs={tabs} onGo={onGo} />
       ) : (
@@ -137,12 +137,15 @@ export function AccountsPage({ route, onGo }: { route: Route; onGo: (r: Route) =
   );
 }
 
+let cachedCursorAccounts: Account[] | null = null;
+let cachedInCursor: string | null = null;
+
 function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
-  const [list, setList] = useState<Account[]>([]);
+  const [list, setList] = useState<Account[]>(() => cachedCursorAccounts ?? []);
   /** Cursor 此刻登录的邮箱（小写）：卡片高亮「当前登录」，抽屉里禁用切号。 */
-  const [inCursor, setInCursor] = useState<string | null>(null);
+  const [inCursor, setInCursor] = useState<string | null>(() => cachedInCursor);
   const [error, setError] = useState<unknown>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => cachedCursorAccounts === null);
   const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -237,7 +240,9 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
 
   const reload = useCallback(async () => {
     try {
-      setList(await accounts.list());
+      const res = await accounts.list();
+      cachedCursorAccounts = res;
+      setList(res);
       setError(null);
     } catch (err) {
       setError(err);
@@ -246,7 +251,9 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
     }
     // 拿不到就当不知道：这只影响一个按钮的措辞，不值得把整页顶成错误态。
     try {
-      setInCursor((await switcher.overview()).current?.email?.toLowerCase() ?? null);
+      const cur = (await switcher.overview()).current?.email?.toLowerCase() ?? null;
+      cachedInCursor = cur;
+      setInCursor(cur);
     } catch {
       setInCursor(null);
     }
@@ -383,9 +390,15 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
    * 每个筛子上的数都是「点下去会剩几个」：其余几维照旧下上，自己那一维跳过
    * （`applyFacets` 的 except）。这排数字以前数的是搜索之后、筛子之前的底数，
    * 于是下了额度或档位的筛子之后，顶上写着 40 个、眼前只剩 6 张卡 —— 对不上的数字没人信。
-   * 自己那一维跳过是为了还能换档：把它也算上，选中一档后别的档全成 0，想换得先清筛。
+  /**
+   * 活跃账号的搜索底集：不管当前是否正在看「已归档」，状态 Tab（全部、可用、仅会话等）
+   * 统计的始终是活跃账号库的数据，数值稳定不跳变。
    */
-  const stats = useMemo(() => summarize(applyFacets(searched, facets, "avail")), [searched, facets]);
+  const activeSearched = useMemo(() => {
+    if (lookupResult) return lookupResult.found.filter((a) => !a.archivedAt);
+    return list.filter((a) => !a.archivedAt && matchesQuery(a, query));
+  }, [list, query, lookupResult]);
+  const stats = useMemo(() => summarize(applyFacets(activeSearched, facets, "avail")), [activeSearched, facets]);
   /** 档位下拉。选中的那档即使此刻一个号都没有也留着，否则按钮上会突然改口叫「档位」。 */
   const planOptions = useMemo(() => {
     const candidates = applyFacets(searched, facets, "plan");
@@ -403,25 +416,6 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
       ...groups.map((g) => ({ id: g as PlanFilter, label: PLAN_FILTER_LABEL[g], meta: counts.get(g) ?? 0 })),
     ];
   }, [searched, facets, plan]);
-  const quotaOptions = useMemo(() => {
-    const s = summarize(applyFacets(searched, facets, "quota"));
-    return [
-      { id: "all" as QuotaFilter, label: "额度：全部", meta: s.total },
-      ...QUOTA_ORDER.filter((q) => s.quota[q] > 0 || q === quota).map((q) => ({
-        id: q as QuotaFilter,
-        label: QUOTA_LABEL[q],
-        meta: s.quota[q],
-      })),
-    ];
-  }, [searched, facets, quota]);
-  const poolOptions = useMemo(() => {
-    const candidates = applyFacets(searched, facets, "pool");
-    return POOL_FILTERS.map((p) => ({
-      id: p,
-      label: POOL_FILTER_LABEL[p],
-      meta: candidates.filter((a) => matchesPoolFilter(pools.membership(a.email), p)).length,
-    }));
-  }, [searched, facets, pools]);
   const tagOptions = useMemo(() => {
     const candidates = applyFacets(searched, facets, "tag");
     return [
@@ -784,173 +778,166 @@ function CursorAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => v
         />
       ) : (
         <>
-          {/* 统一高级控制台：左边是状态胶囊（一键下钻到特定状态），右边是搜索与属性筛选 */}
+          {/* 统一高级控制台：两层清晰布局，避免宽窄屏下元素挤压换行错位 */}
           <div className="unified-toolbar">
-            <div className="status-pills" role="tablist" aria-label="账号状态视图">
-              <button
-                type="button"
-                className={`status-pill${avail === "all" && !archived ? " is-active" : ""}`}
-                onClick={() => setSpec({ avail: "all", archived: false })}
-              >
-                <span>全部</span>
-                <span className="pill-n">{stats.total}</span>
-              </button>
-
-              {/* 一档一枚，顺序照 AVAIL_ORDER（从好到坏）。空的那一档不占位 ——
-                  但「可用」和正筛着的那一档留着：前者是这排的主角，后者一消失就把自己的
-                  筛子也带走了，用户会以为号丢了。 */}
-              {AVAIL_ORDER.filter((k) => stats.by[k] > 0 || k === "long_lived" || avail === k).map((k) => (
+            <div className="unified-toolbar-row">
+              <div className="status-pills" role="tablist" aria-label="账号状态视图">
                 <button
-                  key={k}
                   type="button"
-                  className={`status-pill${avail === k && !archived ? " is-active" : ""}`}
-                  onClick={() => setSpec({ avail: k, archived: false })}
+                  className={`status-pill${avail === "all" && !archived ? " is-active" : ""}`}
+                  onClick={() => setSpec({ avail: "all", archived: false })}
                 >
-                  <i className={`status-dot is-${k}`} />
-                  <span>{AVAIL_LABEL[k]}</span>
-                  <span className="pill-n">{stats.by[k]}</span>
+                  <span>全部</span>
+                  <span className="pill-n">{stats.total}</span>
                 </button>
-              ))}
 
-              <div className="status-pill-sep" aria-hidden />
-
-              <button
-                type="button"
-                className={`status-pill${archived ? " is-active is-archived" : ""}`}
-                onClick={() => setSpec({ archived: !archived, avail: "all" })}
-              >
-                <Icon name="archive" size={12} />
-                <span>已归档</span>
-                {archivedCount > 0 ? <span className="pill-n">{archivedCount}</span> : null}
-              </button>
-            </div>
-
-            <div className="acct-controls">
-              {lookup && lookupResult ? (
-                // 清单生效时搜索框让位给一枚标签：清单和关键字不叠加，一次只按一种方式找。
-                <div className="search is-lookup" role="status">
-                  <Icon name="clipboard" size={14} />
+                {/* 一档一枚，顺序照 AVAIL_ORDER（从好到坏）。空的那一档不占位 ——
+                    但「可用」和正筛着的那一档留着：前者是这排的主角，后者一消失就把自己的
+                    筛子也带走了，用户会以为号丢了。 */}
+                {AVAIL_ORDER.filter((k) => stats.by[k] > 0 || k === "long_lived" || avail === k).map((k) => (
                   <button
+                    key={k}
                     type="button"
-                    className="search-lookup"
-                    onClick={() => setLookingUp({ text: lookup.join("\n") })}
-                    title="批量查找中 · 点击改清单"
+                    className={`status-pill${avail === k && !archived ? " is-active" : ""}`}
+                    onClick={() => setSpec({ avail: k, archived: false })}
                   >
-                    清单 {lookup.length} · 找到 {lookupResult.found.length}
+                    <i className={`status-dot is-${k}`} />
+                    <span>{AVAIL_LABEL[k]}</span>
+                    <span className="pill-n">{stats.by[k]}</span>
                   </button>
-                  <button type="button" className="search-clear" onClick={clearLookup} aria-label="清除批量查找">
-                    <Icon name="close" size={12} />
-                  </button>
-                </div>
-              ) : (
-                <label className="search">
-                  <Icon name="search" size={14} />
-                  <input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onPaste={(e) => {
-                      // 粘进来的是一份清单（两个以上邮箱）就别当关键字搜了，直接转批量查找。
-                      const text = e.clipboardData.getData("text");
-                      if (looksLikeLookupPaste(text)) {
-                        e.preventDefault();
-                        setLookingUp({ text });
-                      }
-                    }}
-                    placeholder="搜索邮箱、备注、标签"
-                    spellCheck={false}
-                  />
-                  {query ? (
-                    <button type="button" className="search-clear" onClick={() => setQuery("")} aria-label="清空">
+                ))}
+              </div>
+
+              <div className="acct-search-box">
+                {lookup && lookupResult ? (
+                  // 清单生效时搜索框让位给一枚标签：清单和关键字不叠加，一次只按一种方式找。
+                  <div className="search is-lookup" role="status">
+                    <Icon name="clipboard" size={14} />
+                    <button
+                      type="button"
+                      className="search-lookup"
+                      onClick={() => setLookingUp({ text: lookup.join("\n") })}
+                      title="批量查找中 · 点击改清单"
+                    >
+                      清单 {lookup.length} · 找到 {lookupResult.found.length}
+                    </button>
+                    <button type="button" className="search-clear" onClick={clearLookup} aria-label="清除批量查找">
                       <Icon name="close" size={12} />
                     </button>
-                  ) : null}
-                </label>
-              )}
-              <button
-                type="button"
-                className={`btn btn-icon${lookup ? " is-active" : ""}`}
-                data-tip="批量查找：粘一份邮箱清单"
-                aria-label="批量查找"
-                onClick={() => setLookingUp({ text: lookup?.join("\n") ?? "" })}
-              >
-                <Icon name="clipboard" size={14} />
-              </button>
+                  </div>
+                ) : (
+                  <label className="search">
+                    <Icon name="search" size={14} />
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onPaste={(e) => {
+                        // 粘进来的是一份清单（两个以上邮箱）就别当关键字搜了，直接转批量查找。
+                        const text = e.clipboardData.getData("text");
+                        if (looksLikeLookupPaste(text)) {
+                          e.preventDefault();
+                          setLookingUp({ text });
+                        }
+                      }}
+                      placeholder="搜索邮箱、备注、标签"
+                      spellCheck={false}
+                    />
+                    {query ? (
+                      <button type="button" className="search-clear" onClick={() => setQuery("")} aria-label="清空">
+                        <Icon name="close" size={12} />
+                      </button>
+                    ) : null}
+                  </label>
+                )}
+                <button
+                  type="button"
+                  className={`btn btn-icon${lookup ? " is-active" : ""}`}
+                  data-tip="批量查找：粘一份邮箱清单"
+                  aria-label="批量查找"
+                  onClick={() => setLookingUp({ text: lookup?.join("\n") ?? "" })}
+                >
+                  <Icon name="clipboard" size={14} />
+                </button>
+              </div>
+            </div>
 
-              <Picker<QuotaFilter>
-                icon="gauge"
-                label="额度"
-                value={quota}
-                options={quotaOptions}
-                onChange={(q) => setSpec({ quota: q })}
-              />
-              <Picker<PlanFilter>
-                icon="crown"
-                label="档位"
-                value={plan}
-                options={planOptions}
-                onChange={(p) => setSpec({ plan: p })}
-              />
-              <Picker<PoolFilter>
-                icon="layers"
-                label="所在池"
-                value={pool}
-                options={poolOptions}
-                onChange={(p) => setSpec({ pool: p })}
-              />
-              {allTags.length > 0 ? (
-                <Picker<string>
-                  icon="folder"
-                  label="分组"
-                  value={tag}
-                  options={tagOptions}
-                  onChange={(t) => setSpec({ tag: t })}
+            <div className="unified-toolbar-subrow">
+              <div className="acct-filters-group">
+                <Picker<PlanFilter>
+                  icon="crown"
+                  label="档位"
+                  value={plan}
+                  options={planOptions}
+                  onChange={(p) => setSpec({ plan: p })}
                 />
-              ) : null}
-              <i className="acct-controls-sep" aria-hidden />
-              <Picker<AccountSort>
-                icon="sort"
-                label="排序"
-                value={sort}
-                options={SORTS.map((s) => ({ id: s, label: SORT_LABEL[s] }))}
-                onChange={(s) => setSpec({ sort: s })}
-              />
-              {savedViews.length > 0 ? (
-                <Picker<string>
-                  icon="bookmark"
-                  label="视图"
-                  value={activeView?.id ?? ""}
-                  options={[
-                    { id: "", label: activeView ? activeView.label : "常用视图" },
-                    ...savedViews.map((v) => ({ id: v.id, label: v.label })),
-                  ]}
-                  onChange={(id) => {
-                    const v = savedViews.find((x) => x.id === id);
-                    if (v) setSpec(v.spec);
-                  }}
+                {allTags.length > 0 ? (
+                  <Picker<string>
+                    icon="folder"
+                    label="分组"
+                    value={tag}
+                    options={tagOptions}
+                    onChange={(t) => setSpec({ tag: t })}
+                  />
+                ) : null}
+                <i className="acct-controls-sep" aria-hidden />
+                <Picker<AccountSort>
+                  icon="sort"
+                  label="排序"
+                  value={sort}
+                  options={SORTS.map((s) => ({ id: s, label: SORT_LABEL[s] }))}
+                  onChange={(s) => setSpec({ sort: s })}
                 />
-              ) : null}
-              {activeView && !activeView.builtin ? (
+                {savedViews.length > 0 ? (
+                  <Picker<string>
+                    icon="bookmark"
+                    label="视图"
+                    value={activeView?.id ?? ""}
+                    options={[
+                      { id: "", label: activeView ? activeView.label : "常用视图" },
+                      ...savedViews.map((v) => ({ id: v.id, label: v.label })),
+                    ]}
+                    onChange={(id) => {
+                      const v = savedViews.find((x) => x.id === id);
+                      if (v) setSpec(v.spec);
+                    }}
+                  />
+                ) : null}
+                {activeView && !activeView.builtin ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-quiet"
+                    onClick={() => removeView(activeView.id)}
+                    title={`删除视图「${activeView.label}」`}
+                    aria-label={`删除视图 ${activeView.label}`}
+                  >
+                    <Icon name="trash" size={12} />
+                  </button>
+                ) : null}
+                {narrowed && !activeView ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-quiet"
+                    onClick={saveCurrentView}
+                    title="把当前的筛选和排序存成自定义视图"
+                  >
+                    <Icon name="plus" size={11} />
+                    存为视图
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="acct-subrow-meta">
                 <button
                   type="button"
-                  className="btn btn-sm btn-quiet"
-                  onClick={() => removeView(activeView.id)}
-                  title={`删除视图「${activeView.label}」`}
-                  aria-label={`删除视图 ${activeView.label}`}
+                  className={`is-archive-btn${archived ? " is-active" : ""}`}
+                  onClick={() => setSpec({ archived: !archived, avail: "all" })}
+                  title={archived ? "点击切换回活跃账号" : "查看已归档的账号"}
                 >
-                  <Icon name="trash" size={12} />
+                  <Icon name="archive" size={13} />
+                  <span>已归档</span>
+                  {archivedCount > 0 ? <span className="pill-n">{archivedCount}</span> : null}
                 </button>
-              ) : null}
-              {narrowed && !activeView ? (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-quiet"
-                  onClick={saveCurrentView}
-                  title="把当前的筛选和排序存成自定义视图"
-                >
-                  <Icon name="plus" size={11} />
-                  存为视图
-                </button>
-              ) : null}
+              </div>
             </div>
           </div>
 

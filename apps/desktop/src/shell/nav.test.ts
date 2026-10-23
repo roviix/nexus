@@ -55,19 +55,33 @@ describe("route ⇄ hash", () => {
     expect(parseRoute("#settings")).toEqual({ section: "settings" });
     expect(parseRoute("#settings/nope")).toEqual({ section: "settings" });
     // 别的页不认 tab。
-    expect(go("gateway", { tab: "advanced" })).toEqual({ section: "gateway" });
+    expect(go("channels", { tab: "advanced" })).toEqual({ section: "channels" });
   });
 
-  it("puts the gateway's Cursor pool on its own sub-path", () => {
-    const r = go("gateway", { sub: "pool" });
-    expect(routeHash(r)).toBe("#gateway/pool");
-    expect(parseRoute(routeHash(r))).toEqual(r);
-    expect(parseRoute("#gateway")).toEqual({ section: "gateway" });
-    expect(parseRoute("#gateway/nope")).toEqual({ section: "gateway" });
-    // 旧地址 #use/gateway 落回网关主页，不带下钻。
-    expect(parseRoute("#use/gateway")).toEqual({ section: "gateway" });
+  it("maps legacy gateway routes onto overview", () => {
+    expect(parseRoute("#gateway")).toEqual({ section: "overview" });
+    expect(parseRoute("#use/gateway")).toEqual({ section: "overview" });
+    expect(parseRoute("#gateway/pool")).toEqual({ section: "overview" });
     // 别的页不认 sub。
     expect(go("accounts", { sub: "pool" })).toEqual({ section: "accounts" });
+  });
+
+  it("handles channels pool and models sub-paths via query", () => {
+    const rPool = go("channels", { channel: "chatgpt", sub: "pool" });
+    expect(routeHash(rPool)).toBe("#channels?channel=chatgpt&sub=pool");
+    expect(parseRoute(routeHash(rPool))).toEqual({
+      section: "channels",
+      channel: "chatgpt",
+      sub: "pool",
+    });
+
+    const rModels = go("channels", { channel: "cursor", sub: "models" });
+    expect(routeHash(rModels)).toBe("#channels?channel=cursor&sub=models");
+    expect(parseRoute(routeHash(rModels))).toEqual({
+      section: "channels",
+      channel: "cursor",
+      sub: "models",
+    });
   });
 
   it("ignores params on pages that do not take them", () => {
@@ -81,7 +95,7 @@ describe("route ⇄ hash", () => {
       section: "accounts",
     });
     expect(routeHash(go("accounts", { channel: "chatgpt" }))).toBe("#accounts");
-    expect(parseRoute("#gateway/cloud?model=x")).toEqual({ section: "gateway" });
+    expect(parseRoute("#gateway/cloud?model=x")).toEqual({ section: "overview" });
     expect(go("connect", { email: "a@b.com" })).toEqual({ section: "connect" });
     expect(parseRoute("#accounts?email=a@b.com")).toEqual({ section: "accounts" });
   });
@@ -102,6 +116,8 @@ describe("route ⇄ hash", () => {
     expect(parseRoute("#accounts/qoder")).toEqual({ section: "accounts", platform: "qoder" });
     expect(routeHash(go("accounts", { platform: "claude" }))).toBe("#accounts/claude");
     expect(parseRoute("#accounts/claude")).toEqual({ section: "accounts", platform: "claude" });
+    expect(routeHash(go("accounts", { platform: "antigravity" }))).toBe("#accounts/antigravity");
+    expect(parseRoute("#accounts/antigravity")).toEqual({ section: "accounts", platform: "antigravity" });
     // 接入页带客户端；上一版的 `?provider=` 落到供应商通道。
     expect(routeHash(go("connect", { client: "codex", channel: "chatgpt" }))).toBe("#connect?client=codex&channel=chatgpt");
     expect(parseRoute("#connect?client=codex&channel=chatgpt")).toEqual({ section: "connect", client: "codex", channel: "chatgpt" });
@@ -112,7 +128,7 @@ describe("route ⇄ hash", () => {
     expect(routeHash(go("accounts"))).toBe("#accounts");
     expect(parseRoute("#accounts/nope")).toEqual({ section: "accounts" });
     // 别的页不认平台。
-    expect(go("gateway", { platform: "chatgpt" })).toEqual({ section: "gateway" });
+    expect(go("overview", { platform: "chatgpt" })).toEqual({ section: "overview" });
   });
 
   it("falls back to the default instead of failing on garbage", () => {
@@ -123,7 +139,7 @@ describe("route ⇄ hash", () => {
   });
 
   it("maps last version's hashes onto the new pages", () => {
-    expect(parseRoute("#use/gateway")).toEqual({ section: "gateway" });
+    expect(parseRoute("#use/gateway")).toEqual({ section: "overview" });
     expect(parseRoute("#use/switcher")).toEqual({ section: "switcher" });
     expect(parseRoute("#use/sand")).toEqual({ section: "panel", mode: "sand" });
     expect(parseRoute("#sand")).toEqual({ section: "panel", mode: "sand" });
@@ -137,25 +153,35 @@ describe("route ⇄ hash", () => {
 });
 
 describe("sidebar groups", () => {
-  it("place every section exactly once, with settings pinned outside the groups", () => {
+  it("organizes into three clear groups for Nexus 2.0 IA", () => {
     const placed = NAV_GROUPS.flatMap((g) => g.items);
     expect(new Set(placed).size).toBe(placed.length);
-    const all = SECTIONS.map((s) => s.id).filter((id) => id !== "settings");
-    expect([...placed].sort()).toEqual([...all].sort());
+    expect(placed).toEqual([
+      "overview",
+      "connect",
+      "channels",
+      "models",
+      "playground",
+      "accounts",
+    ]);
   });
 
-  it("keep the Cursor panel page alone in the patch group — it is not a way of using the pool", () => {
-    const patch = NAV_GROUPS.find((g) => g.items.includes("panel"))!;
-    expect(patch.items).toEqual(["panel"]);
-    // 中转 API 一组按「看 → 用 → 接 → 引擎」排：先浏览模型，再在游乐场上手，再配客户端，
-    // 最后是本机那台引擎。
+  it("organizes relay group", () => {
     const relay = NAV_GROUPS.find((g) => g.id === "relay")!;
-    expect(relay.items).toEqual(["models", "playground", "connect", "gateway"]);
+    expect(relay.label).toBe("路由与网关");
+    expect(relay.items).toEqual(["connect", "channels", "models", "playground"]);
   });
 
-  it("call the pool group 账号, not Cursor 账号 — ChatGPT accounts live there too", () => {
-    const accounts = NAV_GROUPS.find((g) => g.items.includes("accounts"))!;
-    expect(accounts.label).toBe("账号");
-    expect(accounts.items).toEqual(["accounts", "switcher"]);
+  it("organizes home group for overview", () => {
+    const home = NAV_GROUPS.find((g) => g.id === "home")!;
+    expect(home.label).toBeNull();
+    expect(home.items).toEqual(["overview"]);
+  });
+
+  it("organizes assets group for accounts", () => {
+    const assets = NAV_GROUPS.find((g) => g.id === "assets")!;
+    expect(assets.label).toBe("资产库");
+    expect(assets.items).toEqual(["accounts"]);
   });
 });
+

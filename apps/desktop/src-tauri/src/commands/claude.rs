@@ -102,10 +102,7 @@ pub async fn claude_import_local(
 }
 
 #[tauri::command(async)]
-pub async fn claude_refresh_quota(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<ClaudeAccount> {
+pub async fn claude_refresh_quota(state: State<'_, AppState>, id: String) -> Result<ClaudeAccount> {
     state
         .claude
         .refresh_quota(&ClaudeAccountId::from_raw(id))
@@ -115,14 +112,14 @@ pub async fn claude_refresh_quota(
 #[tauri::command(async)]
 pub fn claude_remove(state: State<'_, AppState>, id: String) -> Result<()> {
     let id = ClaudeAccountId::from_raw(id);
-    let label = state.claude.list()?.into_iter().find(|a| a.id == id).map(|a| a.label);
+    let label = state
+        .claude
+        .list()?
+        .into_iter()
+        .find(|a| a.id == id)
+        .map(|a| a.label);
     state.claude.remove(&id)?;
-    activity::info(
-        &state.db,
-        "claude",
-        label.as_deref(),
-        "已删除 Claude 账号",
-    );
+    activity::info(&state.db, "claude", label.as_deref(), "已删除 Claude 账号");
     Ok(())
 }
 

@@ -27,14 +27,17 @@ nexus-kiro.workspace = true
 nexus-zcode.workspace = true
 nexus-qoder.workspace = true
 nexus-claude.workspace = true
+nexus-antigravity.workspace = true
+nexus-gemini-web.workspace = true
 nexus-sand.workspace = true
 nexus-crsr.workspace = true
 nexus-grokbot.workspace = true
 nexus-gateway.workspace = true
 nexus-playground.workspace = true
 nexus-connect.workspace = true
+nexus-mesh.workspace = true
 
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-log = "2"
@@ -52,6 +55,9 @@ rfd = "0.15"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2"
 
+[target."cfg(target_os = \"macos\")".dependencies]
+core-foundation = "0.10"
+
 [dev-dependencies]
 # 权限探针的测试要在临时目录里造只读目录。
 tempfile = "3"
@@ -59,3 +65,15 @@ tempfile = "3"
 [features]
 # `tauri build` 会带上它。
 custom-protocol = ["tauri/custom-protocol"]
+# 真账号研究探针不会进入普通 CI / 桌面构建；手动运行时显式确认并打开。
+live-probes = []
+
+[[example]]
+name = "grokbot_stream_probe"
+path = "examples/grokbot_stream_probe.rs"
+required-features = ["live-probes"]
+
+[[example]]
+name = "grokbot_box_agent_probe"
+path = "examples/grokbot_box_agent_probe.rs"
+required-features = ["live-probes"]

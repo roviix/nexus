@@ -539,9 +539,16 @@ const GATEWAY: GatewayStatus = {
       id: "kiro",
       label: "Kiro",
       vendor: "aws",
-      ready: false,
+      ready: !EMPTY,
       mediaReady: false,
-      lane: { current: null, candidates: [], missing: [], available: [] },
+      lane: EMPTY
+        ? { current: null, candidates: [], missing: [], available: [] }
+        : {
+            current: "ada@kiro.dev",
+            candidates: [{ label: "ada@kiro.dev", source: "kiro", pinned: false, storedId: "k1", percentUsed: 42, state: { kind: "current" } }],
+            missing: [],
+            available: [],
+          },
       chatModels: ["kiro/kiro-claude-sonnet-4.5"],
       imageModels: [],
       videoModels: [],
@@ -551,10 +558,20 @@ const GATEWAY: GatewayStatus = {
       id: "qoder",
       label: "Qoder",
       vendor: "qoder",
-      ready: false,
+      ready: !EMPTY,
       mediaReady: false,
-      lane: { current: null, candidates: [], missing: [], available: [] },
-      chatModels: [],
+      lane: EMPTY
+        ? { current: null, candidates: [], missing: [], available: [] }
+        : {
+            current: "ada@example.com · Qoder",
+            candidates: [
+              { label: "ada@example.com · Qoder", source: "qoder", pinned: false, storedId: "q1", percentUsed: 42, state: { kind: "current" } },
+              { label: "lin@studio.cn · Qoder CN", source: "qoder", pinned: false, storedId: "q2", percentUsed: 16, state: { kind: "ready" } },
+            ],
+            missing: [],
+            available: [],
+          },
+      chatModels: ["qoder/Qwen3.8-Max", "qoder/Auto"],
       imageModels: [],
       videoModels: [],
       prefixes: ["qoder/", "qoder-cn/"],
@@ -661,6 +678,146 @@ const REQUESTS: RequestLogEntry[] = EMPTY
       { id: 4, at: iso(31 * 60_000), client: null, dialect: "openai", stream: false, requested: "claude-opus-5", target: null, channel: "cursor", account: "mara.quill@outlook.com", routed: null, ok: false, status: 402, kind: "quota", error: "You've hit your usage limit for claude-opus-5.", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, ttftMs: null, durationMs: 340, attempt: 1 },
     ];
 
+const base = (id: string, email: string, extra: Partial<DeviceAccount>): DeviceAccount => ({
+  id,
+  accountRef: email,
+  email,
+  planType: null,
+  status: "active",
+  enabled: true,
+  note: null,
+  lastCheckedAt: iso(5 * 60_000),
+  lastError: null,
+  hasRefresh: true,
+  accessExpiresAt: new Date(NOW + 20 * H).toISOString(),
+  label: email,
+  createdAt: iso(20 * D),
+  updatedAt: iso(5 * 60_000),
+  ...extra,
+});
+
+const GROK_ACCOUNTS: DeviceAccount[] = EMPTY
+  ? []
+  : [
+      base("g1", "you@x.ai", {
+        subscriptionTier: "SuperGrok",
+        authKind: "oauth",
+        usage: {
+          creditUsagePercent: 37,
+          periodType: "weekly",
+          periodStart: null,
+          periodEnd: new Date(NOW + 4 * D).toISOString(),
+          products: [],
+          subscriptionTier: "SuperGrok",
+          prepaidBalanceCents: null,
+          remainingRequests: null,
+          remainingTokens: null,
+          retryAfterMs: null,
+          checkedAt: iso(5 * 60_000),
+          source: "billing",
+        },
+        mediaEligible: true,
+      }),
+    ];
+
+const KIRO_ACCOUNTS: DeviceAccount[] = EMPTY
+  ? []
+  : [
+      base("k1", "ada@kiro.dev", {
+        planType: "Kiro Pro",
+        authMethod: "social",
+        kiroUsage: {
+          subscriptionTitle: "Kiro Pro",
+          email: "ada@kiro.dev",
+          baseUsed: 420,
+          baseLimit: 1000,
+          used: 420,
+          limit: 1000,
+          percent: 42,
+          resetAt: new Date(NOW + 9 * D).toISOString(),
+          trialUsed: null,
+          trialLimit: null,
+          trialExpiresAt: null,
+          bonusUsed: null,
+          bonusLimit: null,
+          overageEnabled: false,
+          checkedAt: iso(8 * 60_000),
+        },
+      }),
+    ];
+
+const ZCODE_ACCOUNTS: DeviceAccount[] = EMPTY
+  ? []
+  : [
+      base("z1", "lin@z.ai", {
+        plan: "coding-plan",
+        provider: "zai",
+        family: "zai-individual-coding-plan",
+        hasApiKey: true,
+        keyHint: "sk-z9ab",
+        hasRefresh: undefined,
+      }),
+    ];
+
+const CLAUDE_ACCOUNTS: DeviceAccount[] = EMPTY
+  ? []
+  : [
+      base("c1", "ada@anthropic.com", {
+        planType: "Max",
+        authKind: "oauth",
+        usage: {
+          creditUsagePercent: 64,
+          periodType: "weekly",
+          periodStart: null,
+          periodEnd: new Date(NOW + 2 * D).toISOString(),
+          products: [],
+          subscriptionTier: "Max",
+          prepaidBalanceCents: null,
+          remainingRequests: null,
+          remainingTokens: null,
+          retryAfterMs: null,
+          checkedAt: iso(12 * 60_000),
+          source: "oauth_usage",
+        },
+      }),
+    ];
+
+const AGY_ACCOUNTS: DeviceAccount[] = EMPTY
+  ? []
+  : [
+      base("agy1", "ada@gmail.com", {
+        tier: "Google AI Pro",
+        projectId: "aicode-demo",
+        antigravityUsage: {
+          projectId: "aicode-demo",
+          tierName: "Google AI Pro",
+          percentUsed: 28,
+          percentRemaining: 72,
+          resetsAt: new Date(NOW + 3 * H).toISOString(),
+          quotaGroups: [
+            {
+              displayName: "Gemini",
+              buckets: [
+                { window: "Weekly", remainingFraction: 0.65, percentRemaining: 65, resetTime: new Date(NOW + 3 * 24 * H).toISOString() },
+                { window: "5h", remainingFraction: 0.85, percentRemaining: 85, resetTime: new Date(NOW + 3 * H).toISOString() },
+              ],
+            },
+            {
+              displayName: "Others",
+              buckets: [
+                { window: "5h", remainingFraction: 0.90, percentRemaining: 90, resetTime: new Date(NOW + 4 * H).toISOString() },
+              ],
+            },
+          ],
+          modelBuckets: [
+            { modelId: "gemini-3.1-pro", displayName: "Gemini", remainingFraction: 0.72, percentRemaining: 72, percentUsed: 28, resetTime: new Date(NOW + 3 * H).toISOString() },
+            { modelId: "claude-sonnet-4-6", displayName: "Claude", remainingFraction: 0.41, percentRemaining: 41, percentUsed: 59, resetTime: new Date(NOW + 2 * H).toISOString() },
+          ],
+          checkedAt: iso(6 * 60_000),
+        },
+      }),
+    ];
+
 const QODER_ACCOUNTS: DeviceAccount[] = EMPTY
   ? []
   : [
@@ -668,19 +825,87 @@ const QODER_ACCOUNTS: DeviceAccount[] = EMPTY
         id: "q1",
         accountRef: "global:10086",
         email: "ada@example.com",
-        planType: "Qoder 国际版",
+        displayName: "Ada",
+        userId: "u-ada",
+        planType: "Qoder",
+        status: "active",
+        enabled: true,
+        note: "日常编码",
+        lastCheckedAt: iso(2 * 60_000),
+        lastError: null,
+        accessExpiresAt: new Date(NOW + 20 * H).toISOString(),
+        label: "ada@example.com · Qoder",
+        hasToken: true,
+        backend: "global",
+        keyHint: "pt-8f…c2a1",
+        qoderUsage: {
+          plan: "Pro",
+          userType: "personal",
+          percent: 42,
+          exceeded: false,
+          unlimited: false,
+          resetAt: new Date(NOW + 12 * D).toISOString(),
+          unit: "Credits",
+          buckets: [
+            { id: "plan", label: "套餐额度", used: 1260, total: 3000, remaining: 1740, percent: 42, unit: "Credits" },
+            { id: "addon", label: "加购额度", used: 10, total: 500, remaining: 490, percent: 2, unit: "Credits" },
+          ],
+          checkedAt: iso(2 * 60_000),
+        },
+        createdAt: iso(40 * D),
+        updatedAt: iso(2 * 60_000),
+      },
+      {
+        id: "q2",
+        accountRef: "cn:20010",
+        email: "lin@studio.cn",
+        displayName: "林",
+        userId: "u-lin",
+        planType: "Qoder CN",
         status: "active",
         enabled: true,
         note: null,
-        lastCheckedAt: iso(30 * 60_000),
+        lastCheckedAt: iso(8 * 60_000),
         lastError: null,
-        accessExpiresAt: new Date(NOW + 20 * H).toISOString(),
-        label: "ada@example.com · 国际版",
+        accessExpiresAt: new Date(NOW + 6 * H).toISOString(),
+        label: "lin@studio.cn · Qoder CN",
         hasToken: true,
+        backend: "cn",
+        keyHint: "pt-cn…91ab",
+        qoderUsage: {
+          plan: "团队版",
+          userType: "teams",
+          percent: 16.4,
+          exceeded: false,
+          unlimited: false,
+          resetAt: new Date(NOW + 2 * D).toISOString(),
+          unit: "Credits",
+          buckets: [
+            { id: "org", label: "组织额度", used: 8200, total: 50000, remaining: 41800, percent: 16.4, unit: "Credits" },
+          ],
+          checkedAt: iso(8 * 60_000),
+        },
+        createdAt: iso(12 * D),
+        updatedAt: iso(8 * 60_000),
+      },
+      {
+        id: "q3",
+        accountRef: "global:pat:dead01",
+        email: "sam@old.dev",
+        planType: "Qoder",
+        status: "needs_login",
+        enabled: false,
+        note: null,
+        lastCheckedAt: iso(3 * D),
+        lastError: "Qoder 拒绝了这把登录态。",
+        accessExpiresAt: null,
+        label: "sam@old.dev · Qoder",
+        hasToken: false,
         backend: "global",
-        keyHint: "pt-8f2c",
-        createdAt: iso(D),
-        updatedAt: iso(30 * 60_000),
+        keyHint: "pt-00…ee11",
+        qoderUsage: null,
+        createdAt: iso(90 * D),
+        updatedAt: iso(3 * D),
       },
     ];
 
@@ -1305,8 +1530,31 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     case "gateway_status":
     case "gateway_set_current":
     case "gateway_reset_lane":
-    case "gateway_channel_set_current":
       return v(gatewayStatus());
+    case "gateway_channel_set_current": {
+      if (args?.channel === "qoder" && typeof args.label === "string") {
+        const ch = GATEWAY.channels.find((c) => c.id === "qoder");
+        if (ch) {
+          const label = args.label;
+          ch.lane.current = label;
+          ch.lane.candidates = ch.lane.candidates.map((c) => ({
+            ...c,
+            state: c.label.toLowerCase() === label.toLowerCase() ? { kind: "current" } : { kind: "ready" },
+          }));
+          if (!ch.lane.candidates.some((c) => c.label.toLowerCase() === label.toLowerCase())) {
+            ch.lane.candidates.unshift({
+              label,
+              source: "qoder",
+              pinned: false,
+              storedId: null,
+              percentUsed: null,
+              state: { kind: "current" },
+            });
+          }
+        }
+      }
+      return v(gatewayStatus());
+    }
     case "gateway_channel_reset_lane":
       if (args?.channel === "provider") for (const k of Object.keys(PROVIDER_STATE)) if (PROVIDER_STATE[k]?.kind !== "current") delete PROVIDER_STATE[k];
       return v(gatewayStatus());
@@ -1442,9 +1690,32 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     }
 
     case "qoder_list":
-      return delay(QODER_ACCOUNTS as T, 160);
+      return delay(QODER_ACCOUNTS.map((a) => ({ ...a })) as T, 160);
+    case "qoder_set_enabled": {
+      const a = QODER_ACCOUNTS.find((x) => x.id === args?.id);
+      if (a) a.enabled = Boolean(args?.enabled);
+      return delay({ ...a } as T, 180);
+    }
+    case "qoder_set_note": {
+      const a = QODER_ACCOUNTS.find((x) => x.id === args?.id);
+      if (a) a.note = (args?.note as string | null) ?? null;
+      return delay({ ...a } as T, 180);
+    }
+    case "qoder_remove": {
+      const i = QODER_ACCOUNTS.findIndex((x) => x.id === args?.id);
+      if (i >= 0) QODER_ACCOUNTS.splice(i, 1);
+      return delay(undefined as T, 180);
+    }
+    case "qoder_refresh_usage": {
+      const a = QODER_ACCOUNTS.find((x) => x.id === args?.id);
+      if (a?.qoderUsage) {
+        a.qoderUsage = { ...a.qoderUsage, checkedAt: new Date().toISOString() };
+        a.lastCheckedAt = a.qoderUsage.checkedAt;
+      }
+      return delay({ ...a } as T, 500);
+    }
     case "claude_list":
-      return delay([] as T, 120);
+      return delay(CLAUDE_ACCOUNTS.map((a) => ({ ...a })) as T, 120);
     case "claude_probe_local":
       return delay({ present: false, path: "~/.claude/.credentials.json", also: "钥匙串 Claude Code-credentials" } as T, 80);
     case "claude_login_start":
@@ -1455,9 +1726,13 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     case "claude_import_local":
       return delay({ accounts: [], skipped: [] } as T, 200);
     case "grok_list":
+      return delay(GROK_ACCOUNTS.map((a) => ({ ...a })) as T, 120);
     case "kiro_list":
+      return delay(KIRO_ACCOUNTS.map((a) => ({ ...a })) as T, 120);
     case "zcode_list":
-      return delay([] as T, 120);
+      return delay(ZCODE_ACCOUNTS.map((a) => ({ ...a })) as T, 120);
+    case "antigravity_list":
+      return delay(AGY_ACCOUNTS.map((a) => ({ ...a })) as T, 120);
 
     case "perms_check":
       return v({ ...PERMS, preflightDone: PREFLIGHT_DONE });
@@ -1539,6 +1814,223 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
         2600,
       );
     }
+
+    // ── Mesh 共享网络 ──────────────────────────────────────────────────────────
+    case "mesh_get_status":
+      return v({
+        role: "provider",
+        node_id: "node_res_shanghai_8848",
+        device_name: "MacBook-Pro-16",
+        connected: true,
+        broker_url: "https://nexus.roviix.com",
+        pairing_code: "NX-8839",
+        pairing_code_expires_in: 580,
+        peers: [
+          {
+            node_id: "node_studio_4090",
+            device_name: "家中台式机 (Mac Studio)",
+            status: "connected",
+            latency_ms: 18,
+            is_self: true,
+            shared_channels: ["claude"],
+            remote_models: ["claude-3-7-sonnet", "claude-3-5-sonnet"],
+            paired_at: Date.now() - 86400000,
+            last_seen_at: Date.now() - 10000,
+          },
+          {
+            node_id: "node_colleague_zhang",
+            device_name: "同行好友 (张工的Ubuntu工作站)",
+            status: "connected",
+            latency_ms: 32,
+            is_self: false,
+            shared_channels: ["chatgpt"],
+            remote_models: ["gpt-4o", "o3-mini", "gpt-4.1"],
+            paired_at: Date.now() - 3600000,
+            last_seen_at: Date.now() - 25000,
+          },
+        ],
+        host_channels: [
+          {
+            channel_id: "ollama",
+            label: "本地 GPU 模型 (Ollama / vLLM)",
+            tier: "tier1_local",
+            enabled: true,
+            max_concurrency: 2,
+            reserve_quota_percent: 20,
+            allowed_models: ["*"],
+          },
+          {
+            channel_id: "provider",
+            label: "商业 API Key (BYOK 供应商)",
+            tier: "tier2_byok",
+            enabled: true,
+            max_concurrency: 3,
+            reserve_quota_percent: 30,
+            allowed_models: ["*"],
+          },
+          {
+            channel_id: "claude",
+            label: "Claude Code CLI (住宅 IP 出口订阅)",
+            tier: "tier3_residential",
+            enabled: true,
+            max_concurrency: 1,
+            reserve_quota_percent: 30,
+            allowed_models: ["claude-3-7-sonnet", "claude-3-5-sonnet"],
+          },
+          {
+            channel_id: "chatgpt",
+            label: "ChatGPT Codex (住宅 IP 出口订阅)",
+            tier: "tier3_residential",
+            enabled: false,
+            max_concurrency: 1,
+            reserve_quota_percent: 30,
+            allowed_models: ["gpt-4o", "o3-mini"],
+          },
+        ],
+        preemption: {
+          is_preempting: false,
+          cooldown_remaining_secs: 0,
+          last_local_activity: null,
+        },
+        metrics: {
+          total_requests_served: 42,
+          total_bytes_forwarded: 8432100,
+          active_connections: 1,
+          rejected_connections: 0,
+          contribution_points: 210,
+        },
+        active_leases: [],
+        local_preempted: false,
+        last_heartbeat_at: Math.floor(Date.now() / 1000),
+      });
+
+    case "mesh_set_sharing": {
+      const enabled = Boolean(args?.enabled);
+      return v({
+        role: enabled ? "provider" : "disabled",
+        node_id: "node_res_shanghai_8848",
+        device_name: "MacBook-Pro-16",
+        connected: enabled,
+        broker_url: "https://mesh.nexus.roviix.com",
+        pairing_code: "NX-8839",
+        pairing_code_expires_in: 580,
+        peers: [],
+        host_channels: [],
+        preemption: { is_preempting: false, cooldown_remaining_secs: 0, last_local_activity: null },
+        metrics: {
+          total_requests_served: 42,
+          total_bytes_forwarded: 8432100,
+          active_connections: enabled ? 1 : 0,
+          rejected_connections: 0,
+          contribution_points: 210,
+        },
+        active_leases: [],
+        local_preempted: false,
+        last_heartbeat_at: Math.floor(Date.now() / 1000),
+      });
+    }
+
+    case "mesh_generate_pairing_code":
+      return v({
+        code: "NX-8839",
+        created_at: Math.floor(Date.now() / 1000),
+        expires_at: Math.floor(Date.now() / 1000) + 600,
+      });
+
+    case "mesh_pair_device": {
+      const code = (args?.code as string) || "8839";
+      const name = (args?.peerName as string) || `Peer-${code}`;
+      return v({
+        node_id: `node_peer_${code.toLowerCase().replace(/[^a-z0-9]/g, "")}`,
+        device_name: name,
+        status: "connected",
+        latency_ms: 22,
+        is_self: false,
+        shared_channels: ["chatgpt"],
+        remote_models: ["gpt-4o", "o3-mini", "gpt-4.1"],
+        paired_at: Date.now(),
+        last_seen_at: Date.now(),
+      });
+    }
+
+    case "mesh_unpair_device":
+      return v(true);
+
+    case "mesh_update_peer_channels":
+      return v(true);
+
+    case "mesh_update_host_channel":
+      return v(true);
+
+    case "mesh_update_device_name":
+      return v({
+        role: "provider",
+        node_id: "node_res_shanghai_8848",
+        device_name: (args?.name as string) || "MacBook-Pro",
+        connected: true,
+        broker_url: "https://mesh.nexus.roviix.com",
+        pairing_code: "NX-8839",
+        pairing_code_expires_in: 580,
+        peers: [],
+        host_channels: [],
+        preemption: { is_preempting: false, cooldown_remaining_secs: 0, last_local_activity: null },
+        metrics: { total_requests_served: 42, total_bytes_forwarded: 8432100, active_connections: 1, rejected_connections: 0, contribution_points: 210 },
+        active_leases: [],
+        local_preempted: false,
+        last_heartbeat_at: Math.floor(Date.now() / 1000),
+      });
+
+    case "mesh_update_config":
+      return v({
+        role: "provider",
+        node_id: "node_res_shanghai_8848",
+        device_name: "MacBook-Pro-16",
+        connected: true,
+        broker_url: "https://mesh.nexus.roviix.com",
+        pairing_code: null,
+        pairing_code_expires_in: null,
+        peers: [],
+        host_channels: [],
+        preemption: { is_preempting: false, cooldown_remaining_secs: 0, last_local_activity: null },
+        metrics: {
+          total_requests_served: 42,
+          total_bytes_forwarded: 8432100,
+          active_connections: 1,
+          rejected_connections: 0,
+          contribution_points: 210,
+        },
+        active_leases: [],
+        local_preempted: false,
+        last_heartbeat_at: Math.floor(Date.now() / 1000),
+      });
+
+    case "mesh_list_market_nodes":
+      return v([
+        {
+          node_id: "node_res_shanghai_01",
+          platform: "claude",
+          model: "claude-3-7-sonnet",
+          region: "住宅IP · 上海电信",
+          latency_ms: 28,
+          available_quota: "92% (充足)",
+        },
+        {
+          node_id: "node_res_guangzhou_03",
+          platform: "chatgpt",
+          model: "gpt-5",
+          region: "住宅IP · 广州联通",
+          latency_ms: 35,
+          available_quota: "85% (充足)",
+        },
+        {
+          node_id: "node_res_tokyo_09",
+          platform: "claude",
+          model: "claude-3-5-sonnet",
+          region: "住宅IP · 东京",
+          latency_ms: 68,
+          available_quota: "100% (充足)",
+        },
+      ]);
 
     default:
       console.warn("[preview] 没有 fixture 的命令", cmd, args);

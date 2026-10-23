@@ -12,18 +12,23 @@ import type { AccountPlatform } from "../shell/nav";
 
 const EMPTY_LANE: GatewayLane = { current: null, candidates: [], missing: [], available: [] };
 
-/** 本地通道的 id：就是账号页的平台 id——每条通道背后就是那个平台的号。 */
-export type LocalChannelId = AccountPlatform;
+import type { CustomLogicalChannel, ChannelStrategy } from "./customChannels";
+import { loadCustomChannels } from "./customChannels";
+
+/** 本地通道的 id：账号页的平台 id 或是 Mesh 共享网络 / 远端节点。 */
+export type LocalChannelId = AccountPlatform | "mesh" | (string & {});
 
 export const CURSOR: LocalChannelId = "cursor";
 
 export interface LocalChannel {
   id: LocalChannelId;
   label: string;
-  /** `/v1/models` 的 owned_by：cursor / openai / xai / aws / zhipu。 */
+  /** `/v1/models` 的 owned_by：cursor / openai / xai / aws / zhipu / nexus-mesh。 */
   vendor: string;
   /** 用户指定的默认通道：裸名 / 空模型走这里。Cursor 的号池仍在网关页管。 */
   isDefault: boolean;
+  /** 平台级不可用原因；与某一个账号冷却/掉登录不同。 */
+  unavailableReason: string | null;
   /** 有没有号能接聊天。 */
   ready: boolean;
   /** 有没有号能接媒体（生图 / 生视频）。 */
@@ -33,6 +38,15 @@ export interface LocalChannel {
   imageModels: string[];
   videoModels: string[];
   prefixes: string[];
+  /** Nexus 2.0 通道类型：原生本地 / Mesh 远端云端 / 自定义逻辑编排分流 */
+  kind?: "local" | "mesh" | "custom";
+  latencyMs?: number;
+  strategy?: ChannelStrategy;
+  boundAccountCount?: number;
+  boundAccountLabels?: string[];
+  avgQuotaPercent?: number | null;
+  platform?: AccountPlatform;
+  peerInfo?: { node_id: string; device_name: string; latency_ms: number };
 }
 
 /**
@@ -41,9 +55,9 @@ export interface LocalChannel {
  * Cursor 的模型清单不在快照里（它是静态表 + 兜底），给了 `local` 目录时按「不归任何就绪
  * 订阅通道」反推；没给就留空——网关页只关心号，不关心模型数。
  */
-const CHANNEL_IDS: readonly LocalChannelId[] = ["cursor", "chatgpt", "grok", "kiro", "zcode", "qoder", "claude", "provider"];
+const CHANNEL_IDS: readonly string[] = ["cursor", "chatgpt", "grok", "kiro", "zcode", "qoder", "claude", "antigravity", "provider"];
 
-/** 请求前缀（含别名）→ 通道。别名 `codex/` `xai/` `glm/` 只认来源，不进目录。 */
+/** 请求前缀（含别名）→ 通道。别名 `codex/` `xai/` `glm/` `agy/` `google/` `p2p/` 只认来源，不进目录。 */
 const PREFIX_ALIASES: Record<string, LocalChannelId> = {
   cursor: "cursor",
   chatgpt: "chatgpt",
@@ -56,63 +70,193 @@ const PREFIX_ALIASES: Record<string, LocalChannelId> = {
   qoder: "qoder",
   "qoder-cn": "qoder",
   claude: "claude",
+  antigravity: "antigravity",
+  agy: "antigravity",
+  google: "antigravity",
+  "gemini-web": "gemini-web",
+  gweb: "gemini-web",
   provider: "provider",
+  mesh: "mesh",
+  p2p: "mesh",
 };
 
-export function isChannelId(id: string | null | undefined): id is LocalChannelId {
-  return !!id && (CHANNEL_IDS as readonly string[]).includes(id);
+export function isChannelId(id: string | null | undefined, channels?: LocalChannel[]): id is LocalChannelId {
+  if (!id) return false;
+  const lower = id.toLowerCase();
+  if ((CHANNEL_IDS as readonly string[]).includes(lower)) return true;
+  if (channels && channels.some((c) => c.id.toLowerCase() === lower)) return true;
+  return false;
 }
 
-export function defaultChannelId(status: GatewayStatus | null | undefined): LocalChannelId {
+export function defaultChannelId(status: GatewayStatus | null | undefined, channels?: LocalChannel[]): LocalChannelId {
   const id = status?.settings.defaultChannel;
-  return isChannelId(id) ? id : CURSOR;
+  return isChannelId(id, channels) ? id : CURSOR;
 }
 
 /** `{通道}/{模型}` 的第一段。对不上已知通道时当裸名（供应商的模型 id 自己也可能带斜杠）。 */
-export function splitModelId(id: string): { channel: LocalChannelId | null; name: string } {
+export function splitModelId(id: string, channels?: LocalChannel[]): { channel: LocalChannelId | null; name: string } {
   const slash = id.indexOf("/");
   if (slash <= 0) return { channel: null, name: id };
-  const channel = PREFIX_ALIASES[id.slice(0, slash).toLowerCase()] ?? null;
+  const prefix = id.slice(0, slash).toLowerCase();
+  const channel = PREFIX_ALIASES[prefix] ?? null;
   if (channel) return { channel, name: id.slice(slash + 1) };
+  if (channels) {
+    const ch = channels.find((c) => c.id.toLowerCase() === prefix);
+    if (ch) return { channel: ch.id, name: id.slice(slash + 1) };
+  }
   return { channel: null, name: id };
 }
 
-/** 通道里「号」的量词：供应商按家数，别的按号数。 */
+/** 通道里「号」的量词：供应商按家数，Mesh 按节点数，别的按号数。 */
 export function unitOf(id: LocalChannelId): string {
-  return id === "provider" ? "家" : "个号";
+  if (id === "provider") return "家";
+  if (id === "mesh") return "个节点";
+  return "个号";
 }
 
-export function localChannels(status: GatewayStatus | null | undefined, local?: LocalModel[] | null): LocalChannel[] {
+export function localChannels(
+  status: GatewayStatus | null | undefined,
+  local?: LocalModel[] | null,
+  peers?: { node_id: string; device_name: string; remote_models: string[]; latency_ms: number }[] | null,
+  customChannelsInput?: CustomLogicalChannel[] | null,
+): LocalChannel[] {
   const defaultId = defaultChannelId(status);
-  const extras: LocalChannel[] = (status?.channels ?? []).map((ch) => ({
-    id: ch.id,
-    label: ch.label,
-    vendor: ch.vendor,
-    isDefault: ch.id === defaultId,
-    ready: ch.ready,
-    mediaReady: ch.mediaReady,
-    lane: ch.lane,
-    chatModels: ch.chatModels,
-    imageModels: ch.imageModels,
-    videoModels: ch.videoModels,
-    prefixes: ch.prefixes,
-  }));
+  let extras: LocalChannel[] = (status?.channels ?? [])
+    .filter((ch) => (ch.id as string) !== "mesh" && (ch.id as string) !== "gemini-web")
+    .map((ch) => ({
+      id: ch.id,
+      label: ch.label,
+      vendor: ch.vendor,
+      isDefault: ch.id === defaultId,
+      unavailableReason: null,
+      ready: ch.ready,
+      mediaReady: ch.mediaReady,
+      lane: ch.lane,
+      chatModels: ch.chatModels,
+      imageModels: ch.imageModels,
+      videoModels: ch.videoModels,
+      prefixes: ch.prefixes,
+      kind: "local" as const,
+      platform: ch.id as AccountPlatform,
+    }));
 
   const cursorModels = (local ?? []).filter((m) => splitModelId(m.id).channel === CURSOR);
   const cursorLane = status?.lane ?? EMPTY_LANE;
+  const cursorUnavailable = status?.cursorInferenceUnavailableReason ?? null;
   const cursor: LocalChannel = {
     id: CURSOR,
     label: "Cursor",
     vendor: "cursor",
     isDefault: defaultId === CURSOR,
-    ready: cursorLane.candidates.some(usableCandidate),
+    unavailableReason: cursorUnavailable,
+    ready: !cursorUnavailable && cursorLane.candidates.some(usableCandidate),
+    // 生图走另一条 AiService RPC；Stream 的停用不替它下结论。
     mediaReady: cursorLane.candidates.some(usableCandidate),
     lane: cursorLane,
-    chatModels: cursorModels.filter((m) => (m.modality ?? "chat") === "chat").map((m) => m.id),
+    chatModels: cursorUnavailable
+      ? []
+      : cursorModels.filter((m) => (m.modality ?? "chat") === "chat").map((m) => m.id),
     imageModels: cursorModels.filter((m) => m.modality === "image").map((m) => m.id),
     videoModels: cursorModels.filter((m) => m.modality === "video").map((m) => m.id),
     prefixes: ["cursor/"],
+    kind: "local" as const,
+    platform: "cursor",
   };
+
+  // 加载自定义逻辑通道
+  const customs = customChannelsInput ?? (typeof window !== "undefined" ? loadCustomChannels() : []);
+  if (customs && customs.length > 0) {
+    const baseList = [cursor, ...extras];
+    for (const c of customs) {
+      // 如果自定义配置的是基础通道本身（id 与 platform 一致），直接增强该通道
+      if (c.id === c.platform) {
+        const target = baseList.find((ch) => ch.id === c.platform);
+        if (target) {
+          if (c.accountIds.length > 0) {
+            const filtered = target.lane.candidates.filter((cand) =>
+              c.accountIds.some((accId) => cand.label.includes(accId) || cand.storedId === accId),
+            );
+            target.lane = {
+              ...target.lane,
+              candidates: filtered,
+              current: filtered.find((cand) => cand.state.kind === "current")?.label ?? null,
+            };
+            target.boundAccountCount = c.accountIds.length;
+            target.boundAccountLabels = c.accountIds;
+          }
+          target.strategy = c.strategy;
+          if (c.label) target.label = c.label;
+        }
+        continue;
+      }
+
+      const baseCh = baseList.find((ch) => ch.id === c.platform);
+      if (baseCh) {
+        // 根据 boundAccountIds 筛选 candidate
+        const filteredCandidates = c.accountIds.length > 0
+          ? baseCh.lane.candidates.filter((cand) => c.accountIds.some((accId) => cand.label.includes(accId) || cand.storedId === accId))
+          : baseCh.lane.candidates;
+        const isReady = filteredCandidates.some(usableCandidate);
+        const prefix = c.prefix.trim().toLowerCase();
+        extras.push({
+          id: c.id,
+          label: c.label,
+          vendor: baseCh.vendor,
+          isDefault: c.isDefault ?? false,
+          unavailableReason: null,
+          ready: isReady,
+          mediaReady: baseCh.mediaReady && isReady,
+          lane: {
+            ...baseCh.lane,
+            candidates: filteredCandidates,
+            current: filteredCandidates.find((cand) => cand.state.kind === "current")?.label ?? null,
+          },
+          chatModels: baseCh.chatModels.map((m) => {
+            const clean = m.includes("/") ? m.slice(m.indexOf("/") + 1) : m;
+            return `${prefix}/${clean}`;
+          }),
+          imageModels: baseCh.imageModels.map((m) => {
+            const clean = m.includes("/") ? m.slice(m.indexOf("/") + 1) : m;
+            return `${prefix}/${clean}`;
+          }),
+          videoModels: baseCh.videoModels.map((m) => {
+            const clean = m.includes("/") ? m.slice(m.indexOf("/") + 1) : m;
+            return `${prefix}/${clean}`;
+          }),
+          prefixes: [`${prefix}/`],
+          kind: "custom" as const,
+          strategy: c.strategy,
+          boundAccountCount: c.accountIds.length,
+          boundAccountLabels: c.accountIds,
+          platform: c.platform,
+        });
+      }
+    }
+  }
+
+  if (peers && peers.length > 0) {
+    for (const p of peers) {
+      const pid = p.device_name.toLowerCase();
+      extras.push({
+        id: pid,
+        label: p.device_name,
+        vendor: "nexus-mesh",
+        isDefault: false,
+        unavailableReason: null,
+        ready: true,
+        mediaReady: false,
+        lane: { current: null, candidates: [], missing: [], available: [] },
+        chatModels: p.remote_models.map((m) => (m.toLowerCase().startsWith(`${pid}/`) ? m : `${pid}/${m}`)),
+        imageModels: [],
+        videoModels: [],
+        prefixes: [`${pid}/`, `mesh/${pid}/`],
+        kind: "mesh" as const,
+        latencyMs: p.latency_ms,
+        peerInfo: p,
+      });
+    }
+  }
+
   return [cursor, ...extras];
 }
 
@@ -125,11 +269,14 @@ export function modelsOf(ch: LocalChannel): string[] {
 export function channelOfModel(channels: LocalChannel[], id: string): LocalChannelId {
   const lower = id.toLowerCase();
   for (const ch of channels) {
-    if (lower.startsWith(`${ch.id}/`)) return ch.id;
+    if (lower.startsWith(`${ch.id.toLowerCase()}/`)) return ch.id;
     if (ch.prefixes.some((p) => lower.startsWith(p.toLowerCase()))) return ch.id;
   }
   const split = splitModelId(id);
-  if (split.channel) return split.channel;
+  if (split.channel) {
+    const matched = channels.find((c) => c.id.toLowerCase() === split.channel?.toLowerCase());
+    if (matched) return matched.id;
+  }
   return channels.find((c) => c.isDefault)?.id ?? CURSOR;
 }
 
@@ -149,7 +296,7 @@ export function usableCandidate(c: GatewayCandidate): boolean {
 /** 网关开着，但所有通道（含 Cursor）都没有一个号能接。 */
 export function starved(status: GatewayStatus): boolean {
   if (!status.running) return false;
-  if (status.lane.candidates.some(usableCandidate)) return false;
+  if (!status.cursorInferenceUnavailableReason && status.lane.candidates.some(usableCandidate)) return false;
   return !status.channels.some((c) => c.lane.candidates.some(usableCandidate));
 }
 
@@ -174,25 +321,36 @@ export function laneCount(lane: GatewayLane): { usable: number; total: number; c
  * 其余通道没号只是「写成 {id}/… 才会走这里」，不是坏消息。
  */
 export function channelSummary(
-  ch: Pick<LocalChannel, "id" | "label" | "lane" | "imageModels" | "videoModels" | "chatModels" | "mediaReady"> & { isDefault?: boolean },
+  ch: Pick<LocalChannel, "id" | "label" | "lane" | "imageModels" | "videoModels" | "chatModels" | "mediaReady"> & {
+    isDefault?: boolean;
+    unavailableReason?: string | null;
+  },
 ): ChannelSummary {
+  if (ch.unavailableReason) {
+    const shortReason = ch.unavailableReason.length > 30 ? "暂不可用 · 请切换至其他通道" : ch.unavailableReason;
+    return { text: shortReason, tone: "warn" };
+  }
   const { usable, total, current } = laneCount(ch.lane);
   if (ch.isDefault) {
-    if (total === 0) return { text: "号池为空 · 不带前缀的请求会被拒", tone: "warn" };
-    if (usable === 0) return { text: `${total} 个号都不可用 · 请求会被拒`, tone: "warn" };
-    return { text: `${usable} / ${total} 个号可接${current ? ` · 正在用 ${current.label}` : ""}`, tone: "ok" };
+    if (total === 0) return { text: "未配置可用账号", tone: "warn" };
+    if (usable === 0) return { text: `${total} 个账号不可用`, tone: "warn" };
+    return { text: `${usable} / ${total} 可用${current ? ` · 当前：${current.label}` : ""}`, tone: "ok" };
   }
   const prefix = `${ch.id}/`;
   if (ch.id === "provider") {
-    if (total === 0) return { text: `还没有供应商 · 加一把 API Key，写成 ${prefix}模型 就走它`, tone: "default" };
-    if (usable === 0) return { text: `${total} 家都在歇着 · ${prefix}… 请求会被拒`, tone: "warn" };
-    return { text: `${usable} / ${total} 家可接${current ? ` · 正在用 ${current.label}` : ""}`, tone: "ok" };
+    if (total === 0) return { text: `还没有供应商 · 前缀 ${prefix}`, tone: "default" };
+    if (usable === 0) return { text: `${total} 家供应商不可用`, tone: "warn" };
+    return { text: `${usable} / ${total} 可用${current ? ` · 当前：${current.label}` : ""}`, tone: "ok" };
   }
-  if (total === 0) return { text: `没有 ${ch.label} 账号 · 写成 ${prefix}… 才走这里`, tone: "default" };
-  if (usable === 0) return { text: `${total} 个 ${ch.label} 账号都不可用 · ${prefix}… 请求会被拒`, tone: "warn" };
-  const media = ch.imageModels.length + ch.videoModels.length > 0 ? (ch.mediaReady ? " · 可出图 / 出视频" : " · 无号可出媒体") : "";
+  if (ch.id === "mesh") {
+    if (total === 0) return { text: `去中心化网络 · 前缀 ${prefix}`, tone: "default" };
+    return { text: `${usable} / ${total} 节点就绪 · 前缀 ${prefix}`, tone: "ok" };
+  }
+  if (total === 0) return { text: `未配置账号 · 前缀 ${prefix}`, tone: "default" };
+  if (usable === 0) return { text: `${total} 个账号不可用`, tone: "warn" };
+  const media = ch.imageModels.length + ch.videoModels.length > 0 ? (ch.mediaReady ? " · 可出图" : " · 无媒体额度") : "";
   return {
-    text: `${usable} / ${total} 个 ${ch.label} 账号可接${current ? ` · 正在用 ${current.label}` : ""}${media}`,
+    text: `${usable} / ${total} 可用${current ? ` · 当前：${current.label}` : ""}${media}`,
     tone: "ok",
   };
 }

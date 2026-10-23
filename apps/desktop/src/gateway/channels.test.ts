@@ -118,6 +118,9 @@ describe("channelOfModel / defaultChannelId", () => {
     expect(channelOfModel(channels, "provider/deepseek-v4-pro")).toBe("provider");
     expect(splitModelId("qoder-cn/Auto").channel).toBe("qoder");
     expect(splitModelId("claude/claude-opus-4-6").channel).toBe("claude");
+    expect(splitModelId("antigravity/gemini-3.1-pro").channel).toBe("antigravity");
+    expect(splitModelId("agy/claude-3-7-sonnet").channel).toBe("antigravity");
+    expect(splitModelId("google/gemini-2.5-pro").channel).toBe("antigravity");
     // 供应商的模型 id 自己带斜杠：不是已知前缀就当裸名。
     expect(splitModelId("anthropic/claude-sonnet").channel).toBeNull();
     expect(channelSummary({ ...channels[2]!, isDefault: false }).text).toContain("还没有供应商");
@@ -146,4 +149,68 @@ describe("laneOf / starved", () => {
     const withGrok = { ...running, channels: [channel({ lane: { current: null, candidates: [candidate("a", { kind: "ready" })], missing: [], available: [] } })] };
     expect(starved(withGrok)).toBe(false);
   });
+
+  it("supports Nexus 2.0 custom logical channels and mesh cloud channels", () => {
+    const claudeBase = channel({
+      id: "claude",
+      label: "Claude",
+      vendor: "anthropic",
+      ready: true,
+      chatModels: ["claude-sonnet-4-6", "claude-opus-4-6"],
+      prefixes: ["claude/"],
+      lane: {
+        current: "ada@work.com",
+        candidates: [
+          candidate("ada@work.com", { kind: "ready" }),
+          candidate("backup@me.com", { kind: "ready" }),
+        ],
+        missing: [],
+        available: [],
+      },
+    });
+
+    const customChannels = [
+      {
+        id: "claude-work",
+        label: "Claude-主力工作组",
+        platform: "claude" as const,
+        prefix: "claude-work",
+        accountIds: ["ada@work.com"],
+        strategy: "quota_first" as const,
+        createdAt: Date.now(),
+      },
+    ];
+
+    const meshPeers = [
+      {
+        node_id: "node-123",
+        device_name: "home-pc",
+        remote_models: ["gpt-5-codex", "grok-4-vision"],
+        latency_ms: 22,
+      },
+    ];
+
+    const statusWithClaude: GatewayStatus = {
+      ...base,
+      channels: [claudeBase],
+    };
+
+    const channels = localChannels(statusWithClaude, null, meshPeers, customChannels);
+
+    // Should include Cursor, Claude, custom channel claude-work, and mesh channel home-pc
+    const workCh = channels.find((c) => c.id === "claude-work");
+    expect(workCh).toBeDefined();
+    expect(workCh?.kind).toBe("custom");
+    expect(workCh?.label).toBe("Claude-主力工作组");
+    expect(workCh?.chatModels).toEqual(["claude-work/claude-sonnet-4-6", "claude-work/claude-opus-4-6"]);
+    expect(workCh?.lane.candidates.length).toBe(1);
+    expect(workCh?.lane.candidates[0]?.label).toBe("ada@work.com");
+
+    const meshCh = channels.find((c) => c.id === "home-pc");
+    expect(meshCh).toBeDefined();
+    expect(meshCh?.kind).toBe("mesh");
+    expect(meshCh?.latencyMs).toBe(22);
+    expect(meshCh?.chatModels).toContain("home-pc/gpt-5-codex");
+  });
 });
+

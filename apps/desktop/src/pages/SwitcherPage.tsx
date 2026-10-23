@@ -1,32 +1,28 @@
 /**
- * 切号页 —— **一个切号池，一个动作**（ARCHITECTURE §4.1，目标是十秒内完成）。
+ * Nexus 2.0 切号页 —— **统一切号轨道，免二次入池**。
  *
- * 「账号」是总库，切号池是用户明确挑出来的子集。`SwitchProfile` 的存在就是成员关系：
- * 加入时从账号凭证换一份登录态，移出时只删切号档，不删除账号。
- *
- * 正在用的成员置顶，样式和其余行一致。当前登录不在池中时只提供「加入当前账号」，
- * 不把它悄悄混进池里。
+ * 合并 Cursor 账号与切号快照为一个即改即用的列表。
+ * - 热切（不改机器码，Cursor 运行中）：十秒内静默换号，不打断 IDE 工作流。
+ * - 冷切（勾选重置机器码或 Cursor 未启动）：确认后退出 Cursor、重置机器码并自动重启。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AccountCard } from "../accounts/AccountCard";
 import { AccountInspector } from "../accounts/AccountInspector";
 import { createCursorAccountView, type AccountView } from "../accounts/model";
-import { accounts, app, switcher } from "../ipc/api";
+import { accounts, app, switcher, onSwitchProgress } from "../ipc/api";
 import type { Account, AuthBackup, Overview, SwitchProfile, SwitchProgress } from "../ipc/types";
-import { onSwitchProgress } from "../ipc/api";
 import { go, type Route } from "../shell/nav";
 import { Banner, Empty, ErrorNote, Icon, Modal, Picker, Spinner, Tag } from "../ui/primitives";
 import { confirm } from "../ui/confirm";
 import { timeAgo } from "../ui/format";
 import { sessionOnly } from "../ui/accounts";
 import {
-  buildSwitchPool,
+  buildUnifiedSwitchList,
   canAddToSwitchPool,
   DEFAULT_SWITCH_SORT,
-  listAvailableSwitchAccounts,
   SWITCH_SORT_LABEL,
-  type SwitchPoolEntry,
   type SwitchSort,
+  type UnifiedSwitchEntry,
 } from "../ui/switcher";
 import { accountProblem, planLabel, planTone } from "../ui/usage";
 
@@ -45,7 +41,6 @@ const STEP_LABEL: Record<string, string> = {
   failed: "失败",
 };
 
-/** `failedAt` 用的是另一套词（见 Rust 侧 `step_of`），不能拿 STEP_LABEL 去查。 */
 const FAILED_AT_LABEL: Record<string, string> = {
   prepare: "准备",
   "hot-login": "通知 Cursor 换号",
@@ -73,13 +68,10 @@ function describe(p: SwitchProgress): string {
   }
 }
 
-function switchable(entry: SwitchPoolEntry): boolean {
-  return entry.profile.hasAuth;
-}
-
-function blockReason(entry: SwitchPoolEntry): string | null {
-  if (switchable(entry)) return null;
+function blockReason(entry: UnifiedSwitchEntry): string | null {
+  if (entry.canSwitch) return null;
   if (entry.account?.status === "dead") return "已失效";
+  if (entry.account && !canAddToSwitchPool(entry.account)) return "需先授权或更新 Token";
   return "缺登录态";
 }
 
@@ -92,17 +84,12 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
-  const [confirming, setConfirming] = useState<SwitchPoolEntry | null>(null);
+  const [confirming, setConfirming] = useState<UnifiedSwitchEntry | null>(null);
   const [progress, setProgress] = useState<SwitchProgress[] | null>(null);
   const [showBackups, setShowBackups] = useState(false);
-  const [adding, setAdding] = useState(false);
-  const [preferredAccountId, setPreferredAccountId] = useState<string | null>(null);
   const [openKey, setOpenKey] = useState<string | null>(null);
-  /** 池子的排法。只有「切号时间倒序」一档（默认），下拉先把顺序说出来，给以后的档留位置。 */
   const [sort, setSort] = useState<SwitchSort>(DEFAULT_SWITCH_SORT);
-  /** 从别处带着某个号跳过来、但这个号切不了时的那句交代。 */
   const [notice, setNotice] = useState<string | null>(null);
-  /** 设置里「切换时同时切机器码」。打开 = 强制冷切。 */
   const [switchMachineIds, setSwitchMachineIds] = useState(false);
 
   const reload = useCallback(async () => {
@@ -121,7 +108,6 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     } catch (err) {
       setError(err);
     }
-    // 账号拉不到时切号池仍可用，只是没有额度和可添加列表。
     try {
       setKnown(await accounts.list());
     } catch {
@@ -134,9 +120,6 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     void reload();
   }, [reload]);
 
-  // 进度靠事件推，不轮询（§4.3）。
-  // `prev === null` 表示用户已经把进度弹窗关掉了；后续事件不再把它拉回来 ——
-  // 切号在后台继续跑，但界面听用户的。
   useEffect(() => {
     const off = onSwitchProgress((p) =>
       setProgress((prev) => (prev === null ? null : [...prev, p])),
@@ -146,29 +129,35 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     };
   }, []);
 
-  const pool = useMemo(
-    () => buildSwitchPool(profiles, known, overview?.current?.email),
+  const unifiedList = useMemo(
+    () => buildUnifiedSwitchList(profiles, known, overview?.current?.email),
     [known, profiles, overview?.current?.email],
   );
-  const available = useMemo(
-    () => listAvailableSwitchAccounts(known, profiles),
-    [known, profiles],
+
+  const current = useMemo(() => unifiedList.find((e) => e.isCurrent) ?? null, [unifiedList]);
+  const currentAccount = useMemo(
+    () =>
+      known.find(
+        (a) =>
+          a.email.toLowerCase() ===
+          (overview?.current?.email || current?.email || "").toLowerCase(),
+      ) ?? null,
+    [known, overview?.current?.email, current?.email],
   );
 
-  const current = useMemo(() => pool.find((e) => e.isCurrent) ?? null, [pool]);
   const openEntry = useMemo(
-    () => pool.find((entry) => entry.key === openKey) ?? null,
-    [openKey, pool],
+    () => unifiedList.find((entry) => entry.key === openKey) ?? null,
+    [openKey, unifiedList],
   );
+
   const currentOutsidePool =
-    overview?.current?.email && !current ? overview.current.email : null;
+    overview?.current?.email && !current?.profile ? overview.current.email : null;
   const readOnly = overview ? !overview.check.writable : false;
 
-  /** 从账号抽屉过来：池内账号直接确认，池外账号打开显式加入弹窗。 */
   const wanted = route.email?.toLowerCase();
   useEffect(() => {
     if (!wanted || !loaded) return;
-    const entry = pool.find((e) => e.key === wanted);
+    const entry = unifiedList.find((e) => e.key === wanted);
     const account = known.find((candidate) => candidate.email.toLowerCase() === wanted);
     onGo(go("switcher"));
     setNotice(null);
@@ -177,24 +166,18 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
       setNotice(`Cursor 当前已登录 ${entry.email}`);
       return;
     }
-    if (entry && switchable(entry)) {
+    if (entry && entry.canSwitch) {
       requestSwitch(entry);
       return;
     }
-    if (account && canAddToSwitchPool(account)) {
-      setPreferredAccountId(account.id);
-      setAdding(true);
-      return;
-    }
-    // 说不能切的**真实**原因：仅会话的号活着就能切，切不了只能是它过期了。
     setNotice(
       account
         ? sessionOnly(account)
-          ? `${account.email} 的 session token 已过期；到凭证页粘一份新的，或授权一次拿到 refresh_token`
-          : `${account.email} 需要先授权拿到 refresh_token，或粘一份 session token`
-        : `${wanted} 不在账号中`,
+          ? `${account.email} 的 session token 已过期；到凭证页更新 Token 即可换号`
+          : `${account.email} 需要先授权或粘贴有效凭证`
+        : `${wanted} 不在账号库中`,
     );
-  }, [wanted, loaded, pool, known, onGo]);
+  }, [wanted, loaded, unifiedList, known, onGo]);
 
   async function run(action: () => Promise<unknown>): Promise<void> {
     setBusy(true);
@@ -209,14 +192,25 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     }
   }
 
-  async function doSwitch(entry: SwitchPoolEntry) {
+  async function doSwitch(entry: UnifiedSwitchEntry) {
     setConfirming(null);
     setProgress([]);
-    await run(() => switcher.switchTo(entry.profile.id));
+    await run(async () => {
+      let profileId = entry.profile?.id;
+      if (!profileId && entry.account) {
+        // 自动完成入池
+        const enrolled = await accounts.addToSwitchBook(entry.account.id);
+        profileId = enrolled.id;
+      }
+      if (!profileId) {
+        throw new Error("无法切换：未找到可用的账号或快照档案");
+      }
+      await switcher.switchTo(profileId);
+    });
   }
 
-  /** 热切不打断 Cursor，不必再确认；冷切会退出重启，仍要问一句。 */
-  function requestSwitch(entry: SwitchPoolEntry) {
+  function requestSwitch(entry: UnifiedSwitchEntry) {
+    // 热切条件：Cursor 正在运行且未勾选重置机器码
     if (overview?.cursorRunning && !switchMachineIds) {
       void doSwitch(entry);
       return;
@@ -224,73 +218,48 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
     setConfirming(entry);
   }
 
-  async function removeFromPool(entry: SwitchPoolEntry) {
-    // 账号库里还有它的话，登录态随时能再换一份，移出是可逆的，不必问。
-    // 库里没有（只靠「收录当前登录」进来的档）时，这份快照就是它唯一的凭证，问一句。
+  async function removeFromPool(entry: UnifiedSwitchEntry) {
+    if (!entry.profile) return;
     if (!entry.account) {
-      const ok = await confirm(`${entry.email} 已不在「账号」里，这份登录态快照是它在本机唯一的凭证，移出后找不回来。`, {
-        title: "移出切号池",
-        okLabel: "移出",
-        danger: true,
-      });
+      const ok = await confirm(
+        `${entry.email} 未在账号库托管，移出后此快照凭证将彻底丢失。`,
+        {
+          title: "移除切号快照",
+          okLabel: "移除",
+          danger: true,
+        },
+      );
       if (!ok) return;
     }
     setOpenKey(null);
-    await run(() => switcher.remove(entry.profile.id));
+    await run(() => switcher.remove(entry.profile!.id));
   }
 
   return (
     <div>
       <div className="page-head">
         <div className="page-title-line">
-          <h1>切号池</h1>
+          <h1>Cursor 换号</h1>
           {loaded ? (
             <span className="page-title-meta">
-              {pool.length} 个账号{overview?.current?.email ? "" : " · Cursor 未登录"}
-            </span>
-          ) : null}
-          {overview ? (
-            <span
-              className="page-title-meta"
-              title={overview.machineIdOwner ? `机器码属于 ${overview.machineIdOwner}` : "本机原始机器码"}
-            >
-              机器码 <code className="mono">{overview.machineIdShort || "—"}</code>
+              {unifiedList.length} 个账号 · 独立 IDE 轨道
             </span>
           ) : null}
         </div>
-        <div className="row">
-          {/* 一份备份都没有时不摆一个灰按钮 —— 那只是在告诉用户「这里有个东西你用不了」。 */}
+        <div className="row" style={{ gap: 8 }}>
           {backups.length > 0 ? (
-            <button type="button" className="btn" onClick={() => setShowBackups(true)}>
-              备份 {backups.length}
+            <button type="button" className="btn btn-sm" onClick={() => setShowBackups(true)}>
+              备份快照 ({backups.length})
             </button>
           ) : null}
-          {loaded ? (
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={() => {
-                setPreferredAccountId(null);
-                setAdding(true);
-              }}
-            >
-              <Icon name="plus" size={13} />
-              添加账号
-            </button>
-          ) : null}
-          {currentOutsidePool ? (
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={busy}
-              onClick={() => void run(() => switcher.captureCurrent())}
-              title={currentOutsidePool}
-            >
-              <Icon name="plus" size={14} />
-              加入当前账号
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => onGo(go("accounts"))}
+          >
+            <Icon name="plus" size={13} />
+            账号库管理
+          </button>
         </div>
       </div>
 
@@ -317,19 +286,97 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
         </div>
       ) : null}
 
+      {/* Nexus 2.0 当前 IDE 身份与机器码状态看板 */}
+      <div className="cursor-identity-banner">
+        <div className="cursor-identity-left">
+          <div className="cursor-identity-avatar">
+            <Icon name="cursor" size={20} />
+          </div>
+          <div className="cursor-identity-info">
+            <div className="cursor-identity-header">
+              <span className="cursor-identity-label">当前 IDE 登录身份</span>
+              {overview?.cursorRunning ? (
+                <span className="live-pill ok">● Cursor 运行中</span>
+              ) : (
+                <span className="live-pill muted">○ Cursor 未运行</span>
+              )}
+            </div>
+            <div className="cursor-identity-meta">
+              <span className="cursor-identity-email mono">
+                {overview?.current?.email || "Cursor 当前未登录任何账号"}
+              </span>
+              {currentAccount?.usage?.plan ? (
+                <span className={`plan ${planTone(currentAccount.usage)}`}>
+                  {planLabel(currentAccount.usage)}
+                </span>
+              ) : overview?.current?.membership ? (
+                <span className="plan plan-pro">{overview.current.membership}</span>
+              ) : null}
+              {currentAccount?.usage?.totalPercentUsed != null ? (
+                <span className="cursor-quota-pill">
+                  总用量 {Math.round(currentAccount.usage.totalPercentUsed)}%
+                </span>
+              ) : null}
+              <span className="mono text-faint" title="本机当前 Cursor 机器标识">
+                机器码: {overview?.machineIdShort || "—"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="cursor-identity-right">
+          <label className="cursor-toggle-label" title="开启后每次换号将生成全新机器码并重启 Cursor IDE">
+            <input
+              type="checkbox"
+              checked={switchMachineIds}
+              disabled={busy}
+              onChange={async (e) => {
+                const nextVal = e.target.checked;
+                setSwitchMachineIds(nextVal);
+                try {
+                  await app.updateSettings({ switchMachineIds: nextVal });
+                } catch (err) {
+                  console.error("更新机器码配置失败", err);
+                }
+              }}
+            />
+            <span>切换时同时重置机器码 (需重启 IDE)</span>
+          </label>
+          {currentOutsidePool ? (
+            <button
+              type="button"
+              className="btn btn-sm btn-soft"
+              disabled={busy}
+              onClick={() => void run(() => switcher.captureCurrent())}
+              title={currentOutsidePool}
+            >
+              <Icon name="plus" size={13} />
+              收录当前登录
+            </button>
+          ) : null}
+        </div>
+      </div>
+
       {!loaded ? (
         <div className="accts">
-          <div className="skeleton" style={{ height: 164 }} />
-          <div className="skeleton" style={{ height: 164 }} />
-          <div className="skeleton" style={{ height: 164 }} />
+          <div className="skeleton" style={{ height: 120 }} />
+          <div className="skeleton" style={{ height: 120 }} />
         </div>
-      ) : pool.length === 0 ? (
-        <Empty title="切号池为空" />
+      ) : unifiedList.length === 0 ? (
+        <Empty
+          title="暂无 Cursor 账号"
+          action={
+            <button type="button" className="btn btn-sm btn-primary" onClick={() => onGo(go("accounts"))}>
+              + 添加 Cursor 账号
+            </button>
+          }
+        >
+          在「账号库」中添加或导入 Cursor 账号凭证，无需复杂的配置，即可在此一键自由换号。
+        </Empty>
       ) : (
         <>
-          {/* 和「账号」页同一条工具条的位置。此刻排序只有一档，它先把「这列是按什么排的」
-              说出来 —— 一列号凭什么这个顺序，不该靠用户自己悟。 */}
-          <div className="toolbar">
+          <div className="toolbar" style={{ marginTop: 16 }}>
+            <span className="faint tiny">共 {unifiedList.length} 个账号可随时切换</span>
             <span className="grow" />
             <Picker<SwitchSort>
               icon="sort"
@@ -343,12 +390,13 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
             />
           </div>
           <div className="accts">
-            {pool.map((entry) => (
-              <PoolRow
+            {unifiedList.map((entry) => (
+              <UnifiedPoolRow
                 key={entry.key}
                 entry={entry}
                 busy={busy}
                 readOnly={readOnly}
+                switchMachineIds={switchMachineIds}
                 open={entry.key === openKey}
                 onOpen={() => setOpenKey(entry.key)}
                 onSwitch={() => requestSwitch(entry)}
@@ -369,19 +417,21 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
             setOpenKey(null);
             if (openEntry.isCurrent) {
               setNotice(`Cursor 当前已登录 ${openEntry.email}`);
-            } else if (switchable(openEntry)) {
+            } else if (openEntry.canSwitch) {
               requestSwitch(openEntry);
             }
           }}
           placementActions={
-            <button
-              type="button"
-              className="btn btn-sm btn-danger"
-              disabled={busy}
-              onClick={() => void removeFromPool(openEntry)}
-            >
-              移出切号池
-            </button>
+            openEntry.profile ? (
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                disabled={busy}
+                onClick={() => void removeFromPool(openEntry)}
+              >
+                移除切号快照
+              </button>
+            ) : null
           }
           onOpenLibrary={() => onGo(go("accounts"))}
         />
@@ -391,6 +441,7 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
         <ConfirmSwitch
           entry={confirming}
           hot={Boolean(overview?.cursorRunning) && !switchMachineIds}
+          resetMachine={switchMachineIds}
           onCancel={() => setConfirming(null)}
           onConfirm={() => void doSwitch(confirming)}
         />
@@ -421,73 +472,43 @@ export function SwitcherPage({ route, onGo }: { route: Route; onGo: (r: Route) =
           onRemove={(id) => void run(() => switcher.removeBackup(id))}
         />
       ) : null}
-
-      {adding ? (
-        <AddToSwitchPoolModal
-          accounts={available}
-          busy={busy}
-          preferredAccountId={preferredAccountId}
-          onClose={() => {
-            setAdding(false);
-            setPreferredAccountId(null);
-          }}
-          onAdd={async (accountIds) => {
-            await run(async () => {
-              for (const accountId of accountIds) {
-                await accounts.addToSwitchBook(accountId);
-              }
-            });
-            setAdding(false);
-            setPreferredAccountId(null);
-          }}
-          onGoAccounts={() => {
-            setAdding(false);
-            setPreferredAccountId(null);
-            onGo(go("accounts"));
-          }}
-        />
-      ) : null}
     </div>
   );
 }
 
-/**
- * 池子里的一行。骨架与「账号」「本地网关」共用（`AccountLine`），**正在用的那一行也是同一副**。
- *
- * 额度来自 `account` 那一半：决定「现在要不要换一个」看的就是这些数字，和另外两页同一个判断。
- * 只剩快照的号（从没进过号池）没有额度可查，就照实说一句，不装作它是零。
- */
-function switcherAccountView(entry: SwitchPoolEntry): AccountView {
+function switcherAccountView(entry: UnifiedSwitchEntry): AccountView {
   return createCursorAccountView({
     label: entry.email,
     managed: entry.account,
     placement: {
       kind: "switcher",
-      label: "切号池",
+      label: "切号",
       detail: entry.isCurrent
         ? "Cursor 当前登录"
-        : entry.profile.lastSwitchedAt
+        : entry.profile?.lastSwitchedAt
           ? `${timeAgo(entry.profile.lastSwitchedAt)}切过`
-          : "还没切换过",
+          : "可随时一键上号",
     },
     unavailableReason: entry.account
       ? undefined
-      : "只保存了切号登录态；未在账号库托管，无法查询完整用量",
+      : "只保存了切号登录态快照；未在账号库托管，无法查询完整用量",
   });
 }
 
-function PoolRow({
+function UnifiedPoolRow({
   entry,
   busy,
   readOnly,
+  switchMachineIds,
   open,
   onOpen,
   onSwitch,
   onRemove,
 }: {
-  entry: SwitchPoolEntry;
+  entry: UnifiedSwitchEntry;
   busy: boolean;
   readOnly: boolean;
+  switchMachineIds: boolean;
   open: boolean;
   onOpen: () => void;
   onSwitch: () => void;
@@ -497,8 +518,6 @@ function PoolRow({
   const u = account?.usage;
   const blocked = blockReason(entry);
   const problem = account ? accountProblem(account, u) : null;
-  // 一行最多一个坏消息。「待登录」和「需要先授权」是同一件事的两种说法，两个都摆
-  // 只会让人以为有两处要修；账号自己的问题更靠近根因，优先说它。
   const wrong = problem?.label ?? blocked;
 
   return (
@@ -508,49 +527,52 @@ function PoolRow({
       current={isCurrent}
       onOpen={onOpen}
       badges={null}
-      // 备注不摆（那是私事，不是扫列表时读的）；只留问题和「上次什么时候切过」——
-      // 后者是这一页专有的操作状态，决定「该轮到哪个了」。红字的样式和「账号」页一致。
       note={
         wrong ? (
           <span className="acct-problem">{wrong}</span>
         ) : (
           <span>
-            {profile.lastSwitchedAt ? `${timeAgo(profile.lastSwitchedAt)}切过` : "未切换过"}
+            {profile?.lastSwitchedAt
+              ? `${timeAgo(profile.lastSwitchedAt)}切过`
+              : "准备就绪"}
           </span>
         )
       }
       actions={
         <>
-          <span className="acct-hover">
-            <button
-              type="button"
-              className="btn btn-sm btn-icon btn-soft btn-danger"
-              disabled={busy}
-              onClick={onRemove}
-              data-tip="移出切号池"
-              aria-label={`将 ${entry.email} 移出切号池`}
-            >
-              <Icon name="trash" size={13} />
-            </button>
-          </span>
-          {/* 用有厚度的默认按钮而不是实心薄荷：一列几十行，每行一个亮色 CTA 会把列表
-              点成一片；而带内高光和描边的那一版仍然一眼看得出可以按。
-              切换只留 ⇄，文案交给悬停的气泡 —— 一屏几十张卡，每张都写「切换」是同一句话说几十遍。
-              「使用中」是状态不是动作，它得留着字。 */}
+          {profile ? (
+            <span className="acct-hover">
+              <button
+                type="button"
+                className="btn btn-sm btn-icon btn-soft btn-danger"
+                disabled={busy}
+                onClick={onRemove}
+                data-tip="移除切号快照"
+                aria-label={`将 ${entry.email} 移出切号快照`}
+              >
+                <Icon name="trash" size={13} />
+              </button>
+            </span>
+          ) : null}
           {isCurrent ? (
             <button type="button" className="btn btn-sm" disabled>
-              使用中
+              当前登录
             </button>
           ) : (
             <button
               type="button"
-              className="btn btn-sm btn-icon tip-end"
-              disabled={busy || Boolean(blocked) || readOnly}
+              className={switchMachineIds ? "btn btn-sm" : "btn btn-sm btn-primary"}
+              disabled={busy || !entry.canSwitch || readOnly}
               onClick={onSwitch}
-              aria-label={`切换到 ${entry.email}`}
-              data-tip={blocked ? "移出后重新加入切号池" : readOnly ? "切号已降级为只读" : "切到这个号"}
+              data-tip={
+                blocked
+                  ? blocked
+                  : switchMachineIds
+                    ? "重置机器码并冷切重启 IDE"
+                    : "热切上号，无需重启 IDE"
+              }
             >
-              <Icon name="switcher" size={14} />
+              {switchMachineIds ? "↻ 重启并换号" : "⚡ 热切上号"}
             </button>
           )}
         </>
@@ -559,156 +581,16 @@ function PoolRow({
   );
 }
 
-function AddToSwitchPoolModal({
-  accounts: availableAccounts,
-  busy,
-  preferredAccountId,
-  onClose,
-  onAdd,
-  onGoAccounts,
-}: {
-  accounts: Account[];
-  busy: boolean;
-  preferredAccountId: string | null;
-  onClose: () => void;
-  onAdd: (accountIds: string[]) => Promise<void>;
-  onGoAccounts: () => void;
-}) {
-  const [selectedAccountIds, setSelectedAccountIds] = useState<Set<string>>(
-    () =>
-      preferredAccountId &&
-      availableAccounts.some((account) => account.id === preferredAccountId)
-        ? new Set([preferredAccountId])
-        : new Set(),
-  );
-
-  const allSelected =
-    availableAccounts.length > 0 &&
-    selectedAccountIds.size === availableAccounts.length;
-
-  function toggleAccount(accountId: string) {
-    setSelectedAccountIds((currentIds) => {
-      const nextIds = new Set(currentIds);
-      if (nextIds.has(accountId)) {
-        nextIds.delete(accountId);
-      } else {
-        nextIds.add(accountId);
-      }
-      return nextIds;
-    });
-  }
-
-  return (
-    <Modal
-      title="添加到切号池"
-      onClose={busy ? () => {} : onClose}
-      footer={
-        <>
-          <button type="button" className="btn" disabled={busy} onClick={onClose}>
-            取消
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={busy || selectedAccountIds.size === 0}
-            onClick={() => void onAdd([...selectedAccountIds])}
-          >
-            {busy
-              ? <Spinner />
-              : selectedAccountIds.size > 0
-                ? `添加 ${selectedAccountIds.size} 个`
-                : "添加"}
-          </button>
-        </>
-      }
-    >
-      {availableAccounts.length === 0 ? (
-        <Empty
-          title="没有可添加的账号"
-          action={
-            <button type="button" className="btn btn-sm" onClick={onGoAccounts}>
-              去账号
-            </button>
-          }
-        />
-      ) : (
-        <div className="stack" style={{ gap: 10 }}>
-          <div className="row-between">
-            <span className="muted tiny">{availableAccounts.length} 个可添加</span>
-            <button
-              type="button"
-              className="linkish"
-              disabled={busy}
-              onClick={() =>
-                setSelectedAccountIds(
-                  allSelected
-                    ? new Set()
-                    : new Set(availableAccounts.map((account) => account.id)),
-                )
-              }
-            >
-              {allSelected ? "全不选" : "全选"}
-            </button>
-          </div>
-          <div className="list">
-            {availableAccounts.map((account) => {
-              const selected = selectedAccountIds.has(account.id);
-              const usage = account.usage;
-              return (
-                <label
-                  key={account.id}
-                  className={
-                    selected
-                      ? "list-row enroll-row is-on"
-                      : "list-row enroll-row"
-                  }
-                >
-                  <input
-                    type="checkbox"
-                    className="tick"
-                    checked={selected}
-                    disabled={busy}
-                    onChange={() => toggleAccount(account.id)}
-                  />
-                  <span className="grow" style={{ minWidth: 0 }}>
-                    <span className="row" style={{ gap: 8 }}>
-                      <span
-                        className="mono selectable truncate"
-                        style={{ fontSize: 13 }}
-                      >
-                        {account.email}
-                      </span>
-                      {usage?.plan ? (
-                        <span className={`plan ${planTone(usage)}`}>
-                          {planLabel(usage)}
-                        </span>
-                      ) : null}
-                    </span>
-                    {usage?.totalPercentUsed != null ? (
-                      <span className="faint tiny">
-                        总额度已用 {Math.round(usage.totalPercentUsed)}%
-                      </span>
-                    ) : null}
-                  </span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </Modal>
-  );
-}
-
 function ConfirmSwitch({
   entry,
   hot,
+  resetMachine,
   onCancel,
   onConfirm,
 }: {
-  entry: SwitchPoolEntry;
-  /** 这次会走热切（不退出 Cursor）。 */
+  entry: UnifiedSwitchEntry;
   hot: boolean;
+  resetMachine: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -728,9 +610,11 @@ function ConfirmSwitch({
       }
     >
       {hot ? (
-        <Tag tone="ok">无需重启 Cursor</Tag>
+        <Tag tone="ok">无需重启 Cursor (热切)</Tag>
+      ) : resetMachine ? (
+        <Banner tone="warn" title="将同时重置机器码并重启 Cursor，请先保存未保存的改动。" />
       ) : (
-        <Banner tone="warn" title="将重启 Cursor，请先保存未保存的改动" />
+        <Banner tone="warn" title="Cursor 未在运行，切换后将自动启动 Cursor。" />
       )}
     </Modal>
   );
@@ -750,7 +634,6 @@ function ProgressModal({
   const failed = steps.find((s) => s.step === "failed");
   const done = steps.some((s) => s.step === "done");
   const restorable = failed?.step === "failed" ? failed.backupId : null;
-  // 写库之后才失败的话，Cursor 里已经是新号了。这时说「没有被改动」是在误导用户。
   const wroteAuth = steps.some((s) => s.step === "authWritten");
 
   return (

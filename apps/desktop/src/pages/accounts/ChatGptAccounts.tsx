@@ -93,7 +93,16 @@ export function ChatGptAccounts({ tabs }: { tabs: ReactNode }) {
   }
 
   const list = accounts ?? [];
-  const active = list.filter((a) => a.enabled && chatgptUsable(a)).length;
+  const [filter, setFilter] = useState<"all" | "active" | "disabled">("all");
+  const activeCount = list.filter((a) => a.enabled && chatgptUsable(a)).length;
+  const disabledCount = list.length - activeCount;
+
+  const filteredList = useMemo(() => {
+    if (filter === "active") return list.filter((a) => a.enabled && chatgptUsable(a));
+    if (filter === "disabled") return list.filter((a) => !(a.enabled && chatgptUsable(a)));
+    return list;
+  }, [list, filter]);
+
   const disabled = working;
   const openAccount = list.find((a) => a.id === openId) ?? null;
   const openView = openAccount
@@ -133,7 +142,7 @@ export function ChatGptAccounts({ tabs }: { tabs: ReactNode }) {
         {tabs}
         <div className="row">
           {/* 和 Cursor 页签一样：次要动作只留图标，标题行上唯一带字的是主动作。 */}
-          {active > 0 ? (
+          {activeCount > 0 ? (
             <button
               type="button"
               className="btn btn-icon"
@@ -190,8 +199,39 @@ export function ChatGptAccounts({ tabs }: { tabs: ReactNode }) {
           OpenAI SDK 指到本机网关就能用：凭证只在这台电脑上，请求从这里直接到 chatgpt.com。
         </Empty>
       ) : (
-        <div className="accts">
-          {list.map((a) => {
+        <>
+          <div className="status-pills" role="tablist" aria-label="账号状态视图" style={{ marginBottom: 12 }}>
+            <button
+              type="button"
+              className={`status-pill${filter === "all" ? " is-active" : ""}`}
+              onClick={() => setFilter("all")}
+            >
+              <span>全部</span>
+              <span className="pill-n">{list.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`status-pill${filter === "active" ? " is-active" : ""}`}
+              onClick={() => setFilter("active")}
+            >
+              <i className="status-dot is-long_lived" />
+              <span>可用</span>
+              <span className="pill-n">{activeCount}</span>
+            </button>
+            {disabledCount > 0 ? (
+              <button
+                type="button"
+                className={`status-pill${filter === "disabled" ? " is-active" : ""}`}
+                onClick={() => setFilter("disabled")}
+              >
+                <i className="status-dot is-dead" />
+                <span>需授权</span>
+                <span className="pill-n">{disabledCount}</span>
+              </button>
+            ) : null}
+          </div>
+          <div className="accts">
+            {filteredList.map((a) => {
             const view = viewOf(a);
             const refreshingAccount = refreshing.has(a.id);
             return (
@@ -222,6 +262,7 @@ export function ChatGptAccounts({ tabs }: { tabs: ReactNode }) {
             );
           })}
         </div>
+        </>
       )}
 
       {openView ? (
@@ -275,6 +316,15 @@ function AddModal({
   const [outcome, setOutcome] = useState<ChatGptImportOutcome | null>(null);
   const handleRef = useRef<ChatGptLoginHandle | null>(null);
   handleRef.current = handle;
+  const onAddedRef = useRef(onAdded);
+  onAddedRef.current = onAdded;
+
+  useEffect(() => {
+    return () => {
+      const h = handleRef.current;
+      if (h?.callbackListening) void chatgpt.loginCancel(h.sessionId);
+    };
+  }, []);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -282,7 +332,10 @@ function AddModal({
       const h = handleRef.current;
       if (!h || st.sessionId !== h.sessionId) return;
       if (st.state === "waiting") setWaitSecs(st.elapsedSecs);
-      if (st.state === "succeeded") void onAdded();
+      if (st.state === "succeeded") {
+        handleRef.current = null;
+        void onAddedRef.current();
+      }
       if (st.state === "failed") {
         setError({ code: "upstream", message: st.message, hint: st.hint ?? undefined });
         setHandle(null);
@@ -293,10 +346,8 @@ function AddModal({
     });
     return () => {
       unlisten?.();
-      const h = handleRef.current;
-      if (h?.callbackListening) void chatgpt.loginCancel(h.sessionId);
     };
-  }, [onAdded]);
+  }, []);
 
   async function go(action: () => Promise<unknown>) {
     setWorking(true);

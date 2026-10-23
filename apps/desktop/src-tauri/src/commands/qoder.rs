@@ -80,6 +80,17 @@ pub fn qoder_set_enabled(
 }
 
 #[tauri::command(async)]
+pub async fn qoder_refresh_usage(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<QoderAccount> {
+    state
+        .qoder
+        .refresh_usage(&QoderAccountId::from_raw(id))
+        .await
+}
+
+#[tauri::command(async)]
 pub fn qoder_set_note(
     state: State<'_, AppState>,
     id: String,

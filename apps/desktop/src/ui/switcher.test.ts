@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Account, SwitchProfile } from "../ipc/types";
-import { buildSwitchPool, canAddToSwitchPool, canMintApiKey, listAvailableSwitchAccounts, switchNeedsWebConversion } from "./switcher";
+import {
+  buildSwitchPool,
+  buildUnifiedSwitchList,
+  canAddToSwitchPool,
+  canMintApiKey,
+  listAvailableSwitchAccounts,
+  switchNeedsWebConversion,
+} from "./switcher";
 
 function account(
   email: string,
@@ -191,3 +198,24 @@ describe("canMintApiKey", () => {
     ).toBe(true);
   });
 });
+
+describe("buildUnifiedSwitchList", () => {
+  it("merges enrolled profiles and unenrolled accounts into a single actionable list", () => {
+    const enrolled = account("enrolled@example.com");
+    const accountOnly = account("account-only@example.com");
+
+    const list = buildUnifiedSwitchList(
+      [profile(enrolled.email)],
+      [enrolled, accountOnly],
+      enrolled.email,
+    );
+
+    expect(list.map((e) => e.email)).toEqual([enrolled.email, accountOnly.email]);
+    expect(list[0]?.isCurrent).toBe(true);
+    expect(list[0]?.profile).not.toBeNull();
+    expect(list[1]?.profile).toBeNull();
+    expect(list[1]?.account).toBe(accountOnly);
+    expect(list[1]?.canSwitch).toBe(true);
+  });
+});
+

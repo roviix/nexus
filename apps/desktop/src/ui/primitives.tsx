@@ -165,6 +165,7 @@ export function Modal({
   footer,
   wide,
   compact,
+  className,
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
@@ -175,6 +176,7 @@ export function Modal({
   wide?: boolean;
   /** 只有几个字段时。默认宽度摊着三个输入框会显得空。 */
   compact?: boolean;
+  className?: string;
 }) {
   // Esc 关闭：桌面应用里这是肌肉记忆，没有会让人觉得卡住了。
   useEscapeToClose(onClose);
@@ -189,7 +191,7 @@ export function Modal({
         }}
       >
         <div
-          className={`modal${wide ? " modal-wide" : ""}${compact ? " modal-compact" : ""}`}
+          className={`modal${wide ? " modal-wide" : ""}${compact ? " modal-compact" : ""}${className ? ` ${className}` : ""}`}
           role="dialog"
           aria-modal="true"
           aria-label={typeof title === "string" ? title : undefined}
@@ -845,6 +847,38 @@ const PATHS: Record<string, ReactNode> = {
     <>
       <path d="M4.6 16.6 3.6 8.4l4.3 3.2L12 6l4.1 5.6 4.3-3.2-1 8.2z" />
       <path d="M5 19.6h14" opacity="0.55" />
+    </>
+  ),
+  // 3节点互联拓扑：Mesh 网络。
+  mesh: (
+    <>
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="18" cy="6" r="2.5" />
+      <circle cx="12" cy="18" r="2.5" />
+      <path d="M8.5 6h7M7.5 8.2l3.2 7.6M16.5 8.2l-3.2 7.6" opacity="0.6" />
+    </>
+  ),
+  // 通道路由流：水平并行通道与选路节点。
+  channels: (
+    <>
+      <path d="M3 6h18M3 12h18M3 18h18" opacity="0.35" />
+      <circle cx="8" cy="6" r="2" />
+      <circle cx="16" cy="12" r="2" />
+      <circle cx="10" cy="18" r="2" />
+    </>
+  ),
+  alert: (
+    <>
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+      <path d="M12 9v4M12 17h.01" />
+    </>
+  ),
+  share: (
+    <>
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <path d="M8.6 13.5l6.8 4M15.4 6.5L8.6 10.5" opacity="0.65" />
     </>
   ),
 };

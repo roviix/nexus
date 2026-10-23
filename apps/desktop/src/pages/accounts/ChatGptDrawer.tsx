@@ -13,6 +13,7 @@ import { confirm } from "../../ui/confirm";
 import { timeAgo, timeUntil } from "../../ui/format";
 import { shortDateTime } from "../../ui/usage";
 import { Banner, CopyButton, Drawer, ErrorNote, Gauge, Health, Icon, Reset, Spinner, Tag } from "../../ui/primitives";
+import { VendorLogo } from "../../relay/VendorLogo";
 import { DeleteAccount, NoteLine } from "./AccountDrawer";
 import {
   chatgptActiveText,
@@ -49,7 +50,7 @@ export function ChatGptDrawer({
   onAuthorize,
   onSaveNote,
   onEnable,
-  onUse,
+  onUse: _onUse,
   onRemove,
   onReload,
 }: {
@@ -80,6 +81,7 @@ export function ChatGptDrawer({
   const head = (
     <div className="dr-id">
       <div className="dr-title">
+        <VendorLogo vendor="openai" size={18} />
         <span className="dr-email selectable truncate" title={view.label}>
           {view.label}
         </span>
@@ -115,31 +117,6 @@ export function ChatGptDrawer({
           <Icon name="external" size={13} />
           {account.hasRefresh ? "重新授权" : "授权"}
         </button>
-        {isCurrent ? (
-          <button type="button" className="btn btn-sm dr-cta" disabled title="本地网关现在用的就是它">
-            <Icon name="gateway" size={13} />
-            网关正在用
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-sm btn-primary dr-cta"
-            disabled={!usable || !enrolled}
-            title={
-              !usable
-                ? account.status === "dead"
-                  ? "这个号已失效"
-                  : "需要先重新授权"
-                : enrolled
-                  ? "下一个请求走这个号"
-                  : "先加入本地网关"
-            }
-            onClick={() => void onUse()}
-          >
-            <Icon name="gateway" size={13} />
-            用这个
-          </button>
-        )}
       </div>
     </div>
   );
@@ -165,7 +142,9 @@ export function ChatGptDrawer({
     <Drawer label={`账号详情 ${view.label}`} onClose={onClose} head={head} footer={foot}>
       <div className="dr-body">
         <ErrorNote error={actionError} />
-        {account.lastError ? <Banner tone="warn" title="上次操作出了错" hint={account.lastError} /> : null}
+        {account.lastError && account.status !== "active" ? (
+          <Banner tone="warn" title="上次操作出了错" hint={account.lastError} />
+        ) : null}
 
         <GatewayUsedIn
           account={account}

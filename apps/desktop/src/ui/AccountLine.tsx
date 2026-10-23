@@ -36,7 +36,6 @@ import {
   pctText,
   resetInShort,
   shortDateTime,
-  type BucketView,
 } from "./usage";
 
 export type RailTone = "ok" | "warn" | "bad" | "none";
@@ -54,6 +53,12 @@ export function AccountLine({
   dimmed,
   highlighted,
   current,
+  /** 右上角那枚「正在用」胶囊。Cursor 是「当前登录」，网关号是「当前主用」。 */
+  currentLabel = "当前登录",
+  compact,
+  alert,
+  channelPill,
+  recentActivity,
   onOpen,
   openLabel,
 }: {
@@ -61,31 +66,23 @@ export function AccountLine({
   tone?: RailTone;
   /** 平台身份（Cursor 此刻是邮箱；别的平台可以是用户名）。窄卡上会截断，全称给 `title`。 */
   title: ReactNode;
-  /**
-   * 紧跟在身份后面的徽章：订阅档、以及「当前登录」这类身份标。
-   *
-   * **贴着身份放，不推到最右边。** 档位是这个号的属性；甩到行尾之后，
-   * 眼睛要横穿整行才能把「谁」和「什么档」接起来。
-   */
   badges?: ReactNode;
-  /** 状态一类的小字，落在末行开头。**不放备注、不放来源** —— 见 AccountCard 的注释。 */
   note?: ReactNode;
-  /** 末行右下角的动作。整卡已经是「详情」那个按钮，所以这里只放别的事。 */
   actions?: ReactNode;
-  /** 仪表区，一般是 `<QuotaStrip>`。 */
   quota?: ReactNode;
-  /** 末行左上：两个倒计时，一般是 `<AccountResets>`。 */
   resets?: ReactNode;
-  /** 末行左下：按需计费那一句（`<AccountSpend>`）。 */
   spend?: ReactNode;
-  /** 末行右上：取数时刻。这些数字的脚注，不是又一个指标。 */
   stamp?: ReactNode;
-  /** 失效的号：压暗内容但**不隐藏**，hover 时还原 —— 用户得看见它、还得能删它。 */
   dimmed?: boolean;
-  /** 抽屉正打开、或批量里刚选中的那一张。 */
   highlighted?: boolean;
-  /** Cursor 此刻登着的就是它。和 `highlighted` 分开：关掉抽屉也还在。 */
   current?: boolean;
+  currentLabel?: string;
+  compact?: boolean;
+  alert?: ReactNode;
+  /** Nexus 2.0 所属通道胶囊 */
+  channelPill?: ReactNode;
+  /** Nexus 2.0 实时调用印记 */
+  recentActivity?: ReactNode;
   onOpen?: () => void;
   openLabel?: string;
 }) {
@@ -94,6 +91,7 @@ export function AccountLine({
   if (highlighted) classes.push("is-open");
   if (current) classes.push("is-in-use");
   if (onOpen) classes.push("is-clickable");
+  if (compact) classes.push("is-compact");
 
   // 「详情」不再是一枚文字键或箭头：整张卡就是那个按钮，靠指针和 hover 的一层提亮说话。
   const open = onOpen
@@ -103,8 +101,6 @@ export function AccountLine({
         "aria-label": openLabel,
         onClick: onOpen,
         onKeyDown: (e: KeyboardEvent<HTMLElement>) => {
-          // 卡片内还有刷新 / 切换 / 删除等真按钮。它们的 Enter / Space 会冒泡到 article；
-          // 只认 article 自己拿到焦点的键盘事件，不能按一个按钮顺手又打开抽屉。
           if (e.target !== e.currentTarget) return;
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -120,17 +116,25 @@ export function AccountLine({
     <article className={classes.join(" ")} aria-current={current ? "true" : undefined} {...open}>
       <div className="acct-head">
         <span className="acct-dot" />
-        {/* 窄卡上邮箱会截尾。这是收窄换来的，接受它，但全称得悬停看得到。 */}
         <span className="acct-identity truncate" title={typeof title === "string" ? title : undefined}>
           {title}
         </span>
         {current ? (
-          <span className="pill pill-current" title="Cursor 此刻登的就是这个号">
-            当前登录
+          <span className="pill pill-current" title={currentLabel}>
+            {currentLabel}
           </span>
         ) : null}
         {badges}
       </div>
+
+      {channelPill || recentActivity ? (
+        <div className="acct-channel-meta-row" onClick={(e) => e.stopPropagation()}>
+          {channelPill ? <div className="acct-channel-pill-box">{channelPill}</div> : null}
+          {recentActivity ? <div className="acct-recent-activity">{recentActivity}</div> : null}
+        </div>
+      ) : null}
+
+      {alert ? <div className="acct-alert-slot">{alert}</div> : null}
       {quota ? <div className="acct-quota">{quota}</div> : null}
       {hasFoot ? (
         // 上一行整宽给倒计时；下一行左边按需计费、右边「取数时刻 + 动作」。
@@ -182,15 +186,16 @@ export function QuotaStrip({ usage }: { usage: AccountUsage }) {
   return (
     <div className="qs">
       {cardBuckets(usage).map((b) => (
-        <QuotaCell key={b.key} bucket={b} />
+        <QuotaCell key={b.key} bucket={b} hideReset />
       ))}
     </div>
   );
 }
 
-/** 任意平台的「标签 · 条 · 数值」行。ChatGPT 两个窗口走这里，不借用 Cursor 的桶 key。 */
+/** 任意平台的「标签 · 条 · 数值」行。支持 cols 对称双列与 group 自动分组。 */
 export function QuotaRows({
   rows,
+  cols,
 }: {
   rows: Array<{
     key: string;
@@ -198,12 +203,50 @@ export function QuotaRows({
     hint: string;
     percent: number | null;
     note?: string;
+    resetText?: string | null;
+    resetAt?: number | null;
+    group?: string;
   }>;
+  cols?: boolean;
 }) {
+  const hasGroups = rows.some((r) => r.group);
+  if (!hasGroups) {
+    return (
+      <div className={cols ? "qc-cols" : "qs"}>
+        {rows.map((b) => (
+          <QuotaCell key={b.key} bucket={b} />
+        ))}
+      </div>
+    );
+  }
+
+  // 按连续 group 聚合分组
+  const grouped: Array<{ groupName: string; items: typeof rows }> = [];
+  for (const r of rows) {
+    const gName = r.group ?? "";
+    const last = grouped[grouped.length - 1];
+    if (last && last.groupName === gName) {
+      last.items.push(r);
+    } else {
+      grouped.push({ groupName: gName, items: [r] });
+    }
+  }
+
   return (
-    <div className="qs">
-      {rows.map((b) => (
-        <QuotaCell key={b.key} bucket={b} />
+    <div className="qs qs-grouped">
+      {grouped.map((g, gIdx) => (
+        <div key={g.groupName || gIdx} className="qc-group">
+          {g.groupName ? (
+            <div className="qc-group-head">
+              <span className="qc-group-title">{g.groupName}</span>
+            </div>
+          ) : null}
+          <div className="qc-group-items">
+            {g.items.map((b) => (
+              <QuotaCell key={b.key} bucket={b} />
+            ))}
+          </div>
+        </div>
       ))}
     </div>
   );
@@ -232,16 +275,50 @@ export function QuotaSummary({
 
 function QuotaCell({
   bucket,
+  hideReset,
 }: {
-  bucket: Pick<BucketView, "label" | "hint" | "percent" | "note">;
+  bucket: {
+    label: string;
+    hint: string;
+    percent: number | null;
+    note?: string;
+    resetText?: string | null;
+    resetAt?: number | null;
+  };
+  hideReset?: boolean;
 }) {
   const p = bucket.percent;
   const known = p != null && Number.isFinite(p);
-  const tone = !known ? " is-idle" : p! > 90 ? " is-bad" : p! >= 70 ? " is-warn" : p! <= 0 ? " is-idle" : "";
+  const tone = !known ? " is-idle" : p! > 90 ? " is-bad" : p! >= 70 ? " is-warn" : p! <= 0 ? " is-idle" : " is-ok";
+  const reset = hideReset
+    ? null
+    : (bucket.resetText ?? (bucket.resetAt && Number.isFinite(bucket.resetAt) ? resetInShort(bucket.resetAt) : null));
+
+  // 提取 5h / 7d / Weekly 等窗口标签，剥离为精致小胶囊
+  const isPureWin = /^(5h|7d|Weekly|5\s*小时|7\s*天)$/i.test(bucket.label.trim());
+  const winMatch = !isPureWin && bucket.label.match(/^(.*?)(?:\s+|·)(5h|7d|Weekly|5\s*小时|7\s*天)$/i);
+  const labelNode = isPureWin ? (
+    <span className="qc-win" style={{ marginLeft: 0 }}>{bucket.label.trim()}</span>
+  ) : winMatch ? (
+    <>
+      <span>{winMatch[1]}</span>
+      <span className="qc-win">{winMatch[2]}</span>
+    </>
+  ) : (
+    <span>{bucket.label}</span>
+  );
 
   return (
-    <div className="qc" title={bucket.hint}>
-      <span className="qc-k">{bucket.label}</span>
+    <div className={`qc${tone}`} title={bucket.hint}>
+      <div className="qc-head">
+        <span className="qc-k">
+          {labelNode}
+          {reset ? <span className="qc-sub">{reset}</span> : null}
+        </span>
+        <span className={bucket.note ? `qc-v is-note${tone}` : `qc-v${tone}`}>
+          {bucket.note ?? (known ? `${Math.round(p!)}%` : "—")}
+        </span>
+      </div>
       <span className="qc-track">
         <i
           style={{
@@ -249,9 +326,6 @@ function QuotaCell({
             background: known ? meterColor(p!) : "transparent",
           }}
         />
-      </span>
-      <span className={bucket.note ? `qc-v is-note${tone}` : `qc-v${tone}`}>
-        {bucket.note ?? (known ? `${Math.round(p!)}%` : "—")}
       </span>
     </div>
   );
@@ -276,7 +350,7 @@ export function AccountResets({
 }) {
   const items: Array<{ label?: string | null; at?: number | null }> = [];
   if (usage.cycleEnd && Number.isFinite(usage.cycleEnd)) {
-    items.push({ label: "月额", at: usage.cycleEnd });
+    items.push({ label: "订阅", at: usage.cycleEnd });
   }
   if (usage.bot?.resetAt && Number.isFinite(usage.bot.resetAt)) {
     items.push({ label: weeklyLabel, at: usage.bot.resetAt });

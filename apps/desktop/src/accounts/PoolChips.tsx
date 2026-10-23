@@ -20,7 +20,7 @@ export function PoolChips({ membership }: { membership: PoolMembership }) {
         </span>
       ) : null}
       {showGateway ? (
-        <span className={`use-chip${gw === "current" ? " is-live" : gw === "skipped" ? " is-warn" : ""}`} title={gw === "current" ? "网关正在用它接力" : gw === "skipped" ? "在网关号池里，但此刻拿不到凭证，接力时跳过" : "在网关号池里，等着接力"}>
+        <span className={`use-chip${gw === "skipped" ? " is-warn" : " is-live"}`} title={gw === "skipped" ? "在网关号池中，但凭证异常或已过期" : "在网关号池中，参与自动负载调度"}>
           <Icon name="gateway" size={10} />
           网关
         </span>

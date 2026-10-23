@@ -204,11 +204,13 @@
    底色跟卡片一样是白的：这两张一张 200 多像素高，铺灰就是两块大灰板压在页顶。 */
 .pick {
   position: relative;
-  display: block;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   width: 100%;
-  height: 100%;
-  padding: 12px 14px;
-  border-radius: 12px;
+  min-height: 68px;
+  padding: 10px 12px;
+  border-radius: 10px;
   border: 1px solid var(--color-line);
   background: var(--color-surface);
   color: var(--color-ink-2);
@@ -436,6 +438,449 @@
   justify-content: space-between;
   gap: 12px;
   padding: 14px 18px 12px;
+}
+
+.usage-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── 精致模型下拉选择器 ── */
+.ov-model-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.ov-model-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--color-line);
+  background: var(--wash-1);
+  color: var(--color-ink-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+  max-width: 190px;
+}
+
+.ov-model-trigger:hover,
+.ov-model-trigger.is-open {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+  color: var(--color-ink);
+}
+
+.ov-model-trigger.is-selected {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ov-picker-icon {
+  flex: none;
+  opacity: 0.7;
+}
+
+.ov-picker-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.ov-picker-clear {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--accent);
+  margin-left: 2px;
+  opacity: 0.8;
+  cursor: pointer;
+}
+
+.ov-picker-clear:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.ov-picker-arrow,
+.ov-picker-chevron {
+  flex: none;
+  color: var(--color-faint);
+  transition: transform 0.15s ease;
+}
+
+.ov-picker-arrow.is-up,
+.ov-picker-chevron.is-up {
+  transform: rotate(180deg);
+}
+
+/* 下拉浮层 */
+.ov-model-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 100;
+  width: 270px;
+  max-height: 320px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--color-surface);
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ov-menu-search {
+  padding: 2px 2px 4px;
+}
+
+.ov-menu-search input {
+  width: 100%;
+  height: 26px;
+  font-size: 11px;
+  padding: 0 8px;
+}
+
+.ov-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  max-height: 250px;
+}
+
+.ov-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--color-ink-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.ov-menu-item:hover {
+  background: var(--wash-1);
+  color: var(--color-ink);
+}
+
+.ov-menu-item.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ov-menu-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ov-menu-name {
+  font-weight: 500;
+}
+
+.ov-menu-slug {
+  font-size: 10px;
+  color: var(--color-faint);
+}
+
+.ov-menu-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  flex: none;
+  font-size: 10.5px;
+}
+
+.ov-menu-calls {
+  font-weight: 600;
+}
+
+.ov-menu-tok {
+  font-size: 10px;
+}
+
+.usage-title-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.usage-title-main h3 {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.usage-sub-note {
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+/* 活动流微筛 */
+.ov-act-filters {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.ov-act-filter-pill {
+  border: none;
+  background: transparent;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.ov-act-filter-pill:hover {
+  color: var(--color-ink);
+  background: var(--wash-1);
+}
+
+.ov-act-filter-pill.is-active {
+  background: var(--wash-2);
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+/* ── Usage Token 构成左右分栏 ── */
+.usage-split-box {
+  display: grid;
+  grid-template-columns: 310px minmax(0, 1fr);
+  border-top: 1px solid var(--color-line);
+  align-items: stretch;
+}
+
+@media (max-width: 960px) {
+  .usage-split-box {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.usage-breakdown {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-right: 1px solid var(--color-line);
+  background: color-mix(in srgb, var(--wash-1) 50%, transparent);
+}
+
+@media (max-width: 960px) {
+  .usage-breakdown {
+    border-right: none;
+    border-bottom: 1px solid var(--color-line);
+  }
+}
+
+.ub-total-wrap {
+  margin-bottom: 16px;
+}
+
+.ub-total-label {
+  font-size: 11.5px;
+  color: var(--color-muted);
+}
+
+.ub-total-val {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--color-ink);
+  line-height: 1.15;
+  margin: 3px 0 2px;
+}
+
+.ub-total-sub {
+  font-size: 11.5px;
+  color: var(--color-faint);
+}
+
+.ub-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ub-bar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ub-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+}
+
+.ub-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.ub-dot.is-input,
+.ub-bar-track > i.is-input {
+  background: #3b82f6;
+}
+
+.ub-dot.is-cache,
+.ub-bar-track > i.is-cache {
+  background: #10b981;
+}
+
+.ub-dot.is-output,
+.ub-bar-track > i.is-output {
+  background: #8b5cf6;
+}
+
+.ub-bar-name {
+  color: var(--color-ink-2);
+}
+
+.ub-bar-num {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.ub-bar-track {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.ub-bar-track > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease-out;
+}
+
+.ub-badge-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+}
+
+.ub-badge-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ub-badge-k {
+  font-size: 10.5px;
+  color: var(--color-muted);
+}
+
+.ub-badge-v {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #10b981;
+}
+
+.ub-badge-right {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.ub-mini-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.usage-chart-wrap {
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px 8px;
+  min-width: 0;
+}
+
+.chart-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--color-muted);
+}
+
+.cleg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cleg-item > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.cleg-item > i.is-chart-call {
+  background: var(--ok);
+}
+
+.cleg-item > i.is-chart-err {
+  background: var(--bad);
+}
+
+.cleg-item > i.is-input {
+  background: #3b82f6;
+}
+
+.cleg-item > i.is-cache {
+  background: #10b981;
+}
+
+.cleg-item > i.is-output {
+  background: #8b5cf6;
 }
 
 .usage-title {
@@ -895,65 +1340,143 @@
 /* ── 状态带 ─────────────────────────────────────────────────────────────────
    左边一张当前账号卡，右边三条状态行。左列钉在 400px 是因为那张卡本来就有宽度上限
    （额度条摊长了就成发丝线）；右列吃掉剩下的宽度，顺带把三件状态提进首屏。 */
+.overview-container {
+  padding-bottom: 32px;
+}
+
+.ov-head {
+  margin-bottom: 14px;
+}
+
+.ov-tag-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-line);
+}
+
+.ov-sub {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.ov-kpis-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 1200px) {
+  .ov-kpis-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .ov-kpis-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.ov-kpi-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 96px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ov-kpi-card.is-interactive {
+  cursor: pointer;
+}
+
+.ov-kpi-card.is-interactive:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+}
+
+.ov-kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ov-kpi-k {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-muted);
+}
+
+.ov-kpi-ctl {
+  display: inline-flex;
+  align-items: center;
+}
+
+.ov-kpi-icon {
+  color: var(--color-faint);
+}
+
+.ov-kpi-v-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 6px 0 3px;
+}
+
+.ov-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--color-faint);
+  align-self: center;
+}
+
+.ov-status-dot.is-live {
+  background: var(--ok);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 25%, transparent);
+}
+
+.ov-status-dot.is-off {
+  background: var(--color-faint);
+}
+
+.ov-kpi-v {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--color-ink);
+}
+
+.ov-kpi-unit {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--color-faint);
+}
+
+.ov-kpi-sub {
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+/* 兼容保留 */
 .ov-band {
   display: grid;
   grid-template-columns: minmax(0, 400px) minmax(0, 1fr);
   gap: 12px;
   align-items: stretch;
   margin-bottom: 12px;
-}
-
-/* 栅格自己管间距，`.card + .card` 那条竖直外边距在这里是多余的 —— 而且它会顶低
-   第二、三张卡，让本该等高的三行变成 76 / 64 / 64。选择器要和它同等特异度才压得住。 */
-.ov-band > .card,
-.ov-rail > .card {
-  margin: 0;
-}
-
-/* 窄到右列放不下一句完整的结论时改成上下摞 —— 挤成两三个字再截断，
-   不如让它占满一行把话说完。
-   摞起来之后账号卡仍要守住 420 的上限：额度条摊到整个内容区宽就成了发丝线，
-   而那正是当初把它套进 `.accts` 的原因。状态行没有这个包袱，照旧通宽。 */
-@media (max-width: 1080px) {
-  .ov-band {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .ov-band > :first-child {
-    max-width: 420px;
-  }
-}
-
-.ov-band-skel {
-  min-height: 172px;
-}
-
-/* 没登录时左边这格没有额度条撑着，内容居中，别让它在拉伸后的卡里贴着顶。 */
-.ov-band-none {
-  gap: 10px;
-  justify-content: center;
-}
-
-.ov-band-hint {
-  margin: 0;
-  max-width: 34ch;
-  font-size: 12px;
-  line-height: 1.65;
-  color: var(--color-muted);
-}
-
-.ov-rail {
-  display: grid;
-  grid-template-rows: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  min-width: 0;
-}
-
-/* 摞起来之后不必再三等分，各行按自己的高度走。 */
-@media (max-width: 1080px) {
-  .ov-rail {
-    grid-template-rows: none;
-  }
 }
 
 .srow {
@@ -1161,6 +1684,240 @@
   color: var(--bad);
 }
 
+/* ── 概览下部双栏 (活动流 + 通道就绪矩阵) ─────────────────────────────────── */
+
+.ov-bottom-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+@media (max-width: 960px) {
+  .ov-bottom-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.ov-panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+  min-height: 280px;
+}
+
+.ov-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.ov-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-ink);
+}
+
+.ov-panel-title h4 {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ov-panel-badge {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--wash-2);
+  color: var(--color-muted);
+}
+
+.ov-panel-link {
+  font-size: 11.5px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.ov-panel-link:hover {
+  text-decoration: underline;
+}
+
+.ov-activity-list,
+.ov-matrix-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  flex: 1;
+}
+
+.ov-act-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  transition: background 0.12s ease;
+}
+
+.ov-act-row:hover {
+  background: var(--wash-1);
+}
+
+.ov-act-time {
+  flex: none;
+  width: 58px;
+  font-size: 10.5px;
+  color: var(--color-faint);
+}
+
+.ov-act-tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.ov-act-tag.is-ok {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: var(--ok);
+}
+
+.ov-act-tag.is-err {
+  background: color-mix(in srgb, var(--bad) 15%, transparent);
+  color: var(--bad);
+}
+
+.ov-act-tag.is-sys {
+  background: var(--wash-2);
+  color: var(--color-muted);
+}
+
+.ov-act-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ov-act-model {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-ink-2);
+}
+
+.ov-act-meta {
+  font-size: 11px;
+}
+
+.ov-act-tokens {
+  flex: none;
+  font-size: 11px;
+  text-align: right;
+}
+
+.ov-empty-hint {
+  padding: 40px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+
+.ov-matrix-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+
+.ov-matrix-row:hover {
+  background: var(--wash-1);
+}
+
+.ov-matrix-logo {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--wash-1);
+  border: 1px solid var(--color-line);
+  flex: none;
+}
+
+.ov-matrix-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.ov-matrix-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-ink);
+}
+
+.ov-matrix-sub {
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+.ov-matrix-models {
+  font-size: 11px;
+  margin-right: 4px;
+  color: var(--color-faint);
+}
+
+.ov-matrix-tag {
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: 4px;
+  flex: none;
+}
+
+.ov-matrix-tag.is-active {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.ov-matrix-tag.is-ready {
+  background: var(--wash-2);
+  color: var(--color-ink-2);
+}
+
+.ov-matrix-tag.is-off {
+  background: transparent;
+  color: var(--color-faint);
+  border: 1px dashed var(--color-line);
+}
+
+.ov-matrix-arrow {
+  color: var(--color-faint);
+  opacity: 0;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.ov-matrix-row:hover .ov-matrix-arrow {
+  opacity: 1;
+  transform: translateX(2px);
+}
+
 /* ── 通道面板（模型广场 / 接入 共用）───────────────────────────────────── */
 
 /* 收进一个带边框的面板：它是开关，一点下面整页跟着变；下面那些是被它筛出来的结果。
@@ -1212,15 +1969,17 @@
 
 .chan-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  gap: 8px;
 }
 
-/* 通道卡的内部：名字顶格、价签靠右；大号数字 + 状态胶囊；24 格。 */
+/* 通道卡的内部：名字顶格、价签靠右；状态指示点 + 模型数。 */
 .pick-head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
 }
 
 .pick-title {
@@ -1233,7 +1992,12 @@
   color: var(--color-ink);
 }
 
-.pick-title > .pill {
+.pick-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--wash-2);
+  color: var(--color-muted);
   flex: none;
 }
 
@@ -1256,38 +2020,51 @@
   font-weight: 600;
 }
 
-/* 大数字和胶囊是一组，不许拆行；副文（模型数 / 高峰加价）挤不下就整段掉到下一行。 */
 .pick-foot {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 4px 12px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 10px;
 }
 
-.pick-big-wrap {
+.pick-status-wrap {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  white-space: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
-.pick-big {
-  display: flex;
-  align-items: baseline;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  white-space: nowrap;
+.pick-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--color-faint);
 }
 
-.pick-big-sub {
-  margin-left: 4px;
-  font-size: 10.5px;
-  font-weight: 400;
-  letter-spacing: 0;
-  color: var(--color-faint);
+.pick-dot.is-live {
+  background: var(--ok);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 20%, transparent);
+}
+
+.pick-dot.is-uneven {
+  background: var(--warn);
+}
+
+.pick-dot.is-down {
+  background: var(--bad);
+}
+
+.pick-dot.is-none,
+.pick-dot.is-off {
+  background: var(--color-faint);
+}
+
+.pick-status-text {
+  font-size: 11.5px;
+  color: var(--color-muted);
+  white-space: nowrap;
 }
 
 .pick-aside {
@@ -1320,6 +2097,190 @@
 .pick-band > i.is-down,
 .mband-cells > span.is-down {
   background: color-mix(in oklab, var(--bad) 80%, transparent);
+}
+
+/* ── 通道下拉选择器 (ChannelSelect) ────────────────────────────────────────── */
+.cselect {
+  position: relative;
+  display: inline-block;
+  min-width: 220px;
+}
+
+.cselect.is-open {
+  z-index: 70;
+}
+
+.cselect-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px 0 10px;
+  border: 1px solid var(--field-line);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.cselect-btn:hover:not(:disabled),
+.cselect.is-open .cselect-btn {
+  border-color: var(--field-line-hover);
+  background: var(--wash-1);
+}
+
+.cselect.is-open .cselect-btn {
+  border-color: var(--color-focus, var(--accent));
+  box-shadow: 0 0 0 2px var(--color-focus-outer, rgba(99, 140, 255, 0.15));
+}
+
+.cselect-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.cselect-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--color-muted);
+}
+
+.cselect-title {
+  font-weight: 550;
+  font-size: 12.5px;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cselect-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.cselect-chev {
+  color: var(--color-faint);
+  transform: rotate(90deg);
+  transition: transform 0.15s ease;
+}
+
+.cselect.is-open .cselect-chev {
+  transform: rotate(-90deg);
+}
+
+.cselect-pop {
+  position: absolute;
+  z-index: 120;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  min-width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--pop-line);
+  border-radius: 10px;
+  background: var(--color-surface);
+  box-shadow: var(--lift-2);
+  animation: rise 0.12s ease-out;
+}
+
+.cselect-section {
+  padding: 6px 9px 3px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--color-faint);
+  letter-spacing: 0.03em;
+}
+
+.cselect-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.cselect-opt:hover {
+  background: var(--wash-2);
+}
+
+.cselect-opt.is-on {
+  background: var(--wash-2);
+  color: var(--accent);
+  font-weight: 550;
+}
+
+.cselect-opt-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.cselect-opt-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+/* 广场工具条上的通道选择栏 */
+.plaza-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+
+.plaza-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.plaza-toolbar-label {
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--color-muted);
+  white-space: nowrap;
 }
 
 .pick-band > i.is-degraded,
@@ -1648,13 +2609,62 @@
   opacity: 0.55;
 }
 
-/* 人工维护说明单独占一行：它是一整句话，和下面那排短标签抢同一行会挤。 */
+/* 官方模型定价行：输入、输出、缓存与单位 */
+.mcard-pricing {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 14px 8px;
+  min-height: 28px;
+}
+
+.mcard-rates {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  color: var(--color-ink-2);
+}
+
+.mcard-rate-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3.5px;
+}
+
+.mcard-rate-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--color-faint);
+  letter-spacing: 0.02em;
+}
+
+.mcard-rate-val {
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--color-ink);
+  font-family: var(--font-mono, monospace);
+}
+
+.mcard-rate-sep {
+  color: var(--color-line);
+  font-size: 10px;
+}
+
+.mcard-rate-unit {
+  font-size: 10px;
+  color: var(--color-faint);
+  font-family: var(--font-mono, monospace);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .mcard-note {
   margin: 0;
-  padding: 8px 16px;
-  border-top: 1px solid var(--color-line);
-  font-size: 11px;
-  line-height: 1.45;
+  padding: 6px 16px 10px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--color-muted);
 }
 
@@ -1731,17 +2741,11 @@
   margin: -8px 0 24px;
 }
 
-/* 客户端卡：选谁 + 它现在的样子（接好了 / 指着别处 / 口令过期）。一排五张。 */
+/* 客户端卡：选谁 + 它现在的样子（接好了 / 指着别处 / 口令过期）。自适应铺满。 */
 .ctiles {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
-}
-
-@media (max-width: 1100px) {
-  .ctiles {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 .ctile {
@@ -1783,9 +2787,9 @@
 }
 
 .ctile.is-active .toolcard-glyph {
-  background: var(--accent-soft);
-  color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent-line);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-shadow: inset 0 0 0 1px var(--color-line);
 }
 
 .ctile-name {
@@ -1799,7 +2803,8 @@
 }
 
 .ctile.is-active .ctile-name {
-  color: var(--accent);
+  color: var(--color-ink);
+  font-weight: 650;
 }
 
 .ctile-status {
@@ -1948,11 +2953,30 @@
 
 .cenv-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--warn);
+  font: inherit;
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cenv-summary {
+  flex: 1;
+  min-width: 0;
+}
+
+.cenv-head .opt-chev {
+  margin-top: 2px;
+  flex: none;
 }
 
 .cenv-row {
@@ -2148,6 +3172,7 @@
 
 /* 配置卡：客户端身份、配置目标、参数与正文逐层展开。 */
 .cfg-head {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2156,6 +3181,7 @@
   padding: 10px 12px 10px 18px;
   border-bottom: 1px solid var(--color-line);
   background: linear-gradient(180deg, var(--wash-1), transparent);
+  border-radius: 12px 12px 0 0;
 }
 
 .cfg-identity {
@@ -3411,7 +4437,7 @@
 /* 高度写死一屏而不是 100%：外壳那一行是内容撑出来的（侧栏在 640 高的最小窗口里本来就装不下），
    写 100% 会跟着那一行一起长高，把输入区顶到窗口外面去。 */
 .main-flush {
-  height: 100vh;
+  height: 100%;
   padding: 0;
   overflow: hidden;
   background: var(--color-paper);
@@ -3496,11 +4522,18 @@
   font-size: 11px;
 }
 
+.card-flush.cfg,
 .cfg {
+  position: relative;
   border-radius: 12px;
   border: 1px solid var(--color-line);
   background: var(--color-surface);
-  overflow: hidden;
+  overflow: visible;
+}
+
+.cfg:has(.cselect.is-open),
+.card-flush.cfg:has(.cselect.is-open) {
+  z-index: 60;
 }
 
 /* 网关页「最近请求」：一行一次尝试，失败的点开看上游原话。 */

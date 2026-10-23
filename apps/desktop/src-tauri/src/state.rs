@@ -6,7 +6,10 @@
 
 use crate::commands::sand_remote::RemoteSandHub;
 use nexus_accounts::{AccountsService, OauthSession};
+use nexus_antigravity::AntigravityService;
+use nexus_gemini_web::GeminiWebService;
 use nexus_chatgpt::ChatGptService;
+use nexus_claude::ClaudeService;
 use nexus_crsr::CrsrService;
 use nexus_cursor::{Cursor, CursorControl};
 use nexus_gateway::{GatewayService, SubscriptionServices};
@@ -14,7 +17,6 @@ use nexus_grok::GrokService;
 use nexus_grokbot::GrokBotService;
 use nexus_kiro::KiroService;
 use nexus_playground::PlaygroundService;
-use nexus_claude::ClaudeService;
 use nexus_qoder::QoderService;
 use nexus_sand::SandService;
 use nexus_store::{settings, Backups, Db, SecretStore, SqliteSecrets};
@@ -56,6 +58,10 @@ pub struct AppState {
     pub zcode: Arc<ZcodeService>,
     pub qoder: Arc<QoderService>,
     pub claude: Arc<ClaudeService>,
+    pub antigravity: Arc<AntigravityService>,
+    pub gemini_web: Arc<GeminiWebService>,
+    /// Nexus Mesh：去中心化订阅共享与反向住宅中继网络。
+    pub mesh: Arc<nexus_mesh::MeshService>,
     /// 本地推理网关。默认关着，由用户点开；读 accounts 取号、读 cursor 拿当前登录号，
     /// 不碰 switcher（ARCHITECTURE §3.4）。
     pub gateway: Arc<GatewayService>,
@@ -115,6 +121,16 @@ impl AppState {
         let zcode = Arc::new(ZcodeService::new(db.clone(), secrets.clone()));
         let qoder = Arc::new(QoderService::new(db.clone(), secrets.clone()));
         let claude = Arc::new(ClaudeService::new(db.clone(), secrets.clone()));
+        let antigravity = Arc::new(AntigravityService::new(db.clone(), secrets.clone()));
+        let gemini_web = Arc::new(GeminiWebService::new(db.clone(), secrets.clone()));
+        let mesh_cfg = nexus_store::settings::get_or(&db, "mesh.config", nexus_mesh::MeshConfig::default());
+        let db_mesh = db.clone();
+        let on_mesh_save: nexus_mesh::MeshSaveHook = Arc::new(move |cfg| {
+            if let Err(e) = nexus_store::settings::set(&db_mesh, "mesh.config", cfg) {
+                tracing::warn!(error = ?e, "Failed to persist mesh config to sqlite");
+            }
+        });
+        let mesh = Arc::new(nexus_mesh::MeshService::with_persistence(mesh_cfg, Some(on_mesh_save)));
         let gateway = Arc::new(GatewayService::with_services(
             db.clone(),
             secrets.clone(),
@@ -127,6 +143,9 @@ impl AppState {
                 zcode: zcode.clone(),
                 qoder: qoder.clone(),
                 claude: claude.clone(),
+                antigravity: antigravity.clone(),
+                gemini_web: gemini_web.clone(),
+                mesh: mesh.clone(),
             },
         ));
 
@@ -156,6 +175,9 @@ impl AppState {
             zcode,
             qoder,
             claude,
+            antigravity,
+            gemini_web,
+            mesh,
             gateway,
             playground: Arc::new(PlaygroundService::new(db.clone(), data_dir)),
             switcher: Arc::new(Switcher::new(db.clone(), secrets.clone(), cursor)),

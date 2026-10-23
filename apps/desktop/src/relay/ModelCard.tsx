@@ -1,9 +1,12 @@
 /**
- * 模型广场的一张卡：卡头（厂商标 · 等宽标题）→ 说明 → 底部一排档位芯片 + 试用 / 接入入口。
- * 路由别名只参与搜索，不上卡。
+ * 模型广场精密卡片规范：三段式钛白卡片 + 四宫格价格槽（Nexus 2.0 §4.3）。
+ * 顶部模型名主次分明（弱化前缀，突出模型名）
+ * 中部四列等宽价格槽（绝不折行，图片/文本模型统一高度）
+ * 底部档位芯片 + 试一下 / 指派明确操作按钮。
  */
 import { useEffect, useRef, useState } from "react";
 import type { Modality } from "../ipc/models";
+import { formatPrice, resolveModelPrice } from "../gateway/pricing";
 import { ShellIcon } from "../shell/ShellIcon";
 import type { ModelCardGroup } from "../ui/models";
 import { Icon } from "../ui/primitives";
@@ -14,11 +17,9 @@ const MODALITY_LABEL: Record<Modality, string> = { chat: "对话", image: "图�
 export function ModelCard({
   g,
   onTry,
-  onConnect,
 }: {
   g: ModelCardGroup;
   onTry: (id: string) => void;
-  onConnect: (id: string) => void;
 }) {
   const [copied, setCopied] = useState("");
   const timer = useRef<number | undefined>(undefined);
@@ -33,56 +34,108 @@ export function ModelCard({
 
   const chat = g.modality === "chat";
   const primary = g.variants[0]?.id ?? g.title;
+  const pricing = resolveModelPrice(primary);
+
+  // 拆分通道前缀与模型真实名，主次分明
+  const slashIndex = g.title.indexOf("/");
+  const prefix = slashIndex !== -1 ? g.title.slice(0, slashIndex + 1) : "";
+  const name = slashIndex !== -1 ? g.title.slice(slashIndex + 1) : g.title;
 
   return (
-    <div className="card mcard">
-      <div className="mcard-head">
-        <VendorLogo vendor={g.vendor} size={15} className="mcard-logo" />
-        {chat ? (
-          <span className="mono mcard-title truncate" title={g.title}>
-            {g.title}
-          </span>
-        ) : (
-          // 出图 / 视频没有档位，底部那排芯片对它们会退化成一枚和标题一字不差的重复标签，
-          // 所以复制入口直接做在标题上。
-          <button type="button" className={`mcard-title-btn${copied === g.title ? " is-on" : ""}`} onClick={() => void copy(g.title)} title={`复制模型名 ${g.title}`}>
-            <span className="mono mcard-title truncate">{g.title}</span>
-            <Icon name={copied === g.title ? "check" : "copy"} size={12} />
-          </button>
-        )}
-        {!chat ? <span className="pill">{MODALITY_LABEL[g.modality]}</span> : null}
-        {/* 两个动作放在标题行的最右：档位那一排要整行的宽度 —— 和它们挤在一起时，
-            `thinking-max-fast` 这种长档位会被挤到滑出去，看着像卡片坏了。
-            挂在标题行上还有一个好处：一列卡片的动作落在同一个横坐标，扫得到。 */}
-        <span className="mcard-acts">
-          <button type="button" className="ibtn tip-end" data-tip="经本地网关试一下" aria-label="试一下" onClick={() => onTry(primary)}>
-            <ShellIcon name="flask" size={13} />
-          </button>
-          <button type="button" className="ibtn tip-end" aria-label="用它接入" onClick={() => onConnect(primary)}>
-            <ShellIcon name="plug" size={13} />
-          </button>
-        </span>
+    <div className="card model-card">
+      {/* 1. 顶部：左侧图标 + 前缀与高亮模型名，右侧复制完整路由 */}
+      <div className="mc-header">
+        <div className="mc-title-group truncate">
+          <VendorLogo vendor={g.vendor} size={16} className="mcard-logo" />
+          <div className="mc-name-col truncate">
+            <span className="mono mc-name-row truncate" title={primary}>
+              {prefix ? <span className="mc-prefix">{prefix}</span> : null}
+              <span className="mc-name">{name}</span>
+            </span>
+          </div>
+          {!chat ? <span className="pill tiny mono mc-modality-pill">{MODALITY_LABEL[g.modality]}</span> : null}
+        </div>
+        <button
+          type="button"
+          className={`mc-icon-btn${copied === primary ? " is-copied" : ""}`}
+          onClick={() => void copy(primary)}
+          title={`点击复制完整模型名 ${primary}`}
+          aria-label="复制模型名"
+        >
+          <Icon name={copied === primary ? "check" : "copy"} size={13} />
+        </button>
       </div>
 
-      {/* mt-auto 让同一行的卡片底部对齐，不会因为多一条说明就长短不一。 */}
-      <div className="mcard-tail">
-        {g.note ? <p className="mcard-note">{g.note}</p> : null}
-        {/* 出图 / 视频没有档位，这一排整个不出现 —— 空着的话卡片底下会多一条什么都没有的带子。 */}
-        {chat && g.variants.length > 0 ? (
-          <div className="mcard-tiers">
-            <div className="scroll-x tiers">
-              {g.variants.map((v) => {
-                const on = copied === v.id;
-                return (
-                  <button key={v.id} type="button" className={`tier${on ? " tier-on" : ""}`} onClick={() => void copy(v.id)} title={`复制 ${v.id}`}>
-                    <span className="mono">{v.variant}</span>
-                    <Icon name={on ? "check" : "copy"} size={11} className="tier-copy" />
-                  </button>
-                );
-              })}
+      {/* 2. 中部：精密价格矩阵 (永不折行，直接带上计价单位) */}
+      <div className={`mc-price-matrix${pricing.mode === "image" ? " is-image" : ""}`}>
+        {pricing.mode === "image" ? (
+          <>
+            <div className="price-cell">
+              <span className="p-label">计费模式</span>
+              <span className="p-val">按次生成</span>
             </div>
-          </div>
-        ) : null}
+            <div className="price-cell">
+              <span className="p-label">单价</span>
+              <span className="p-val mono">${formatPrice(pricing.usdPerImage?.default ?? 0.04)} <span className="p-unit">/ 张</span></span>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="price-cell">
+              <span className="p-label">Input</span>
+              <span className="p-val mono">${formatPrice(pricing.inputUsdPerMtok)} <span className="p-unit">/ 1M</span></span>
+            </div>
+            <div className="price-cell">
+              <span className="p-label">Output</span>
+              <span className="p-val mono">${formatPrice(pricing.outputUsdPerMtok)} <span className="p-unit">/ 1M</span></span>
+            </div>
+            <div className="price-cell">
+              <span className="p-label">Cache Read</span>
+              <span className="p-val mono">{pricing.cacheReadUsdPerMtok !== undefined ? <>${formatPrice(pricing.cacheReadUsdPerMtok)} <span className="p-unit">/ 1M</span></> : "—"}</span>
+            </div>
+            <div className="price-cell">
+              <span className="p-label">Cache Write</span>
+              <span className="p-val mono">{pricing.cacheWriteUsdPerMtok !== undefined ? <>${formatPrice(pricing.cacheWriteUsdPerMtok)} <span className="p-unit">/ 1M</span></> : "—"}</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 3. 底部：左侧档位胶囊，右侧明确的操作按钮 */}
+      <div className="mc-footer">
+        <div className="mc-footer-left truncate">
+          {chat && g.variants.length > 0 ? (
+            g.variants.slice(0, 2).map((v) => {
+              const on = copied === v.id;
+              return (
+                <button
+                  key={v.id}
+                  type="button"
+                  className={`tier-pill${on ? " is-on" : ""}`}
+                  onClick={() => void copy(v.id)}
+                  title={`复制档位 ${v.id}`}
+                >
+                  <span className="mono">{v.variant}</span>
+                  <Icon name={on ? "check" : "copy"} size={10} />
+                </button>
+              );
+            })
+          ) : (
+            <span className="tier-pill default mono">standard</span>
+          )}
+        </div>
+
+        <div className="mc-actions">
+          <button
+            type="button"
+            className="mc-btn"
+            onClick={() => onTry(primary)}
+            title="在调试台中测试该模型"
+          >
+            <ShellIcon name="flask" size={11} />
+            <span>试一下</span>
+          </button>
+        </div>
       </div>
     </div>
   );

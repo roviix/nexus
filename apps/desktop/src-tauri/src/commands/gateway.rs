@@ -82,6 +82,16 @@ pub fn gateway_update_settings(
     state.gateway.update_settings(patch)
 }
 
+#[tauri::command(async)]
+pub fn gateway_set_route(
+    state: State<'_, AppState>,
+    client: String,
+    route: Option<nexus_gateway::routes::ClientRoute>,
+) -> Result<GatewayStatus> {
+    state.gateway.set_route(&client, route, None)?;
+    state.gateway.status()
+}
+
 /// 把号放进网关的接力队。名单外的号网关一概不碰——这是用户显式点出来的动作，一次可以点几个。
 #[tauri::command(async)]
 pub fn gateway_enroll(state: State<'_, AppState>, labels: Vec<String>) -> Result<GatewayStatus> {

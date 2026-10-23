@@ -109,10 +109,13 @@ fn open_for_write(path: &Path) -> std::io::Result<()> {
 /// 目录里能不能建文件：建一个空探针再删掉。目录不存在算「能」——我们会建它。
 fn dir_writable(dir: &Path) -> std::io::Result<()> {
     if !dir.exists() {
-        // 目录不在，看它的上一级（多半是用户目录）能不能建东西。
-        return match dir.parent() {
-            Some(p) if p.exists() => dir_writable(p),
-            _ => Ok(()),
+        // 目录尚不存在，尝试创建它并清理，避免递归去用户根目录 ($HOME) 乱建探针文件触发 macOS 权限告警
+        return match std::fs::create_dir_all(dir) {
+            Ok(_) => {
+                let _ = std::fs::remove_dir(dir);
+                Ok(())
+            }
+            Err(e) => Err(e),
         };
     }
     let probe = dir.join(format!(".nexus-probe-{}", std::process::id()));
@@ -129,39 +132,25 @@ fn status_of(r: std::io::Result<()>) -> (PermStatus, Option<String>) {
     }
 }
 
-/// 等系统弹窗被回答的耐心。弹窗是异步的：第一次 `open()` 先回 EPERM，窗随后才出现，
-/// 用户点「允许」之后再试才会通。
-const APP_MANAGEMENT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(25);
-
 /// macOS「App 管理」的探针。
-///
-/// 2026-09-07 真机：第一次探到的 EPERM 被当场记成 `denied`，用户随后在弹窗里点了允许也没人再探，
-/// 重启后界面一直显示「被拒」——「一直申请、一直没权限」的一半原因就在这里（另一半是没签名的
-/// 包算不出 designated requirement，系统存不住授权，见 scripts/macos-signing-identity.sh）。
-/// 现在拿到 EPERM 后每秒再试一次，最多等 25 秒：用户一点允许就通；到点还不通，才算被拒。
+/// 即时探查写入权限。不再阻塞式长轮询 25 秒，避免前端卡死；未放行时立即返回 Denied 并提示去系统设置放行。
 fn probe_app_management(product: &Path) -> (PermStatus, Option<String>) {
-    let (mut status, mut detail) = status_of(open_for_write(product));
+    let (status, detail) = status_of(open_for_write(product));
     if status != PermStatus::Denied {
         return (status, detail);
     }
-    let deadline = std::time::Instant::now() + APP_MANAGEMENT_PATIENCE;
-    while std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        let (s, d) = status_of(open_for_write(product));
-        if s == PermStatus::Ok {
-            status = s;
-            detail = d;
-            break;
-        }
+    // 快速二次确认（300ms），给系统弹窗瞬间放行留缓冲；未放行立即返回，前端无需一直转菊花
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let (s, d) = status_of(open_for_write(product));
+    if s == PermStatus::Ok {
+        return (s, d);
     }
-    if status == PermStatus::Denied {
-        detail = Some(
-            "系统没有放行：在系统设置 → 隐私与安全性 → App 管理 里允许 Nexus。那里找不到 Nexus、\
-             或允许了仍然这样，多半是这份包没签名（授权存不住）——换 scripts/build-dmg.sh 打的签名包。"
-                .into(),
-        );
-    }
-    (status, detail)
+    (
+        PermStatus::Denied,
+        Some(
+            "系统未放行：请在系统设置 → 隐私与安全性 → App 管理 里允许 Nexus。".into(),
+        ),
+    )
 }
 
 // ── 四项 ────────────────────────────────────────────────────────────────────
@@ -399,26 +388,25 @@ pub fn perms_check(state: State<'_, AppState>) -> Result<PermReport> {
 /// 申请：把会弹窗的探针真跑一遍（用户点了才跑）。`id` 为空 = 全部。
 #[tauri::command(async)]
 pub fn perms_request(state: State<'_, AppState>, id: Option<String>) -> Result<PermReport> {
-    let mut r = report(&state, true);
-    if let Some(id) = id.as_deref().filter(|s| !s.is_empty()) {
-        // 只申请一项时，其余照「不弹窗」的口径报，免得点 A 弹出 B 的窗。
-        let quiet = report(&state, false);
-        r.items = quiet
-            .items
-            .into_iter()
-            .map(|q| {
-                if q.id == id {
-                    r.items.iter().find(|p| p.id == id).cloned().unwrap_or(q)
-                } else {
-                    q
-                }
-            })
-            .collect();
-    }
+    let probe_all = id.as_deref().map_or(true, |s| s.is_empty());
+    let target = id.as_deref().unwrap_or("");
+    let probe_cursor_app = probe_all || target == "cursor_app";
+    let probe_cursor_automation = probe_all || target == "cursor_automation";
+
+    let r = PermReport {
+        platform: PLATFORM,
+        preflight_done: settings::get_or(&state.db, PREFLIGHT_DONE, false),
+        items: vec![
+            cursor_data(&state),
+            client_configs(&state),
+            cursor_app(&state, probe_cursor_app),
+            cursor_automation(&state, probe_cursor_automation),
+        ],
+    };
     Ok(r)
 }
 
-/// 首次启动的「准备工作」走完了（不管结果）：以后不再主动弹。
+/// 首次启动的「准备工作」走完了没有（不管结果）：以后不再主动弹。
 #[tauri::command(async)]
 pub fn perms_mark_preflight(state: State<'_, AppState>) -> Result<()> {
     settings::set(&state.db, PREFLIGHT_DONE, &true)
@@ -427,7 +415,6 @@ pub fn perms_mark_preflight(state: State<'_, AppState>) -> Result<()> {
 /// 打开系统设置里对应的那一页（macOS）。由 Rust 侧开，前端没有 opener 能力。
 #[tauri::command(async)]
 pub fn perms_open_settings(app: AppHandle, id: String) -> Result<()> {
-    use tauri_plugin_opener::OpenerExt;
     let url = match id.as_str() {
         "cursor_app" => URL_APP_BUNDLES,
         "cursor_automation" => URL_AUTOMATION,
@@ -437,6 +424,15 @@ pub fn perms_open_settings(app: AppHandle, id: String) -> Result<()> {
             ))
         }
     };
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(status) = std::process::Command::new("open").arg(url).status() {
+            if status.success() {
+                return Ok(());
+            }
+        }
+    }
+    use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| nexus_core::AppError::internal(format!("打不开系统设置：{e}")))

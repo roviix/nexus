@@ -770,6 +770,7 @@ export interface CrsrCredentialInfo {
   expiresAtMs: number | null;
   expired: boolean;
   canRenew: boolean;
+  gatewayUrl?: string | null;
 }
 
 export interface CrsrStatus {
@@ -971,7 +972,7 @@ export interface GatewayLane {
  * 网关里一条非 Cursor 通道的 id。与 Rust `channel::ChannelId` 的取值一致；也是账号页签的平台 id。
  * `provider` 是用户自己的 API Key 供应商——它和订阅通道并列，「号」是一家家供应商。
  */
-export type GatewayChannelId = "chatgpt" | "grok" | "kiro" | "zcode" | "qoder" | "claude" | "provider";
+export type GatewayChannelId = "chatgpt" | "grok" | "kiro" | "zcode" | "qoder" | "claude" | "antigravity" | "provider";
 
 /** 一条订阅通道的快照。与 Rust `service::ChannelSnapshot` 对齐。 */
 export interface ChannelSnapshot {
@@ -1013,6 +1014,8 @@ export interface GatewayStatus {
   settings: GatewaySettings;
   restartNeeded: boolean;
   apiKeySet: boolean;
+  /** Cursor 的 InferenceService/Stream 平台级停用原因；号池与账号状态仍原样保留。 */
+  cursorInferenceUnavailableReason?: string | null;
   lane: GatewayLane;
   /** 订阅通道（ChatGPT / Grok Build / Kiro …）与供应商通道，按选路顺序。号本身在各自的账号页签管。 */
   channels: ChannelSnapshot[];
@@ -1196,6 +1199,87 @@ export interface ChatGptImportOutcome {
 
 export type DeviceStatus = "active" | "needs_login" | "dead";
 
+/** Kiro 的套餐和额度快照。与 Rust `nexus_kiro::KiroUsage` 对齐。 */
+export interface KiroUsage {
+  subscriptionTitle: string | null;
+  email: string | null;
+  /** `userInfo.userId`：社交登录 / Builder ID 的账号身份。 */
+  userId?: string | null;
+  baseUsed: number;
+  baseLimit: number;
+  used: number;
+  limit: number;
+  percent: number;
+  resetAt: string | null;
+  trialUsed: number | null;
+  trialLimit: number | null;
+  trialExpiresAt: string | null;
+  bonusUsed: number | null;
+  bonusLimit: number | null;
+  overageEnabled: boolean | null;
+  checkedAt: string;
+}
+
+export interface KiroSwitchOutcome {
+  success: boolean;
+  accountId: string;
+  label: string;
+  kiroRunning: boolean;
+  message: string;
+}
+
+export interface KiroActiveInfo {
+  accountId: string | null;
+  email: string | null;
+  label: string | null;
+  profileArn: string | null;
+  authMethod: string | null;
+  provider: string | null;
+}
+
+/** Qoder 的一档额度。`id` 是 plan / addon / org。 */
+export interface QoderQuotaBucket {
+  id: string;
+  label: string;
+  used: number | null;
+  total: number | null;
+  remaining: number | null;
+  /** 已用百分比，0–100。算不出来是 null。 */
+  percent: number | null;
+  unit: string | null;
+}
+
+/** Qoder 的套餐和额度快照。与 Rust `nexus_qoder::QoderUsage` 对齐。 */
+export interface QoderUsage {
+  plan: string;
+  userType: string | null;
+  percent: number | null;
+  exceeded: boolean;
+  /** 团队 / 企业席位，没有个人计数。 */
+  unlimited: boolean;
+  resetAt: string | null;
+  unit: string | null;
+  buckets: QoderQuotaBucket[];
+  checkedAt: string;
+}
+
+export interface KiroSwitchOutcome {
+  success: boolean;
+  accountId: string;
+  label: string;
+  kiroRunning: boolean;
+  message: string;
+}
+
+export interface KiroActiveInfo {
+  accountId: string | null;
+  email: string | null;
+  label: string | null;
+  profileArn: string | null;
+  authMethod: string | null;
+  provider: string | null;
+}
+
 /** Grok 的额度快照。与 Rust `nexus_grok::GrokQuota` 对齐。 */
 export interface GrokQuota {
   /** 当前周期已用百分比（0–100）。 */
@@ -1259,6 +1343,8 @@ export interface DeviceAccount {
   hasJwt?: boolean;
   /** Grok：额度快照。 */
   usage?: GrokQuota | null;
+  /** Kiro：套餐和额度快照。没拉过是 null。 */
+  kiroUsage?: KiroUsage | null;
   /** Grok：自动探测出的媒体资格；null = 还没探过。 */
   mediaProbe?: boolean | null;
   /** Grok：手动覆盖。 */
@@ -1269,8 +1355,58 @@ export interface DeviceAccount {
   hasToken?: boolean;
   /** Qoder：global（国际版）/ cn（国内版）。 */
   backend?: "global" | "cn";
+  /** Qoder：上游给的显示名。 */
+  displayName?: string | null;
+  /** Qoder：上游 user id。 */
+  userId?: string | null;
+  /** Qoder：套餐和额度快照。没拉过是 null。 */
+  qoderUsage?: QoderUsage | null;
+  /** Google Antigravity：绑定的 GCP 项目 ID。 */
+  projectId?: string | null;
+  /** Google Antigravity / 通用：套餐档位（如 TIER_PRO、Free、Preview 等）。 */
+  tier?: string | null;
+  /** Google Antigravity：额度与健康快照。 */
+  antigravityUsage?: AntigravityUsage | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ModelQuotaBucket {
+  modelId: string;
+  displayName: string;
+  remainingFraction: number;
+  percentRemaining: number;
+  percentUsed: number;
+  resetTime?: string | null;
+}
+
+export interface AntigravityQuotaWindow {
+  window: string;
+  remainingFraction: number;
+  percentRemaining: number;
+  resetTime?: string | null;
+}
+
+export interface AntigravityQuotaGroup {
+  displayName: string;
+  buckets: AntigravityQuotaWindow[];
+}
+
+/** Google Antigravity 额度与状态快照。 */
+export interface AntigravityUsage {
+  projectId?: string | null;
+  tier?: string | null;
+  tierName?: string | null;
+  tierDescription?: string | null;
+  percentUsed?: number | null;
+  percentRemaining?: number | null;
+  remainingRequests?: number | null;
+  resetsAt?: string | null;
+  modelBuckets?: ModelQuotaBucket[];
+  /** 5 小时窗和周窗。有这组数据时不再用模型目录里的 remainingFraction 充数。 */
+  quotaGroups?: AntigravityQuotaGroup[];
+  lastStatus?: string | null;
+  checkedAt?: string | null;
 }
 
 /** Grok 上游拉到的一条模型。 */
@@ -1286,6 +1422,12 @@ export interface DeviceLoginHandle {
   authorizeUrl: string;
   userCode: string;
   expiresInSecs: number;
+}
+
+export interface SocialLoginStart {
+  sessionId: string;
+  authorizeUrl: string;
+  provider: string;
 }
 
 export type DeviceLoginState =
@@ -1518,3 +1660,106 @@ export interface ZcodeClientProbe {
   present: boolean;
   path: string;
 }
+
+// ==========================================
+// Nexus Mesh (去中心化订阅共享网络)
+// ==========================================
+
+export type MeshRole = "disabled" | "provider" | "consumer" | "peer";
+
+export interface PairingCodeInfo {
+  code: string;
+  created_at: number;
+  expires_at: number;
+}
+
+export interface MeshPeer {
+  node_id: string;
+  device_name: string;
+  status: "connected" | "connecting" | "offline" | string;
+  latency_ms: number;
+  is_self: boolean;
+  shared_channels: string[];
+  remote_models: string[];
+  paired_at: number;
+  last_seen_at: number;
+}
+
+export interface HostChannel {
+  channel_id: string;
+  label: string;
+  tier: "tier1_local" | "tier2_byok" | "tier3_residential" | string;
+  enabled: boolean;
+  max_concurrency: number;
+  reserve_quota_percent: number;
+  allowed_models: string[];
+}
+
+export interface PreemptionStatus {
+  is_preempting: boolean;
+  cooldown_remaining_secs: number;
+  last_local_activity: number | null;
+}
+
+export interface MeshConfig {
+  role: MeshRole;
+  node_id: string;
+  device_name?: string;
+  broker_url: string;
+  auth_token?: string | null;
+  share_platforms: string[];
+  max_concurrency: number;
+  reserve_quota_percent: number;
+  local_preemption: boolean;
+  allowed_domains: string[];
+  shared_account_ids?: string[];
+  idle_only?: boolean;
+  invite_code?: string | null;
+  peers?: MeshPeer[];
+  host_channels?: HostChannel[];
+}
+
+export interface SessionLease {
+  lease_id: string;
+  provider_node_id: string;
+  platform: string;
+  model_alias: string;
+  created_at: number;
+  expires_at: number;
+  is_active: boolean;
+}
+
+export interface EgressMetrics {
+  total_requests_served: number;
+  total_bytes_forwarded: number;
+  active_connections: number;
+  rejected_connections: number;
+  contribution_points: number;
+}
+
+export interface MeshStatus {
+  role: MeshRole;
+  node_id: string;
+  device_name: string;
+  connected: boolean;
+  broker_url: string;
+  pairing_code: string | null;
+  pairing_code_expires_in: number | null;
+  peers: MeshPeer[];
+  host_channels: HostChannel[];
+  preemption: PreemptionStatus;
+  metrics: EgressMetrics;
+  active_leases: SessionLease[];
+  local_preempted: boolean;
+  last_heartbeat_at: number | null;
+}
+
+export interface MarketNode {
+  node_id: string;
+  platform: string;
+  model: string;
+  region: string;
+  latency_ms: number;
+  available_quota: string;
+}
+

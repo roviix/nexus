@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LocalModel } from "../ipc/models";
-import { filterCards, groupLocal, modalityRail, vendorRail } from "./models";
+import { filterCards, formatModelName, groupLocal, modalityRail, vendorRail } from "./models";
 
 const local = (over: Partial<LocalModel> & { id: string }): LocalModel => ({
   vendor: "anthropic",
@@ -61,9 +61,36 @@ describe("filterCards", () => {
       { vendor: "openai", label: "OpenAI", n: 2 },
       { vendor: "cursor", label: "Cursor", n: 1 },
     ]);
+    // 模态 Tab 保持稳定总计，不随次级厂商下拉改变
     expect(modalityRail(groups, { ...ALL, vendor: "openai" })).toEqual([
-      { id: "chat", n: 1 },
+      { id: "chat", n: 4 },
       { id: "image", n: 1 },
+    ]);
+  });
+});
+
+describe("formatModelName and ordering", () => {
+  it("formats opus-5-5 and thinking variants properly", () => {
+    expect(formatModelName("kiro-claude-opus-5.5")).toBe("Claude Opus 5.5");
+    expect(formatModelName("kiro/kiro-claude-opus-5.5-thinking")).toBe("Claude Opus 5.5 (Thinking)");
+    expect(formatModelName("kiro-claude-sonnet-4.6")).toBe("Claude Sonnet 4.6");
+  });
+
+  it("ranks opus higher than sonnet and higher versions first", () => {
+    const list: LocalModel[] = [
+      local({ id: "kiro-claude-sonnet-4.5" }),
+      local({ id: "kiro-claude-opus-5.5" }),
+      local({ id: "kiro-claude-opus-5" }),
+      local({ id: "kiro-claude-sonnet-5" }),
+      local({ id: "kiro-claude-haiku-4.5" }),
+    ];
+    const groups = groupLocal(list);
+    expect(groups.map((g) => g.title)).toEqual([
+      "kiro-claude-opus-5.5",
+      "kiro-claude-opus-5",
+      "kiro-claude-sonnet-5",
+      "kiro-claude-sonnet-4.5",
+      "kiro-claude-haiku-4.5",
     ]);
   });
 });

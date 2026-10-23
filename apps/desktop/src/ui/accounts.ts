@@ -76,15 +76,28 @@ export const PLAN_FILTER_LABEL: Record<PlanFilter, string> = {
   all: "全部档位",
   paid: "付费档",
   ultra: "Ultra",
+  super: "Super",
+  premium: "Premium",
   proplus: "Pro+",
   pro: "Pro",
+  plus: "Plus",
   team: "Team",
   free: "Free",
   unknown: "未知",
 };
 
 /** 下拉里的固定顺序：从高到低，「未知」垫底 —— 和卡片徽章的配色同一套次序感。 */
-export const PLAN_FILTER_ORDER: PlanGroup[] = ["ultra", "proplus", "pro", "team", "free", "unknown"];
+export const PLAN_FILTER_ORDER: PlanGroup[] = [
+  "ultra",
+  "super",
+  "premium",
+  "proplus",
+  "pro",
+  "plus",
+  "team",
+  "free",
+  "unknown",
+];
 
 /** 一个号归哪一档：用量里的 plan 优先，其次入库时记下的 membership —— 与卡片徽章同一口径。 */
 export function accountPlanGroup(a: Account): PlanGroup {

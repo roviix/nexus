@@ -25,16 +25,25 @@ export interface UseRelayOptions {
   pollMs?: number;
 }
 
+let cachedGateway: GatewayStatus | null = null;
+let cachedLocal: LocalModel[] | null = null;
+
 export function useRelay(opts: UseRelayOptions = {}): RelayState {
   const { catalogs = false, pollMs = 0 } = opts;
-  const [gateway, setGateway] = useState<GatewayStatus | null>(null);
-  const [local, setLocal] = useState<LocalModel[] | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [gateway, setGateway] = useState<GatewayStatus | null>(() => cachedGateway);
+  const [local, setLocal] = useState<LocalModel[] | null>(() => cachedLocal);
+  const [loading, setLoading] = useState(() => !cachedGateway);
 
   const reloadLocal = useCallback(async () => {
     const [g, l] = await Promise.allSettled([gatewayApi.status(), catalogs ? models.local() : Promise.resolve(null)]);
-    setGateway(g.status === "fulfilled" ? g.value : null);
-    if (catalogs) setLocal(l.status === "fulfilled" ? (l.value ?? []) : []);
+    if (g.status === "fulfilled" && g.value) {
+      cachedGateway = g.value;
+      setGateway(g.value);
+    }
+    if (catalogs && l.status === "fulfilled" && l.value) {
+      cachedLocal = l.value;
+      setLocal(l.value);
+    }
   }, [catalogs]);
 
   const reload = useCallback(async () => {

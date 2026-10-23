@@ -133,14 +133,24 @@ export function PermissionList({
                 {it.status === "not_applicable" ? <span className="faint tiny">{STATUS_LABEL.not_applicable}</span> : null}
                 {/* 行内的「申请」不做主按钮：主按钮是标题栏 / 弹窗页脚那一个「一次申请」，
                     一屏里同时亮三个绿键，就没有哪个是主的了。 */}
-                {pending && it.canRequest ? (
-                  <button type="button" className="btn btn-sm" disabled={busy != null} onClick={() => onRequest(it.id)}>
-                    {busy === it.id || busy === "all" ? <Spinner /> : it.status === "denied" ? "重新申请" : "申请"}
+                {it.status === "denied" && it.settingsUrl ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={() => onOpenSettings(it.id)}
+                  >
+                    <Icon name="external" size={13} />
+                    打开系统设置
                   </button>
                 ) : null}
-                {it.status === "denied" && it.settingsUrl ? (
-                  <button type="button" className="btn btn-sm btn-icon btn-quiet" aria-label="打开系统设置" onClick={() => onOpenSettings(it.id)}>
-                    <Icon name="external" size={13} />
+                {pending && it.canRequest ? (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy != null}
+                    onClick={() => onRequest(it.id)}
+                  >
+                    {busy === it.id || busy === "all" ? <Spinner /> : it.status === "denied" ? "重新检测" : "申请"}
                   </button>
                 ) : null}
               </div>

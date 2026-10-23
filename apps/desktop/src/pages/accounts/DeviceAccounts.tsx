@@ -13,8 +13,20 @@
  * Grok Bot（钥匙串里的 grok.com 额度）不是 Grok Build，别混进这一页。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { channelOf, laneOf } from "../../gateway/channels";
-import { claude, gateway, grok, kiro, onClaudeLogin, onGrokLogin, onKiroLogin, qoder, zcode } from "../../ipc/api";
+import { laneOf } from "../../gateway/channels";
+import {
+  antigravity,
+  claude,
+  gateway,
+  grok,
+  kiro,
+  onAntigravityLogin,
+  onClaudeLogin,
+  onGrokLogin,
+  onKiroLogin,
+  qoder,
+  zcode,
+} from "../../ipc/api";
 import type {
   GatewayChannelId,
   DeviceAccount,
@@ -23,11 +35,22 @@ import type {
   GatewayCandidate,
   GatewayStatus,
 } from "../../ipc/types";
-import { go, type Route } from "../../shell/nav";
+import type { Route } from "../../shell/nav";
 import { confirm } from "../../ui/confirm";
 import { timeAgo, timeUntil } from "../../ui/format";
 import { resetInShort } from "../../ui/usage";
-import { Banner, CopyButton, Empty, ErrorNote, Gauge, Icon, Modal, Switch, Tag } from "../../ui/primitives";
+import { Banner, CopyButton, Empty, ErrorNote, Gauge, Icon, Modal, Spinner, Switch, Tag } from "../../ui/primitives";
+import { AntigravityAccountCard } from "./AntigravityAccountCard";
+import { ClaudeAccountCard } from "./ClaudeAccountCard";
+import { ClaudeDrawer } from "./ClaudeDrawer";
+import { GrokAccountCard } from "./GrokAccountCard";
+import { GrokDrawer } from "./GrokDrawer";
+import { KiroAccountCard } from "./KiroAccountCard";
+import { KiroDrawer } from "./KiroDrawer";
+import { QoderAccountCard } from "./QoderAccountCard";
+import { QoderDrawer } from "./QoderDrawer";
+import { ZcodeAccountCard } from "./ZcodeAccountCard";
+import { ZcodeDrawer } from "./ZcodeDrawer";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { laneBadge } from "./chatgpt";
 
@@ -45,6 +68,7 @@ type DeviceApi = {
   importText: (text: string, note?: string, backend?: string) => Promise<unknown>;
   remove: (id: string) => Promise<void>;
   setEnabled: (id: string, enabled: boolean) => Promise<DeviceAccount>;
+  setNote?: (id: string, note: string | null) => Promise<DeviceAccount>;
   setCurrent: (label: string) => Promise<GatewayStatus>;
   resetLane: () => Promise<GatewayStatus>;
   /** 只有 Grok 有：额度探测、媒体资格覆盖、API Key 号。 */
@@ -84,11 +108,14 @@ interface Spec {
     loginId?: string;
     callbackListening?: boolean;
   }>;
-  /**
-   * 本机那个客户端在不在。给了就在「从本机导入」页签上先说清楚，
+  /** PKCE 授权进度事件（Claude / Antigravity）。 */
+  listenPkce?: (cb: (st: any) => void) => Promise<() => void>;
+  /** 本机那个客户端在不在。给了就在「从本机导入」页签上先说清楚，
    * 而不是让用户点一下再吃一个「读不到文件」。
    */
   probeLocal?: () => Promise<{ present: boolean; path: string; also?: string | null }>;
+  /** 授权渠道列表（例如 Kiro 支持 Google、GitHub、AWS Builder ID）。 */
+  oauthProviders?: { id: string; label: string; desc?: string }[];
 }
 
 const GROK: Spec = {
@@ -98,7 +125,7 @@ const GROK: Spec = {
   emptyBody:
     "xAI 的 Grok Build 订阅号，或一把 xAI API Key。加进来后，客户端把 grok-* / grok-imagine-* 指到本机网关就会走这条通道：对话、生图、生视频都在。凭证只在这台电脑上。这不是 Grok Bot。",
   bannerHint: "Grok 的号只有一个用途：给本机网关跑 grok-* 与 Imagine 媒体。开了网关，OpenCode / Grok CLI 指到它就能用。",
-  usableHint: "个可接 · grok-* 与 grok-imagine-* 走这里",
+  usableHint: "个可用",
   addSubtitle: "订阅号走 xAI 设备码授权；也可以直接贴一把 xAI API Key。凭证只存在这台电脑上。",
   oauthHint: "浏览器会打开 xAI 的设备码页。把下面那串码输进去，用 X 账号同意即可——没有回调地址可贴。",
   waitingHint: "在打开的页面里输入这串码，用 X 账号登录并同意。",
@@ -126,11 +153,11 @@ const KIRO: Spec = {
   title: "Kiro",
   emptyTitle: "还没有 Kiro 账号",
   emptyBody:
-    "AWS Builder ID / 社交登录的 Kiro 订阅。加进来后，kiro-claude-* 走这条通道。裸的 claude-* 不会进这里——那是 Cursor 的号。凭证只在这台电脑上。",
-  bannerHint: "Kiro 的号只有一个用途：给本机网关跑 kiro-claude-*。开了网关再指过来。",
-  usableHint: "个可接 · kiro-claude-* 走这里",
-  addSubtitle: "AWS Builder ID 设备码。凭证只存在这台电脑上。",
-  oauthHint: "浏览器会打开 AWS 的设备码页。把下面那串码输进去。只走 us-east-1；没有客户端对时走社交刷新。",
+    "Google / GitHub / AWS Builder ID 的 Kiro 订阅。加进来后，kiro-claude-* 走这条通道。裸的 claude-* 不会进这里——那是 Cursor 的号。凭证只在这台电脑上。",
+  bannerHint: "Kiro 的号用于网关 kiro-claude-* 访问。",
+  usableHint: "个可用",
+  addSubtitle: "支持 Google / GitHub 授权登录（Pro+ / Pro / Power 个人订阅）及 AWS Builder ID 设备码。",
+  oauthHint: "推荐使用 Google / GitHub 登录，获取 Kiro Pro+ / Pro 等付费订阅套餐；AWS Builder ID 仅提供 Free 免费额度。",
   waitingHint: "在打开的页面里输入这串码，用 AWS Builder ID 登录并同意。",
   cliTab: "从本机 Kiro IDE",
   cliHint: (
@@ -139,10 +166,15 @@ const KIRO: Spec = {
     </>
   ),
   pastePlaceholder:
-    "四种写法都认：\n· kiro-auth-token.json 的原文\n· sub2api 导出的 accounts JSON（只收 platform 为 kiro 的）\n· CLIProxyAPI 的 JSON\n· access_token----refresh_token",
+    "五种写法都认：\n· kiro://kiro.kiroAgent/authenticate-success?code=… 重定向链接\n· kiro-auth-token.json 的原文\n· sub2api 导出的 accounts JSON\n· CLIProxyAPI 的 JSON\n· access_token----refresh_token",
   labelPrefix: "kiro",
   api: kiro,
   listen: onKiroLogin,
+  oauthProviders: [
+    { id: "Google", label: "Google 授权（推荐）", desc: "适用于 Kiro 官网的 Pro+、Pro、Power 等个人付费订阅（无需本地安装 Kiro）" },
+    { id: "Github", label: "GitHub 授权", desc: "适用于通过 GitHub 绑定的 Kiro 个人付费订阅（无需本地安装 Kiro）" },
+    { id: "builder-id", label: "AWS Builder ID", desc: "通过 AWS 设备码登录，仅提供 Free 免费额度（50次请求）" },
+  ],
 };
 
 const ZCODE: Spec = {
@@ -151,8 +183,8 @@ const ZCODE: Spec = {
   emptyTitle: "还没有 ZCode 账号",
   emptyBody:
     "智谱 GLM 的编码套餐。在官方 ZCode 客户端里登录一次，这里就能把凭证收进来——加进来后，glm-* 走这条通道（zcode/glm-4.7 也认）。凭证只在这台电脑上。",
-  bannerHint: "ZCode 的号只有一个用途：给本机网关跑 glm-*。开了网关，Claude Code / OpenCode 指到它就能用。",
-  usableHint: "个可接 · glm-* 走这里",
+  bannerHint: "ZCode 的号用于网关 glm-* 访问。",
+  usableHint: "个可用",
   addSubtitle:
     "ZCode 没有单独的授权流程：在官方客户端里登录一次，这里直接读它留下的凭证。也可以自己贴一把 API key。",
   // 没有 loginStart，这两条用不上，但 Spec 要求非空。
@@ -231,8 +263,53 @@ const CLAUDE: Spec = {
     resetLane: claude.resetLane,
   },
   prepareOauth: (note) => claude.loginStart(note),
+  listenPkce: onClaudeLogin,
   probeLocal: claude.probeLocal,
 };
+
+export const ANTIGRAVITY: Spec = {
+  id: "antigravity",
+  title: "Antigravity",
+  emptyTitle: "还没有 Google 反重力 (Antigravity) 账号",
+  emptyBody:
+    "Google Antigravity 官方 OAuth 授权或 Refresh Token 凭证。支持 Gemini 3 / 2.5 系列与 Claude 3/4 模型家族。凭证保存在本地加密存储中，直连 Google 官方端点。",
+  bannerHint:
+    "Google Antigravity 统一网关：支持 gemini-3.1-pro、gemini-3.8-flash 以及 claude-3-7-sonnet 等模型。内置确定性 Session ID 保持，保护上游 KV-Cache 命中率，额度耗尽自动接力。",
+  usableHint: "个可接 · antigravity/… 走这里",
+  addSubtitle:
+    "点击「登录授权」在浏览器中授权，或直接粘贴 Google 凭证（以 1// 开头的 Refresh Token、跳转 URL、或配置 JSON）。",
+  oauthHint:
+    "使用 Google OAuth 2.0 PKCE 授权：在系统浏览器中同意，授权码自动回传到本机 51121 端口。若端口受限，也可直接复制授权跳转后的浏览器地址栏 URL 贴回。",
+  waitingHint: "浏览器已打开。在 Google 账号授权页点击同意后将自动完成登录。",
+  cliTab: "从本机 Antigravity",
+  cliHint: (
+    <>
+      探测系统钥匙串（macOS Keychain 中的 Google 凭证）或本地 <code className="mono">~/.gemini</code> 配置，直接导入已登录的 Google 反重力凭证。
+    </>
+  ),
+  pastePlaceholder:
+    "支持以下任意格式：\n· 授权完成后的地址栏跳转完整 URL (http://localhost:51121/oauth-callback?code=...)\n· 以 1// 开头的 Google Refresh Token 原文\n· 包含 refresh_token / access_token 的 JSON 配置",
+  labelPrefix: "agy",
+  api: {
+    list: antigravity.list,
+    loginCancel: antigravity.loginCancel,
+    importLocal: antigravity.importLocal,
+    importText: antigravity.importText,
+    refreshQuota: antigravity.refreshQuota,
+    remove: antigravity.remove,
+    setEnabled: antigravity.setEnabled,
+    setNote: antigravity.setNote,
+    setCurrent: antigravity.setCurrent,
+    resetLane: antigravity.resetLane,
+  },
+  prepareOauth: (note) => antigravity.loginStart(note),
+  listenPkce: onAntigravityLogin,
+  probeLocal: antigravity.probeLocal,
+};
+
+export function AntigravityAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
+  return <DeviceAccounts spec={ANTIGRAVITY} tabs={tabs} onGo={onGo} />;
+}
 
 export function ClaudeAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Route) => void }) {
   return <DeviceAccounts spec={CLAUDE} tabs={tabs} onGo={onGo} />;
@@ -267,6 +344,14 @@ function labelOf(a: Pick<DeviceAccount, "email" | "accountRef" | "label">, prefi
   return email ? email : `${prefix}…${a.accountRef.slice(-6)}`;
 }
 
+/** 打开页面时要不要再问一次 Qoder。没有快照，或快照超过一刻钟。 */
+function qoderUsageStale(a: DeviceAccount, now = Date.now()): boolean {
+  const checked = a.qoderUsage?.checkedAt;
+  if (!checked) return true;
+  const t = Date.parse(checked);
+  return !Number.isFinite(t) || now - t > 15 * 60_000;
+}
+
 /**
  * 这个号还能不能自己拿出凭证。
  *
@@ -279,30 +364,76 @@ function deviceCanServe(a: DeviceAccount): boolean {
   return (a.hasApiKey ?? false) || (a.hasJwt ?? false);
 }
 
-function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onGo: (r: Route) => void }) {
-  const [accounts, setAccounts] = useState<DeviceAccount[] | null>(null);
-  const [status, setStatus] = useState<GatewayStatus | null>(null);
+const deviceAccountsCache = new Map<string, DeviceAccount[]>();
+let lastDeviceGatewayStatus: GatewayStatus | null = null;
+
+function DeviceAccounts({ spec, tabs, onGo: _onGo }: { spec: Spec; tabs: ReactNode; onGo: (r: Route) => void }) {
+  const [accounts, setAccounts] = useState<DeviceAccount[] | null>(() => deviceAccountsCache.get(spec.id) ?? null);
+  const [status, setStatus] = useState<GatewayStatus | null>(() => lastDeviceGatewayStatus);
+  const [kiroActiveId, setKiroActiveId] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [working, setWorking] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** 打开 Qoder 页时，缺快照或超过一刻钟的号静默问一次。每个挂载只问一轮。 */
+  const usageWarmed = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => () => {
+    alive.current = false;
+  }, []);
+
+  const selectedAccount = useMemo(
+    () => (accounts ?? []).find((a) => a.id === selectedId) ?? null,
+    [accounts, selectedId],
+  );
 
   const reload = useCallback(async () => {
     try {
-      setAccounts(await spec.api.list());
+      const list = await spec.api.list();
+      deviceAccountsCache.set(spec.id, list);
+      setAccounts(list);
       setError(null);
     } catch (e) {
       setError(e);
     }
+    if (spec.id === "kiro") {
+      try {
+        const active = await kiro.activeClient();
+        setKiroActiveId(active?.accountId ?? null);
+      } catch {}
+    }
     try {
-      setStatus(await gateway.status());
+      const st = await gateway.status();
+      lastDeviceGatewayStatus = st;
+      setStatus(st);
     } catch {
       setStatus(null);
     }
-  }, [spec.api]);
+  }, [spec.api, spec.id]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (spec.id !== "qoder" || usageWarmed.current || accounts === null || !spec.api.refreshQuota) return;
+    const due = accounts.filter((a) => a.status === "active" && a.hasToken && qoderUsageStale(a));
+    if (accounts.length === 0) return;
+    usageWarmed.current = true;
+    if (due.length === 0) return;
+    const refresh = spec.api.refreshQuota;
+    void (async () => {
+      for (const a of due) {
+        if (!alive.current) return;
+        try {
+          await refresh(a.id);
+        } catch {
+          /* 失败记在账号的 lastError 上，列表照常能看。 */
+        }
+      }
+      if (alive.current) await reload();
+    })();
+  }, [accounts, spec.id, spec.api, reload]);
 
   useEffect(() => {
     if (!status?.running) return;
@@ -315,7 +446,6 @@ function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onG
     for (const c of laneOf(status, spec.id).candidates) m.set(c.label.toLowerCase(), c);
     return m;
   }, [status, spec.id]);
-  const channel = channelOf(status, spec.id);
 
   async function run(action: () => Promise<unknown>) {
     setWorking(true);
@@ -339,12 +469,59 @@ function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onG
       danger: true,
     });
     if (!ok) return;
+    if (selectedId === a.id) setSelectedId(null);
     await run(() => spec.api.remove(a.id));
   }
 
   const list = accounts ?? [];
-  const active = list.filter((a) => a.enabled && a.status === "active" && deviceCanServe(a)).length;
+  const [filter, setFilter] = useState<"all" | "active" | "disabled">("all");
+  const activeCount = list.filter((a) => a.enabled && a.status === "active" && deviceCanServe(a)).length;
+  const disabledCount = list.length - activeCount;
+
+  const filteredList = useMemo(() => {
+    if (filter === "active") {
+      return list.filter((a) => a.enabled && a.status === "active" && deviceCanServe(a));
+    }
+    if (filter === "disabled") {
+      return list.filter((a) => !(a.enabled && a.status === "active" && deviceCanServe(a)));
+    }
+    return list;
+  }, [list, filter]);
+
   const disabled = working;
+
+  const filterBar = (
+    <div className="status-pills" role="tablist" aria-label="账号状态视图" style={{ marginBottom: 12 }}>
+      <button
+        type="button"
+        className={`status-pill${filter === "all" ? " is-active" : ""}`}
+        onClick={() => setFilter("all")}
+      >
+        <span>全部</span>
+        <span className="pill-n">{list.length}</span>
+      </button>
+      <button
+        type="button"
+        className={`status-pill${filter === "active" ? " is-active" : ""}`}
+        onClick={() => setFilter("active")}
+      >
+        <i className="status-dot is-long_lived" />
+        <span>可用</span>
+        <span className="pill-n">{activeCount}</span>
+      </button>
+      {disabledCount > 0 ? (
+        <button
+          type="button"
+          className={`status-pill${filter === "disabled" ? " is-active" : ""}`}
+          onClick={() => setFilter("disabled")}
+        >
+          <i className="status-dot is-dead" />
+          <span>已停用</span>
+          <span className="pill-n">{disabledCount}</span>
+        </button>
+      ) : null}
+    </div>
+  );
 
   return (
     <>
@@ -372,21 +549,6 @@ function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onG
 
       <ErrorNote error={error} onRetry={() => void reload()} />
 
-      {list.length > 0 && status && !status.running ? (
-        <div style={{ marginBottom: 12 }}>
-          <Banner
-            tone="default"
-            title="本地网关没在跑，这些号此刻没人用。"
-            hint={spec.bannerHint}
-            action={
-              <button type="button" className="btn btn-sm" onClick={() => onGo(go("gateway"))}>
-                去本地网关
-              </button>
-            }
-          />
-        </div>
-      ) : null}
-
       {accounts === null ? (
         <div className="stack" style={{ gap: 10 }}>
           <div className="skeleton" style={{ height: 96 }} />
@@ -404,19 +566,149 @@ function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onG
         >
           {spec.emptyBody}
         </Empty>
+      ) : spec.id === "antigravity" ? (
+        <>
+          {filterBar}
+          <div className="accts">
+            {filteredList.map((a) => (
+              <AntigravityAccountCard
+                key={a.id}
+                account={a}
+                prefix={spec.labelPrefix}
+                lane={laneByLabel.get(labelOf(a, spec.labelPrefix).toLowerCase()) ?? null}
+                disabled={disabled}
+                refreshing={working}
+                onToggle={(on) => void run(() => spec.api.setEnabled(a.id, on))}
+                onUse={() => void run(() => spec.api.setCurrent(labelOf(a, spec.labelPrefix)))}
+                onRelogin={() => setAdding(true)}
+                onRemove={() => void remove(a)}
+                onRefresh={
+                  spec.api.refreshQuota ? () => run(() => spec.api.refreshQuota!(a.id)) : undefined
+                }
+                onNote={
+                  spec.api.setNote
+                    ? (note) => void run(() => spec.api.setNote!(a.id, note))
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+        </>
+      ) : spec.id === "kiro" ? (
+        <>
+          {filterBar}
+          <div className="accts">
+            {filteredList.map((a) => (
+              <KiroAccountCard
+                key={a.id}
+                account={a}
+                prefix={spec.labelPrefix}
+                lane={laneByLabel.get(labelOf(a, spec.labelPrefix).toLowerCase()) ?? null}
+                disabled={disabled}
+                isClientActive={kiroActiveId === a.id}
+                refreshing={working}
+                onOpen={() => setSelectedId(a.id)}
+                onToggle={(on) => void run(() => spec.api.setEnabled(a.id, on))}
+                onUse={() => void run(() => spec.api.setCurrent(labelOf(a, spec.labelPrefix)))}
+                onRelogin={() => setAdding(true)}
+                onRemove={() => void remove(a)}
+                onRefresh={
+                  spec.api.refreshQuota ? () => run(() => spec.api.refreshQuota!(a.id)) : undefined
+                }
+                onNote={
+                  spec.api.setNote
+                    ? (note) => void run(() => spec.api.setNote!(a.id, note))
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+        </>
+      ) : spec.id === "zcode" ? (
+        <>
+          {filterBar}
+          <div className="accts">
+            {filteredList.map((a) => (
+              <ZcodeAccountCard
+                key={a.id}
+                account={a}
+                prefix={spec.labelPrefix}
+                lane={laneByLabel.get(labelOf(a, spec.labelPrefix).toLowerCase()) ?? null}
+                disabled={disabled}
+                onOpen={() => setSelectedId(a.id)}
+                onToggle={(on) => void run(() => spec.api.setEnabled(a.id, on))}
+                onUse={() => void run(() => spec.api.setCurrent(labelOf(a, spec.labelPrefix)))}
+                onRemove={() => void remove(a)}
+                onNote={
+                  spec.api.setNote
+                    ? (note) => void run(() => spec.api.setNote!(a.id, note))
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+        </>
+      ) : spec.id === "qoder" ? (
+        <>
+          {filterBar}
+          <div className="accts">
+            {filteredList.map((a) => (
+              <QoderAccountCard
+                key={a.id}
+                account={a}
+                lane={laneByLabel.get(labelOf(a, spec.labelPrefix).toLowerCase()) ?? null}
+                disabled={disabled}
+                refreshing={working}
+                onOpen={() => setSelectedId(a.id)}
+                onToggle={(on) => void run(() => spec.api.setEnabled(a.id, on))}
+                onRelogin={() => setAdding(true)}
+                onRemove={() => void remove(a)}
+                onRefresh={
+                  spec.api.refreshQuota ? () => run(() => spec.api.refreshQuota!(a.id)) : undefined
+                }
+                onNote={
+                  spec.api.setNote ? (note) => void run(() => spec.api.setNote!(a.id, note)) : undefined
+                }
+              />
+            ))}
+          </div>
+        </>
+      ) : spec.id === "grok" || spec.id === "claude" ? (
+        <>
+          {filterBar}
+          <div className="accts">
+            {filteredList.map((a) =>
+              spec.id === "grok" ? (
+                <GrokAccountCard
+                  key={a.id}
+                  account={a}
+                  prefix={spec.labelPrefix}
+                  lane={laneByLabel.get(labelOf(a, spec.labelPrefix).toLowerCase()) ?? null}
+                  refreshing={working}
+                  onOpen={() => setSelectedId(a.id)}
+                  onRelogin={() => setAdding(true)}
+                  onRefresh={spec.api.refreshQuota ? () => run(() => spec.api.refreshQuota!(a.id)) : undefined}
+                />
+              ) : (
+                <ClaudeAccountCard
+                  key={a.id}
+                  account={a}
+                  prefix={spec.labelPrefix}
+                  lane={laneByLabel.get(labelOf(a, spec.labelPrefix).toLowerCase()) ?? null}
+                  refreshing={working}
+                  onOpen={() => setSelectedId(a.id)}
+                  onRelogin={() => setAdding(true)}
+                  onRefresh={spec.api.refreshQuota ? () => run(() => spec.api.refreshQuota!(a.id)) : undefined}
+                />
+              ),
+            )}
+          </div>
+        </>
       ) : (
         <div className="card">
-          <div className="row" style={{ gap: 8, alignItems: "baseline", marginBottom: 12 }}>
-            <strong>{list.length} 个号</strong>
-            <span className="faint tiny">
-              {active} {spec.usableHint}
-            </span>
-            {channel && channel.imageModels.length + channel.videoModels.length > 0 ? (
-              <span className="faint tiny">· {channel.mediaReady ? "可出图 / 出视频" : "此刻没有号能出媒体"}</span>
-            ) : null}
-          </div>
+          {filterBar}
           <div className="list">
-            {list.map((a) => (
+            {filteredList.map((a) => (
               <AccountRow
                 key={a.id}
                 account={a}
@@ -436,6 +728,150 @@ function DeviceAccounts({ spec, tabs, onGo }: { spec: Spec; tabs: ReactNode; onG
           </div>
         </div>
       )}
+
+      {selectedAccount && spec.id === "kiro" ? (
+        <KiroDrawer
+          account={selectedAccount}
+          lane={laneByLabel.get(labelOf(selectedAccount, spec.labelPrefix).toLowerCase()) ?? null}
+          isClientActive={kiroActiveId === selectedAccount.id}
+          onSwitchedClient={() => void reload()}
+          onClose={() => setSelectedId(null)}
+          onRefresh={async () => {
+            if (spec.api.refreshQuota) {
+              await run(() => spec.api.refreshQuota!(selectedAccount.id));
+            }
+          }}
+          onRelogin={() => {
+            setSelectedId(null);
+            setAdding(true);
+          }}
+          onRemove={async () => {
+            await remove(selectedAccount);
+          }}
+          onToggle={async (on) => {
+            await run(() => spec.api.setEnabled(selectedAccount.id, on));
+          }}
+          onUse={async () => {
+            await run(() => spec.api.setCurrent(labelOf(selectedAccount, spec.labelPrefix)));
+          }}
+          onNote={async (note) => {
+            if (spec.api.setNote) {
+              await run(() => spec.api.setNote!(selectedAccount.id, note));
+            }
+          }}
+        />
+      ) : null}
+
+      {selectedAccount && spec.id === "qoder" ? (
+        <QoderDrawer
+          account={selectedAccount}
+          lane={laneByLabel.get(labelOf(selectedAccount, spec.labelPrefix).toLowerCase()) ?? null}
+          onClose={() => setSelectedId(null)}
+          onRefresh={async () => {
+            if (spec.api.refreshQuota) {
+              await run(() => spec.api.refreshQuota!(selectedAccount.id));
+            }
+          }}
+          onRelogin={() => {
+            setSelectedId(null);
+            setAdding(true);
+          }}
+          onRemove={async () => {
+            await remove(selectedAccount);
+          }}
+          onToggle={async (on) => {
+            await run(() => spec.api.setEnabled(selectedAccount.id, on));
+          }}
+          onUse={async () => {
+            await run(() => spec.api.setCurrent(labelOf(selectedAccount, spec.labelPrefix)));
+          }}
+          onNote={async (note) => {
+            if (spec.api.setNote) {
+              await run(() => spec.api.setNote!(selectedAccount.id, note));
+            }
+          }}
+        />
+      ) : null}
+
+      {selectedAccount && (spec.id === "grok" || spec.id === "claude") ? (
+        spec.id === "grok" ? (
+          <GrokDrawer
+            account={selectedAccount}
+            lane={laneByLabel.get(labelOf(selectedAccount, spec.labelPrefix).toLowerCase()) ?? null}
+            onClose={() => setSelectedId(null)}
+            onRefresh={async () => {
+              if (spec.api.refreshQuota) await run(() => spec.api.refreshQuota!(selectedAccount.id));
+            }}
+            onRelogin={() => {
+              setSelectedId(null);
+              setAdding(true);
+            }}
+            onRemove={async () => {
+              await remove(selectedAccount);
+            }}
+            onToggle={async (on) => {
+              await run(() => spec.api.setEnabled(selectedAccount.id, on));
+            }}
+            onUse={async () => {
+              await run(() => spec.api.setCurrent(labelOf(selectedAccount, spec.labelPrefix)));
+            }}
+            onNote={async (note) => {
+              if (spec.api.setNote) await run(() => spec.api.setNote!(selectedAccount.id, note));
+            }}
+          />
+        ) : (
+          <ClaudeDrawer
+            account={selectedAccount}
+            lane={laneByLabel.get(labelOf(selectedAccount, spec.labelPrefix).toLowerCase()) ?? null}
+            onClose={() => setSelectedId(null)}
+            onRefresh={async () => {
+              if (spec.api.refreshQuota) await run(() => spec.api.refreshQuota!(selectedAccount.id));
+            }}
+            onRelogin={() => {
+              setSelectedId(null);
+              setAdding(true);
+            }}
+            onRemove={async () => {
+              await remove(selectedAccount);
+            }}
+            onToggle={async (on) => {
+              await run(() => spec.api.setEnabled(selectedAccount.id, on));
+            }}
+            onUse={async () => {
+              await run(() => spec.api.setCurrent(labelOf(selectedAccount, spec.labelPrefix)));
+            }}
+            onNote={
+              spec.api.setNote
+                ? async (note) => {
+                    await run(() => spec.api.setNote!(selectedAccount.id, note));
+                  }
+                : undefined
+            }
+          />
+        )
+      ) : null}
+
+      {selectedAccount && spec.id === "zcode" ? (
+        <ZcodeDrawer
+          account={selectedAccount}
+          lane={laneByLabel.get(labelOf(selectedAccount, spec.labelPrefix).toLowerCase()) ?? null}
+          onClose={() => setSelectedId(null)}
+          onRemove={async () => {
+            await remove(selectedAccount);
+          }}
+          onToggle={async (on) => {
+            await run(() => spec.api.setEnabled(selectedAccount.id, on));
+          }}
+          onUse={async () => {
+            await run(() => spec.api.setCurrent(labelOf(selectedAccount, spec.labelPrefix)));
+          }}
+          onNote={async (note) => {
+            if (spec.api.setNote) {
+              await run(() => spec.api.setNote!(selectedAccount.id, note));
+            }
+          }}
+        />
+      ) : null}
 
       {adding ? (
         <AddModal
@@ -460,7 +896,9 @@ function laneTag(c: GatewayCandidate | null, enabled: boolean) {
 function authMethodTag(method: string | null | undefined) {
   if (!method) return null;
   const m = method.toLowerCase();
-  if (m.includes("social") || m.includes("google") || m.includes("github")) return <Tag>社交登录</Tag>;
+  if (m.includes("google")) return <Tag>Google</Tag>;
+  if (m.includes("github")) return <Tag>GitHub</Tag>;
+  if (m.includes("social")) return <Tag>社交登录</Tag>;
   if (m.includes("builder") || m.includes("idc") || m.includes("sso")) return <Tag>Builder ID</Tag>;
   return <Tag>{method}</Tag>;
 }
@@ -603,7 +1041,7 @@ function AccountRow({
 
 type Mode = "oauth" | "cli" | "paste" | "apikey";
 
-function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void; onAdded: () => Promise<void> }) {
+export function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void; onAdded: () => Promise<void> }) {
   const canOauth = (!!spec.api.loginStart && !!spec.listen) || !!spec.prepareOauth;
   const canCli = !!spec.api.importLocal;
   const [mode, setMode] = useState<Mode>(canOauth ? "oauth" : canCli ? "cli" : "paste");
@@ -616,6 +1054,7 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
   const [pkceUrl, setPkceUrl] = useState<string | null>(null);
   const [pkceListening, setPkceListening] = useState(false);
   const [pkceId, setPkceId] = useState<string | null>(null);
+  const [oauthProvider, setOauthProvider] = useState<string>(spec.oauthProviders?.[0]?.id ?? "Google");
   const [backend, setBackend] = useState(spec.pasteBackends?.[0]?.id ?? "global");
   const [apiKey, setApiKey] = useState("");
   const [note, setNote] = useState("");
@@ -624,12 +1063,22 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
   handleRef.current = handle;
   const pkceRef = useRef<string | null>(null);
   pkceRef.current = pkceUrl;
+  const pkceIdRef = useRef<string | null>(null);
+  pkceIdRef.current = pkceId;
+  const onAddedRef = useRef(onAdded);
+  onAddedRef.current = onAdded;
 
   useEffect(() => {
     return () => {
-      if (pkceRef.current) void spec.api.loginCancel?.("");
+      if (spec.id === "kiro" && pkceIdRef.current) {
+        void kiro.socialCancel(pkceIdRef.current).catch(() => {});
+      } else if (pkceRef.current) {
+        void spec.api.loginCancel?.("");
+      }
+      const h = handleRef.current;
+      if (h) void spec.api.loginCancel?.(h.sessionId);
     };
-  }, [spec.api]);
+  }, [spec.api, spec.id]);
 
   useEffect(() => {
     const p = spec.probeLocal;
@@ -648,12 +1097,14 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
   useEffect(() => {
     if (!pkceListening || !pkceId) return;
     let unlisten: (() => void) | null = null;
-    void onClaudeLogin((st) => {
+    const listenPkce = spec.listenPkce ?? onClaudeLogin;
+    void listenPkce((st: any) => {
       if (st.sessionId !== pkceId) return;
       if (st.state === "waiting") setWaitSecs(st.elapsedSecs);
       if (st.state === "succeeded") {
         pkceRef.current = null;
-        void onAdded();
+        setWorking(true);
+        void onAddedRef.current();
       }
       if (st.state === "failed") {
         setError({ code: "upstream", message: st.message, hint: st.hint ?? undefined });
@@ -670,7 +1121,7 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
     return () => {
       unlisten?.();
     };
-  }, [onAdded, pkceId, pkceListening]);
+  }, [pkceId, pkceListening, spec.listenPkce]);
 
   useEffect(() => {
     const listen = spec.listen;
@@ -678,23 +1129,35 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
     let unlisten: (() => void) | null = null;
     void listen((st: DeviceLoginState) => {
       const h = handleRef.current;
-      if (!h || st.sessionId !== h.sessionId) return;
-      if (st.state === "waiting") setWaitSecs(st.elapsedSecs);
-      if (st.state === "succeeded") void onAdded();
-      if (st.state === "failed") {
-        setError({ code: "upstream", message: st.message, hint: st.hint ?? undefined });
-        setHandle(null);
+      if (h && st.sessionId === h.sessionId) {
+        if (st.state === "waiting") setWaitSecs(st.elapsedSecs);
+        if (st.state === "succeeded") {
+          handleRef.current = null;
+          void onAddedRef.current();
+        }
+        if (st.state === "failed") {
+          setError({ code: "upstream", message: st.message, hint: st.hint ?? undefined });
+          setHandle(null);
+        }
+        if (st.state === "cancelled") setHandle(null);
+      } else if (pkceRef.current && (st.sessionId === pkceIdRef.current || st.sessionId === "")) {
+        if (st.state === "succeeded") {
+          pkceRef.current = null;
+          setWorking(true);
+          void onAddedRef.current();
+        }
+        if (st.state === "failed") {
+          setError({ code: "upstream", message: st.message, hint: st.hint ?? undefined });
+          setWorking(false);
+        }
       }
-      if (st.state === "cancelled") setHandle(null);
     }).then((u) => {
       unlisten = u;
     });
     return () => {
       unlisten?.();
-      const h = handleRef.current;
-      if (h) void spec.api.loginCancel?.(h.sessionId);
     };
-  }, [onAdded, spec]);
+  }, [spec.listen]);
 
   async function go(action: () => Promise<unknown>) {
     setWorking(true);
@@ -720,6 +1183,42 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
           <button type="button" className="btn" onClick={onClose}>
             {handle || pkceUrl ? "关闭" : "取消"}
           </button>
+          {mode === "oauth" && !handle && spec.id === "kiro" && oauthProvider !== "builder-id" ? (
+            pkceUrl ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={working || !callback.trim()}
+                onClick={() =>
+                  void go(async () => {
+                    await kiro.socialComplete(pkceId ?? "", callback);
+                    pkceRef.current = null;
+                    await onAdded();
+                  })
+                }
+              >
+                {working ? <Spinner /> : null}
+                {working ? "正在完成授权…" : "完成授权"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={working}
+                onClick={() =>
+                  void go(async () => {
+                    const started = await kiro.socialStart(oauthProvider, note.trim() || undefined);
+                    setPkceUrl(started.authorizeUrl);
+                    setPkceId(started.sessionId);
+                    setPkceListening(false);
+                  })
+                }
+              >
+                {working ? <Spinner /> : <Icon name="external" size={13} />}
+                {working ? "正在启动授权…" : "打开浏览器授权"}
+              </button>
+            )
+          ) : null}
           {mode === "oauth" && !handle && spec.prepareOauth ? (
             pkceUrl && !pkceListening ? (
               <button
@@ -734,7 +1233,8 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
                   })
                 }
               >
-                完成授权
+                {working ? <Spinner /> : null}
+                {working ? "正在完成授权…" : "完成授权"}
               </button>
             ) : pkceUrl ? null : (
               <button
@@ -751,20 +1251,20 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
                   })
                 }
               >
-                <Icon name="external" size={13} />
-                打开浏览器授权
+                {working ? <Spinner /> : <Icon name="external" size={13} />}
+                {working ? "正在启动授权…" : "打开浏览器授权"}
               </button>
             )
           ) : null}
-          {mode === "oauth" && !handle && !spec.prepareOauth && spec.api.loginStart ? (
+          {mode === "oauth" && !handle && !spec.prepareOauth && (spec.id !== "kiro" || oauthProvider === "builder-id") && spec.api.loginStart ? (
             <button
               type="button"
               className="btn btn-primary"
               disabled={working}
               onClick={() => void go(async () => setHandle(await spec.api.loginStart!(note.trim() || undefined)))}
             >
-              <Icon name="external" size={13} />
-              打开浏览器授权
+              {working ? <Spinner /> : <Icon name="external" size={13} />}
+              {working ? "正在启动授权…" : "打开浏览器授权"}
             </button>
           ) : null}
           {mode === "cli" && spec.api.importLocal ? (
@@ -779,8 +1279,8 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
                 })
               }
             >
-              <Icon name="download" size={13} />
-              {spec.cliTab.replace("从本机 ", "从本机导入")}
+              {working ? <Spinner /> : <Icon name="download" size={13} />}
+              {working ? "正在导入并同步用量…" : spec.cliTab.replace("从本机 ", "从本机导入")}
             </button>
           ) : null}
           {mode === "paste" ? (
@@ -795,7 +1295,8 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
                 })
               }
             >
-              导入
+              {working ? <Spinner /> : null}
+              {working ? "正在校验导入…" : "导入"}
             </button>
           ) : null}
           {mode === "apikey" && spec.api.addApiKey ? (
@@ -852,10 +1353,13 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
             {pkceUrl ? (
               pkceListening ? (
                 <>
-                  <p className="muted" style={{ margin: 0 }}>
-                    {spec.waitingHint}
-                    {waitSecs > 0 ? <span className="faint tiny">（已等待 {waitSecs} 秒）</span> : null}
-                  </p>
+                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                    <Spinner />
+                    <p className="muted" style={{ margin: 0 }}>
+                      {spec.waitingHint}
+                      {waitSecs > 0 ? <span className="faint tiny">（已等待 {waitSecs} 秒）</span> : null}
+                    </p>
+                  </div>
                   <div className="row" style={{ gap: 6 }}>
                     <span className="faint tiny">没自动打开？</span>
                     <CopyButton value={pkceUrl} label="复制授权链接" />
@@ -903,8 +1407,89 @@ function AddModal({ spec, onClose, onAdded }: { spec: Spec; onClose: () => void;
                 <CopyButton value={handle.authorizeUrl} label="复制授权链接" />
               </div>
             </div>
+          ) : pkceUrl ? (
+            <div className="stack" style={{ gap: 12 }}>
+              <div className="row" style={{ gap: 10, alignItems: "center" }}>
+                <Spinner />
+                <div>
+                  <p style={{ margin: 0, fontWeight: 550, fontSize: 13 }}>
+                    正在等待浏览器完成 {oauthProvider === "Github" ? "GitHub" : "Google"} 授权…
+                  </p>
+                  <p className="faint tiny" style={{ margin: "2px 0 0" }}>
+                    授权成功后浏览器提示“打开 Nexus”时点击确认，系统将全自动完成绑定。
+                  </p>
+                </div>
+              </div>
+              <div
+                style={{
+                  padding: "9px 12px",
+                  background: "var(--color-canvas)",
+                  border: "1px solid var(--color-line)",
+                  borderRadius: 6,
+                }}
+              >
+                <p className="muted tiny" style={{ margin: 0, lineHeight: 1.5 }}>
+                  <strong>自动授权：</strong>浏览器登录后若弹出“要打开 Nexus 吗？”，请点击<strong>「打开 Nexus」</strong>。<br />
+                  <strong>备用方式：</strong>若未自动打开，可复制浏览器跳转后地址栏中的链接粘贴到下方：
+                </p>
+              </div>
+              <textarea
+                className="textarea mono"
+                rows={2}
+                placeholder="kiro://kiro.kiroAgent/authenticate-success?code=…&state=…"
+                value={callback}
+                onChange={(e) => setCallback(e.target.value)}
+                spellCheck={false}
+              />
+              <div className="row" style={{ gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+                <div className="row" style={{ gap: 6 }}>
+                  <span className="faint tiny">没自动打开浏览器？</span>
+                  <CopyButton value={pkceUrl} label="复制授权链接" />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      if (text) setCallback(text.trim());
+                    } catch {}
+                  }}
+                >
+                  <Icon name="copy" size={12} />
+                  从剪贴板粘贴
+                </button>
+              </div>
+            </div>
           ) : (
             <div className="stack" style={{ gap: 10 }}>
+              {spec.oauthProviders ? (
+                <div className="stack" style={{ gap: 6 }}>
+                  <label className="muted tiny" style={{ fontWeight: 500 }}>
+                    授权渠道
+                  </label>
+                  <div className="gwset-options" role="radiogroup" aria-label="授权渠道">
+                    {spec.oauthProviders.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={oauthProvider === p.id}
+                        className={`gwset-option${oauthProvider === p.id ? " is-active" : ""}`}
+                        disabled={working}
+                        onClick={() => setOauthProvider(p.id)}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                  {spec.oauthProviders.find((p) => p.id === oauthProvider)?.desc ? (
+                    <span className="faint tiny">
+                      {spec.oauthProviders.find((p) => p.id === oauthProvider)?.desc}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
               <p className="muted" style={{ margin: 0 }}>
                 {spec.oauthHint}
               </p>

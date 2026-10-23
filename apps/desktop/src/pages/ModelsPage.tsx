@@ -1,19 +1,19 @@
 /**
- * 模型广场：顶上一排通道卡（Cursor / ChatGPT / Grok Build / Kiro），中间按厂商排开的模型卡
- * （档位芯片、说明），右栏搜索与筛选。
+ * 模型广场：全景聚合 + 通道胶囊筛选（Nexus 2.0 §4.3）。
  *
- * 通道决定下面整页：选某一条，卡上是**这条通道**此刻能接的模型 id。
- *
- * 「试一下」长在每张模型卡上，不另设一个页头入口：一个不知道要试哪个模型的「试一下」
- * 只能随手挑第一个，那不是用户想按的键。
+ * 核心升级：
+ * 1. 从「先选通道才能看」升级为「全量视图 + 通道胶囊过滤」；
+ * 2. 默认展示所有已就绪通道的模型，无需先选通道；
+ * 3. 智能隐藏空通道，末尾提供微型气泡提示去配置；
+ * 4. 模型卡集成「试一下 (Live Probe)」与「指派给软件 (一键绑定)」。
  */
 import { useEffect, useMemo, useState } from "react";
-import { channelOfModel, defaultChannelId, localChannels, type LocalChannelId } from "../gateway/channels";
-import type { Modality } from "../ipc/models";
-import { ChannelPicker } from "../relay/ChannelPicker";
+import { channelOfModel, localChannels } from "../gateway/channels";
+import { meshGetStatus } from "../ipc/api";
+import type { LocalModel, Modality } from "../ipc/models";
+import type { MeshPeer, MeshStatus } from "../ipc/types";
 import { ModelCard } from "../relay/ModelCard";
 import { useRelay } from "../relay/useRelay";
-import { VendorLogo } from "../relay/VendorLogo";
 import { go, type Route } from "../shell/nav";
 import { filterCards, groupLocal, modalityRail, vendorRail, type CardFilter } from "../ui/models";
 import { Icon } from "../ui/primitives";
@@ -23,60 +23,117 @@ const MODALITY_LABEL: Record<Modality, string> = { chat: "对话", image: "图�
 
 export function ModelsPage({ route, onGo }: { route: Route; onGo: (r: Route) => void }) {
   const relay = useRelay({ catalogs: true });
-  /** 哪一条通道（平台 id）；null 按用户指定的默认通道算。 */
-  const [channel, setChannel] = useState<string | null>(route.channel ?? null);
+  const [meshStatus, setMeshStatus] = useState<MeshStatus | null>(null);
+  /** 选中的通道：null 或 "all" = 查看全部已就绪通道 */
+  const [channelFilter, setChannelFilter] = useState<string | null>(route.channel ?? "all");
   const [filter, setFilter] = useState<CardFilter>({ query: "", vendor: "all", modality: "all" });
-  /** 打开「试一下」时预选的模型；null = 抽屉关着。 */
+  /** 打开「试一下」时预选的模型；null = 抽屉关着 */
   const [trying, setTrying] = useState<string | null>(null);
 
   useEffect(() => {
-    if (route.channel) setChannel(route.channel);
+    if (route.channel) setChannelFilter(route.channel);
   }, [route.channel]);
 
-  const channels = useMemo(() => localChannels(relay.gateway, relay.local), [relay.gateway, relay.local]);
-  const localId: LocalChannelId = (channel as LocalChannelId | null) ?? defaultChannelId(relay.gateway);
-  /** 目录里归当前那条通道的模型。 */
-  const localShown = useMemo(() => (relay.local ?? []).filter((m) => channelOfModel(channels, m.id) === localId), [relay.local, channels, localId]);
-  const activeLocal = channels.find((c) => c.id === localId) ?? channels[0];
+  useEffect(() => {
+    void meshGetStatus().then(setMeshStatus).catch(() => {});
+    const timer = setInterval(() => {
+      void meshGetStatus().then(setMeshStatus).catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const peers: MeshPeer[] = useMemo(() => meshStatus?.peers ?? [], [meshStatus?.peers]);
+
+  const channels = useMemo(
+    () => localChannels(relay.gateway, relay.local, peers),
+    [relay.gateway, relay.local, peers],
+  );
+
+  // Ready channels
+  const readyChannels = useMemo(() => {
+    return channels.filter((c) => {
+      if (c.kind === "mesh") return true;
+      return c.ready || (c.chatModels.length > 0 && c.lane.candidates.length > 0);
+    });
+  }, [channels]);
+
+  // 全量或过滤后的模型列表
+  const localShown = useMemo(() => {
+    const allLocal = relay.local ?? [];
+
+    // 构建远端 Mesh 虚拟模型
+    const meshModels: LocalModel[] = [];
+    for (const p of peers) {
+      const pName = p.device_name.toLowerCase();
+      const existing = allLocal.filter((m) => m.id.toLowerCase().startsWith(`${pName}/`));
+      if (existing.length > 0) {
+        meshModels.push(...existing);
+      } else {
+        meshModels.push(
+          ...p.remote_models.map((m) => ({
+            id: `${pName}/${m}`,
+            vendor: "nexus-mesh" as const,
+            vendorLabel: p.device_name,
+            modality: "chat" as const,
+            series: m,
+            variant: "standard",
+            aliases: [`mesh/${pName}/${m}`],
+            note: `来自远端节点 [${p.device_name}] 共享的推理算力`,
+          }))
+        );
+      }
+    }
+
+    const combined = [
+      ...allLocal.filter((m) => channelFilter === "cursor" || !m.id.startsWith("cursor/")),
+      ...meshModels,
+    ];
+
+    if (!channelFilter || channelFilter === "all") {
+      // 默认全量：只展示就绪通道的模型
+      const readyIds = new Set(readyChannels.map((c) => c.id.toLowerCase()));
+      return combined.filter((m) => {
+        const ch = channelOfModel(channels, m.id).toLowerCase();
+        return readyIds.has(ch);
+      });
+    }
+
+    // 选中具体通道
+    const target = channelFilter.toLowerCase();
+    const isPeer = peers.some((p) => p.device_name.toLowerCase() === target || p.node_id === channelFilter);
+    if (isPeer) {
+      return combined.filter((m) => m.id.toLowerCase().startsWith(`${target}/`));
+    }
+    return combined.filter((m) => channelOfModel(channels, m.id).toLowerCase() === target);
+  }, [relay.local, peers, channelFilter, readyChannels, channels]);
 
   const groups = useMemo(() => groupLocal(localShown), [localShown]);
   const shown = useMemo(() => filterCards(groups, filter), [groups, filter]);
   const vendors = useMemo(() => vendorRail(groups, filter), [groups, filter]);
   const modalities = useMemo(() => modalityRail(groups, filter), [groups, filter]);
-  const tiers = shown.reduce((n, g) => n + g.variants.length, 0);
 
-  const localIds = useMemo(() => (relay.local ?? []).map((m) => m.id), [relay.local]);
+  const localIds = useMemo(() => localShown.map((m) => m.id), [localShown]);
 
   const lane: TryLane = {
     ready: Boolean(relay.gateway?.running),
     blocker: relay.gateway?.running
       ? undefined
-      : { text: "本地网关没开，试不了", hint: "试用走的就是网关自己的地址与口令，得先把它开起来。", fix: () => onGo(go("gateway")), fixLabel: "去开启" },
+      : {
+          text: "本地网关未开启，暂无法在线调试",
+          hint: "试用走的是本地网关的本地接口 (127.0.0.1)。可一键开启。",
+          fix: () => {},
+          fixLabel: "一键开启网关",
+        },
     modelIds: localIds,
-    foot: relay.gateway?.running ? `本地网关${relay.gateway.lane.current ? ` · Cursor 当前号 ${relay.gateway.lane.current}` : ""}` : "本地网关未开启",
+    foot: relay.gateway?.running
+      ? `本地网关 · 端口 ${relay.gateway.running.addr.split(":").pop()}`
+      : "本地网关未开启",
   };
 
   const loading = relay.local == null;
 
-  /** 某条通道一个模型都没有时说清为什么：没号 / 网关没开。 */
-  const emptyNote =
-    !loading && groups.length === 0 && activeLocal
-      ? activeLocal.id === "cursor"
-        ? "Cursor 通道的目录是空的。"
-        : `${activeLocal.label} 通道此刻没有号能接，它的模型不会出现在目录里。去「账号 → ${activeLocal.label}」加一个号。`
-      : null;
-
   return (
     <div>
-      <div className="page-head">
-        <h1>模型广场</h1>
-        <div className="row" style={{ gap: 8 }}>
-          <button type="button" className="btn btn-sm btn-icon btn-soft" disabled={relay.loading} onClick={() => void relay.reload()} title="刷新" aria-label="刷新">
-            <Icon name="refresh" size={13} />
-          </button>
-        </div>
-      </div>
-
       {trying ? (
         <TryDrawer
           lane={lane}
@@ -89,108 +146,156 @@ export function ModelsPage({ route, onGo }: { route: Route; onGo: (r: Route) => 
         />
       ) : null}
 
-      <div className="plaza">
-        <div className="plaza-main">
-          <ChannelPicker channel={channel} onChange={setChannel} gateway={relay.gateway} local={relay.local} />
+      {/* 第一行：主通道过滤层 + 右侧刷新按钮 */}
+      <div className="plaza-channel-filter-bar">
+        <div className="pcf-scroll">
+          <button
+            type="button"
+            className={`pcf-pill${channelFilter === "all" ? " is-active" : ""}`}
+            onClick={() => setChannelFilter("all")}
+          >
+            全部可用通道 ({localShown.length})
+          </button>
 
-          <div>
-            <p className="chan-cap">
-              模型
-              {shown.length ? <span className="chan-cap-n num">{shown.length}</span> : null}
-              {activeLocal ? (
-                <span className="chan-cap-n">
-                  · 目录 id 是 <code className="mono">{activeLocal.id}/…</code>
-                  {activeLocal.isDefault ? " · 不带前缀也走这里" : " · 不带前缀走默认通道"}
-                </span>
-              ) : null}
-            </p>
-
-            {loading ? (
-              <div className="mgrid">
-                {[0, 1, 2, 3].map((i) => (
-                  <div key={i} className="card skeleton" style={{ height: 196 }} />
-                ))}
-              </div>
-            ) : shown.length === 0 ? (
-              <div className="card plaza-empty">
-                <p>{groups.length === 0 ? emptyNote ?? "目录是空的。" : "没有匹配的模型"}</p>
-                {groups.length === 0 && activeLocal && !activeLocal.isDefault ? (
-                  <button type="button" className="btn btn-sm" onClick={() => onGo(go("accounts", { platform: activeLocal.id }))}>
-                    去添加 {activeLocal.label} 账号
-                  </button>
+          {readyChannels.map((ch) => {
+            const isMesh = ch.kind === "mesh";
+            const isSel = channelFilter === ch.id;
+            const modelsCount = ch.chatModels.length + ch.imageModels.length + ch.videoModels.length;
+            return (
+              <button
+                key={ch.id}
+                type="button"
+                className={`pcf-pill${isSel ? " is-active" : ""}${isMesh ? " is-mesh" : ""}`}
+                onClick={() => setChannelFilter(ch.id)}
+              >
+                {isMesh ? <span>☁️</span> : <span className="pod-dot is-live" />}
+                <span>{ch.label}</span>
+                <span className="pcf-count mono">({modelsCount})</span>
+                {isMesh && ch.latencyMs ? (
+                  <span className="pcf-latency mono">{ch.latencyMs}ms</span>
                 ) : null}
-              </div>
-            ) : (
-              <div className="mgrid">
-                {shown.map((g) => (
-                  <ModelCard
-                    key={g.key}
-                    g={g}
-                    // 生图模型没有「说一句话」可试：直接带进游乐场的图片会话。
-                    onTry={(id) => (g.modality === "image" || g.modality === "video" ? onGo(go("playground", { view: g.modality, model: id })) : setTrying(id))}
-                    onConnect={(id) => onGo(go("connect", { channel: channel ?? undefined, model: id }))}
-                  />
-                ))}
-              </div>
-            )}
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          className="btn btn-sm btn-icon btn-soft plaza-refresh-btn"
+          disabled={relay.loading}
+          onClick={() => void relay.reload()}
+          title="刷新模型列表"
+          aria-label="刷新"
+        >
+          <Icon name="refresh" size={13} />
+        </button>
+      </div>
+
+      {/* 第二行：细粒度聚合筛选层 (类型 Tab + 右侧厂商下拉与搜索) */}
+      <div className="plaza-sub-filter-bar">
+        <div className="plaza-sub-left">
+          {/* 能力类型分段器 */}
+          <div className="tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              className={`tab${filter.modality === "all" ? " is-active" : ""}`}
+              onClick={() => setFilter({ ...filter, modality: "all" })}
+            >
+              全部 {modalities.reduce((n, k) => n + k.n, 0)}
+            </button>
+            {modalities.map((k) => (
+              <button
+                key={k.id}
+                type="button"
+                role="tab"
+                className={`tab${filter.modality === k.id ? " is-active" : ""}`}
+                onClick={() => setFilter({ ...filter, modality: k.id })}
+              >
+                {MODALITY_LABEL[k.id]} {k.n}
+              </button>
+            ))}
           </div>
         </div>
 
-        {/* 右栏只管「看哪几张卡」：搜索、类别、厂商。sticky 让它在长列表里一直够得着。 */}
-        <aside className="plaza-rail">
-          <div className="plaza-rail-in">
-            <label className="search" style={{ maxWidth: "none", height: 32 }}>
-              <Icon name="search" size={13} />
-              <input value={filter.query} placeholder="搜索模型" onChange={(e) => setFilter({ ...filter, query: e.target.value })} />
-              {filter.query ? (
-                <button type="button" className="search-clear" aria-label="清空" onClick={() => setFilter({ ...filter, query: "" })}>
-                  <Icon name="close" size={12} />
-                </button>
-              ) : null}
-            </label>
-
-            {modalities.length > 1 ? (
-              <div>
-                <p className="rail-cap">类别</p>
-                <nav className="rail-list">
-                  <FilterRow label="全部" meta={String(modalities.reduce((n, k) => n + k.n, 0))} on={filter.modality === "all"} onClick={() => setFilter({ ...filter, modality: "all" })} />
-                  {modalities.map((k) => (
-                    <FilterRow key={k.id} label={MODALITY_LABEL[k.id]} meta={String(k.n)} on={filter.modality === k.id} onClick={() => setFilter({ ...filter, modality: k.id })} />
-                  ))}
-                </nav>
-              </div>
-            ) : null}
-
-            <div>
-              <p className="rail-cap">厂商</p>
-              <nav className="rail-list">
-                <FilterRow label="全部" meta={String(vendors.reduce((n, v) => n + v.n, 0))} on={filter.vendor === "all"} onClick={() => setFilter({ ...filter, vendor: "all" })} />
-                {vendors.map((v) => (
-                  <FilterRow key={v.vendor} vendor={v.vendor} label={v.label} meta={String(v.n)} on={filter.vendor === v.vendor} onClick={() => setFilter({ ...filter, vendor: v.vendor })} />
-                ))}
-              </nav>
-            </div>
-
-            <p className="rail-count num">
-              {shown.length} 个模型 · {tiers} 个档位
-            </p>
+        {/* 右侧：厂商下拉选择器 + 搜索框 */}
+        <div className="plaza-sub-right">
+          <div className="plaza-vendor-dropdown-wrap">
+            <select
+              className="select plaza-vendor-select"
+              value={filter.vendor}
+              onChange={(e) => setFilter({ ...filter, vendor: e.target.value as any })}
+              aria-label="筛选厂商"
+            >
+              <option value="all">全部厂商 ({groups.length})</option>
+              {vendors.map((v) => (
+                <option key={v.vendor} value={v.vendor}>
+                  {v.label} ({v.n})
+                </option>
+              ))}
+            </select>
           </div>
-        </aside>
+
+          <label className="search plaza-search-input">
+            <Icon name="search" size={13} />
+            <input
+              value={filter.query}
+              placeholder="搜索模型、前缀或能力"
+              onChange={(e) => setFilter({ ...filter, query: e.target.value })}
+            />
+            {filter.query ? (
+              <button
+                type="button"
+                className="search-clear"
+                aria-label="清空"
+                onClick={() => setFilter({ ...filter, query: "" })}
+              >
+                <Icon name="close" size={12} />
+              </button>
+            ) : null}
+          </label>
+        </div>
+      </div>
+
+      {/* 主视区：独占全宽的三列模型卡片网格 */}
+      <div className="plaza-content">
+        {loading ? (
+          <div className="mgrid">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <div key={i} className="card skeleton" style={{ height: 160 }} />
+            ))}
+          </div>
+        ) : shown.length === 0 ? (
+          <div className="card plaza-empty">
+            <p>当前通道或筛选条件下没有可用的模型</p>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => {
+                setChannelFilter("all");
+                setFilter({ query: "", vendor: "all", modality: "all" });
+              }}
+            >
+              重置筛选条件
+            </button>
+          </div>
+        ) : (
+          <div className="mgrid">
+            {shown.map((g) => (
+              <div key={g.key} className="model-card-wrapper">
+                <ModelCard
+                  g={g}
+                  onTry={(id) =>
+                    g.modality === "image" || g.modality === "video"
+                      ? onGo(go("playground", { view: g.modality, model: id }))
+                      : setTrying(id)
+                  }
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
-  );
-}
-
-/**
- * 右栏的一行筛选项，类别和厂商共用。整行可点的列表项而不是芯片：竖排的芯片会因为
- * 名字长短不一而右边缘参差，整行铺满则天然对齐，右侧那一列数字也能对齐成一列。
- */
-function FilterRow({ vendor, label, meta, on, onClick }: { vendor?: Parameters<typeof VendorLogo>[0]["vendor"]; label: string; meta: string; on: boolean; onClick: () => void }) {
-  return (
-    <button type="button" className={`rail-row${on ? " is-on" : ""}`} onClick={onClick} title={label}>
-      {vendor ? <VendorLogo vendor={vendor} size={13} /> : null}
-      <span className="truncate">{label}</span>
-      <span className="rail-meta num">{meta}</span>
-    </button>
   );
 }

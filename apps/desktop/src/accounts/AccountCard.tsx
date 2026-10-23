@@ -5,7 +5,7 @@ import {
   chatgptProblem,
   chatgptRailTone,
   chatgptSubscriptionText,
-  chatgptTrafficText,
+  chatgptUsable,
   chatgptWindowViews,
   planClass,
 } from "../pages/accounts/chatgpt";
@@ -13,7 +13,6 @@ import {
   AccountLine,
   AccountResets,
   AccountSpend,
-  FootResets,
   QuotaBlank,
   QuotaRows,
   QuotaStrip,
@@ -21,6 +20,7 @@ import {
   type RailTone,
 } from "../ui/AccountLine";
 import { timeAgo } from "../ui/format";
+import { VendorLogo } from "../relay/VendorLogo";
 import {
   accountProblem,
   creditPoints,
@@ -143,8 +143,7 @@ function CursorAccountCard({
     </div>
   ) : (
     <div className="acct-empty-state">
-      <span className="acct-empty-title">尚未获取用量</span>
-      <span className="acct-empty-hint">点击刷新拉取最新额度与账期</span>
+      <span className="acct-empty-title">尚未同步用量</span>
     </div>
   );
 
@@ -226,15 +225,45 @@ function ChatGptAccountCard({
   const problem = chatgptProblem(managed);
   const defaultNote = problem ? (
     <span className="acct-problem">{problem.label}</span>
-  ) : managed.lastError ? (
+  ) : managed.status !== "active" && managed.lastError ? (
     <span className="acct-problem">{managed.lastError}</span>
   ) : null;
   const plan = chatgptPlanLabel(view.membership);
   const planCls = planClass(view.membership);
   const org = chatgptOrgLabel(managed.organizationTitle);
-  const traffic = chatgptTrafficText(managed.traffic);
   const remain = chatgptSubscriptionText(managed.billing);
-  const spend = [remain, traffic].filter(Boolean).join(" · ");
+  const footSpend = remain ? (
+    <span className="qf-meta">
+      <span>{remain}</span>
+      <i className="qf-sep">·</i>
+      <span className="qf-stamp">{timeAgo(managed.createdAt)}添加</span>
+    </span>
+  ) : (
+    <span className="qf-meta">
+      <span className="qf-stamp">{timeAgo(managed.createdAt)}添加</span>
+    </span>
+  );
+
+  const needsLogin = !chatgptUsable(managed);
+  const alertBanner = needsLogin ? (
+    <div className="acct-alert danger">
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+        <circle cx="12" cy="12" r="10" />
+        <path d="M12 8v4M12 16h.01" />
+      </svg>
+      <span>{problem?.label || managed.lastError || "需要重新授权"}</span>
+      <button
+        type="button"
+        className="act"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen?.();
+        }}
+      >
+        去授权
+      </button>
+    </div>
+  ) : null;
 
   return (
     <AccountLine
@@ -245,30 +274,18 @@ function ChatGptAccountCard({
       onOpen={onOpen}
       openLabel={onOpen ? `查看 ${view.label} 的账号详情` : undefined}
       title={view.label}
+      alert={alertBanner}
       badges={
         <>
+          <VendorLogo vendor="openai" size={14} />
           {plan && planCls ? <span className={planCls}>{plan}</span> : null}
           {org !== "个人账户" ? <span className="plan">{org}</span> : null}
           {badges}
         </>
       }
-      note={note ?? defaultNote}
+      note={note ?? (needsLogin ? null : defaultNote)}
       quota={<AccountUsage usage={view.usage} />}
-      resets={
-        usage ? (
-          <FootResets
-            items={chatgptWindowViews(usage)
-              .filter((w) => w.resetAt)
-              .slice(0, 3)
-              .map((w) => ({ label: w.label, at: w.resetAt }))}
-          />
-        ) : null
-      }
-      spend={
-        spend ? (
-          <span title={traffic ? "订阅剩余来自 accounts/check；次数只算本机网关" : undefined}>{spend}</span>
-        ) : null
-      }
+      spend={footSpend}
       stamp={usage ? `${timeAgo(usage.checkedAt)}更新` : null}
       actions={actions}
     />

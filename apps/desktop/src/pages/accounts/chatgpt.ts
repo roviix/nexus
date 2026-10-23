@@ -14,6 +14,7 @@ import type {
 } from "../../ipc/types";
 import { compactNumber } from "../../ui/traffic";
 import type { RailTone } from "../../ui/AccountLine";
+import { resetInShort } from "../../ui/usage";
 
 /** 给人看的名字：邮箱；没有就用 chatgpt_account_id 的尾巴（纯 access_token 导入时读不到邮箱）。 */
 export function labelOf(a: Pick<ChatGptAccount, "email" | "accountRef">): string {
@@ -220,6 +221,7 @@ export interface ChatGptWindowView {
   hint: string;
   percent: number | null;
   resetAt: number | null;
+  resetText?: string | null;
   group: string;
 }
 
@@ -252,12 +254,14 @@ function extraViews(bucket: ChatGptRateLimitBucket, i: number): ChatGptWindowVie
 }
 
 function windowView(key: string, w: ChatGptUsageWindow | null, label: string, group: string): ChatGptWindowView {
+  const resetText = w?.resetAtMs ? resetInShort(w.resetAtMs) : null;
   return {
     key,
     label,
-    hint: w?.resetAtMs != null ? `${label} · 到点重置` : `${label}已用比例`,
+    hint: resetText ? `${label} · ${resetText}` : `${label}已用比例`,
     percent: w?.usedPercent ?? null,
     resetAt: w?.resetAtMs ?? null,
+    resetText,
     group,
   };
 }

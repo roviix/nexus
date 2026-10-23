@@ -92,3 +92,27 @@ pub async fn crsr_mint_for_account(
 pub fn crsr_clear_credential(state: State<'_, AppState>) -> Result<()> {
     state.crsr.clear_credential()
 }
+
+#[tauri::command(async)]
+pub fn crsr_set_gateway_url(
+    state: State<'_, AppState>,
+    gateway_url: Option<String>,
+) -> Result<Option<CrsrCredentialInfo>> {
+    state.crsr.set_gateway_url(gateway_url)
+}
+
+/// 把扩展自定义模型写入 Cursor 的 `state.vscdb`，使其直接出现在 Cursor 界面模型选择器下拉中。
+#[tauri::command(async)]
+pub fn crsr_sync_custom_model(state: State<'_, AppState>, model: String) -> Result<bool> {
+    let state_db = nexus_cursor::StateDb::new(&state.switcher.cursor().paths.state_db);
+    state_db.add_custom_model(&model)
+}
+
+/// 读取当前 Cursor 库中已添加的扩展模型列表。
+#[tauri::command(async)]
+pub fn crsr_get_custom_models(state: State<'_, AppState>) -> Result<Vec<String>> {
+    let state_db = nexus_cursor::StateDb::new(&state.switcher.cursor().paths.state_db);
+    state_db.read_custom_models()
+}
+
+

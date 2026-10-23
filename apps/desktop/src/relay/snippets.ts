@@ -188,6 +188,8 @@ export function claudeSettings(ep: Endpoint, key: string, route: ClientRoute): s
         ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: roleModel(route, "haiku"),
         ANTHROPIC_DEFAULT_FABLE_MODEL: slot("fable"),
         ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: roleModel(route, "fable"),
+        // 429 防限频与长会话优化：长上下文提前 75% 自动压缩，防止超长上下文消耗单次巨大 Token 并发
+        CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: "75",
       },
     },
     null,

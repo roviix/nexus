@@ -42,7 +42,7 @@ export function ThreadRail({
       <div className="pg-rail-head">
         <div className="pg-rail-cap">
           <span className="eyebrow" style={{ margin: 0 }}>
-            {kind === "chat" ? "对话" : "图片"}
+            {kind === "chat" ? "对话" : kind === "video" ? "视频" : "生图"}
           </span>
           {threads?.length ? <span className="pg-rail-n num">{threads.length}</span> : null}
           <span className="grow" />
@@ -50,15 +50,20 @@ export function ThreadRail({
             type="button"
             className={`pg-new${selectedId == null ? " is-on" : ""}`}
             onClick={onNew}
-            title={kind === "chat" ? "新对话" : "新图片"}
-            aria-label={kind === "chat" ? "新对话" : "新图片"}
+            title={kind === "chat" ? "新对话" : kind === "video" ? "新视频" : "新生图"}
+            aria-label={kind === "chat" ? "新对话" : kind === "video" ? "新视频" : "新生图"}
           >
             <Icon name="plus" size={14} />
           </button>
         </div>
         <label className="pg-search">
           <Icon name="search" size={13} className="pg-search-ico" />
-          <input value={q} placeholder={kind === "chat" ? "搜索对话" : "搜索图片会话"} spellCheck={false} onChange={(e) => setQ(e.target.value)} />
+          <input
+            value={q}
+            placeholder={kind === "chat" ? "搜索对话" : kind === "video" ? "搜索视频" : "搜索生图"}
+            spellCheck={false}
+            onChange={(e) => setQ(e.target.value)}
+          />
           {q ? (
             <button type="button" className="pg-search-x" aria-label="清空" onClick={() => setQ("")}>
               <Icon name="close" size={11} />
@@ -67,7 +72,7 @@ export function ThreadRail({
         </label>
       </div>
 
-      <div className="pg-rail-list" role="listbox" aria-label={kind === "chat" ? "对话列表" : "图片会话列表"}>
+      <div className="pg-rail-list" role="listbox" aria-label={kind === "chat" ? "对话列表" : kind === "video" ? "视频列表" : "生图列表"}>
         {threads == null ? (
           <>
             <div className="skeleton pg-row-skeleton" />
@@ -75,7 +80,15 @@ export function ThreadRail({
             <div className="skeleton pg-row-skeleton" />
           </>
         ) : shown.length === 0 ? (
-          <p className="pg-rail-empty">{q ? "没有匹配的会话" : kind === "chat" ? "还没有对话，右边说一句就开始了。" : "还没有出过图，右边描述一下画面。"}</p>
+          <p className="pg-rail-empty">
+            {q
+              ? "没有匹配的会话"
+              : kind === "chat"
+                ? "还没有对话，右边说一句就开始了。"
+                : kind === "video"
+                  ? "还没有生成过视频，右边输入提示词生成。"
+                  : "还没有出过图，右边描述一下画面。"}
+          </p>
         ) : (
           shown.map((t) => <Row key={t.id} t={t} on={t.id === selectedId} onSelect={() => onSelect(t.id)} onDelete={() => onDelete(t.id)} />)
         )}

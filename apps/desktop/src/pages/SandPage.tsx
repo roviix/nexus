@@ -255,6 +255,14 @@ export function SandPage({ onGo, embedded = false }: { onGo: (r: Route) => void;
 
       <ErrorNote error={error} onRetry={() => void reload()} />
 
+      <div style={{ marginBottom: 12 }}>
+        <Banner
+          tone="warn"
+          title="Sand 对 Cursor 0.65 的适配仍是实验性功能。"
+          hint="锚点、写盘校验和回滚已覆盖，但当前 Agent 面板的完整端到端流程尚未复验；主力环境先不要启用，试用前保留页面显示的自动备份。"
+        />
+      </div>
+
       {!status ? (
         <div className="skeleton" style={{ height: 96 }} />
       ) : (

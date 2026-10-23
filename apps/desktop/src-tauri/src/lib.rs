@@ -8,7 +8,7 @@ mod state;
 
 use nexus_store::activity;
 use state::AppState;
-use tauri::Manager;
+use tauri::{Emitter, Manager, State};
 
 /// 活动日志保留条数。启动时裁一次，日志不会无限长。
 const ACTIVITY_KEEP: u32 = 2000;
@@ -82,8 +82,90 @@ fn install_panic_hook(log_dir: std::path::PathBuf) {
     }));
 }
 
+#[cfg(target_os = "macos")]
+fn init_macos_proxy() {
+    let has_env = std::env::var("https_proxy").is_ok()
+        || std::env::var("HTTPS_PROXY").is_ok()
+        || std::env::var("all_proxy").is_ok()
+        || std::env::var("ALL_PROXY").is_ok()
+        || std::env::var("http_proxy").is_ok()
+        || std::env::var("HTTP_PROXY").is_ok();
+    if has_env {
+        return;
+    }
+    if let Ok(out) = std::process::Command::new("/usr/sbin/scutil").arg("--proxy").output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let is_https = s.contains("HTTPSEnable : 1") || s.contains("HTTPEnable : 1");
+            let is_socks = s.contains("SOCKSEnable : 1");
+            let extract = |k: &str| -> Option<String> {
+                for line in s.lines() {
+                    let t = line.trim();
+                    if t.starts_with(k) {
+                        if let Some((_, v)) = t.split_once(':') {
+                            let val = v.trim();
+                            if !val.is_empty() {
+                                return Some(val.to_string());
+                            }
+                        }
+                    }
+                }
+                None
+            };
+            if is_https {
+                let host = extract("HTTPSProxy").or_else(|| extract("HTTPProxy"));
+                let port = extract("HTTPSPort").or_else(|| extract("HTTPPort"));
+                if let (Some(h), Some(p)) = (host, port) {
+                    let url = format!("http://{h}:{p}");
+                    std::env::set_var("https_proxy", &url);
+                    std::env::set_var("http_proxy", &url);
+                    std::env::set_var("all_proxy", &url);
+                }
+            } else if is_socks {
+                let host = extract("SOCKSProxy");
+                let port = extract("SOCKSPort");
+                if let (Some(h), Some(p)) = (host, port) {
+                    let url = format!("socks5://{h}:{p}");
+                    std::env::set_var("https_proxy", &url);
+                    std::env::set_var("http_proxy", &url);
+                    std::env::set_var("all_proxy", &url);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn register_macos_kiro_scheme() {
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSSetDefaultHandlerForURLScheme(
+            scheme: core_foundation::string::CFStringRef,
+            bundle_id: core_foundation::string::CFStringRef,
+        ) -> i32;
+    }
+    use core_foundation::base::TCFType;
+    use core_foundation::string::CFString;
+    let scheme = CFString::new("kiro");
+    let bundle_id = CFString::new("com.roviix.nexus");
+    unsafe {
+        let res = LSSetDefaultHandlerForURLScheme(
+            scheme.as_concrete_TypeRef(),
+            bundle_id.as_concrete_TypeRef(),
+        );
+        if res == 0 {
+            tracing::info!("已将 com.roviix.nexus 注册为 kiro:// 默认处理程序");
+        } else {
+            tracing::warn!(res, "注册 kiro:// 默认处理程序返回非零");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    init_macos_proxy();
+
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
@@ -137,6 +219,7 @@ pub fn run() {
             // `RemoteSandHub::restore_tunnels`。
             let sand_remote = state.sand_remote.clone();
             let db = state.db.clone();
+            let mesh = state.mesh.clone();
             app.manage(state);
             if autostart {
                 tauri::async_runtime::spawn(async move {
@@ -146,10 +229,66 @@ pub fn run() {
                 });
             }
             tauri::async_runtime::spawn(async move {
+                mesh.ensure_worker_started().await;
+            });
+            tauri::async_runtime::spawn(async move {
                 for host in sand_remote.restore_tunnels().await {
                     activity::info(&db, "sand", None, format!("已恢复到 {host} 的隧道"));
                 }
             });
+
+            #[cfg(target_os = "macos")]
+            register_macos_kiro_scheme();
+
+            let app_handle = app.handle().clone();
+            use tauri_plugin_deep_link::DeepLinkExt;
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let raw = url.as_str();
+                    tracing::info!(%raw, "收到 DeepLink 回调");
+                    if raw.starts_with("kiro://") && (raw.contains("code=") || raw.contains("authenticate-success")) {
+                        let handle = app_handle.clone();
+                        let raw_url = raw.to_string();
+                        tauri::async_runtime::spawn(async move {
+                            let state: State<'_, AppState> = handle.state();
+                            match state.kiro.complete_social_login("", &raw_url).await {
+                                Ok(up) => {
+                                    activity::info(
+                                        &state.db,
+                                        "kiro",
+                                        Some(&up.account.label()),
+                                        if up.created {
+                                            "已通过深度链接自动完成 Kiro 授权"
+                                        } else {
+                                            "已重新授权 Kiro 账号"
+                                        },
+                                    );
+                                    let _ = handle.emit(
+                                        commands::events::KIRO_LOGIN,
+                                        nexus_kiro::LoginState::Succeeded {
+                                            session_id: String::new(),
+                                            account: Box::new(up.account.clone()),
+                                            created: up.created,
+                                        },
+                                    );
+                                }
+                                Err(err) => {
+                                    tracing::warn!(%err, "Kiro 深度链接换票失败");
+                                    let _ = handle.emit(
+                                        commands::events::KIRO_LOGIN,
+                                        nexus_kiro::LoginState::Failed {
+                                            session_id: String::new(),
+                                            message: err.message,
+                                            hint: err.hint,
+                                        },
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -220,6 +359,9 @@ pub fn run() {
             commands::crsr::crsr_restore_backup,
             commands::crsr::crsr_mint_for_account,
             commands::crsr::crsr_clear_credential,
+            commands::crsr::crsr_set_gateway_url,
+            commands::crsr::crsr_sync_custom_model,
+            commands::crsr::crsr_get_custom_models,
             // Grok Bot 桥（Sand / 网关按需借额度；不是账号管理）
             commands::grokbot::grokbot_status,
             commands::grokbot::grokbot_launch,
@@ -255,6 +397,7 @@ pub fn run() {
             commands::gateway::gateway_start,
             commands::gateway::gateway_stop,
             commands::gateway::gateway_update_settings,
+            commands::gateway::gateway_set_route,
             commands::gateway::gateway_enroll,
             commands::gateway::gateway_unenroll,
             commands::gateway::gateway_set_current,
@@ -296,11 +439,17 @@ pub fn run() {
             commands::kiro::kiro_list,
             commands::kiro::kiro_login_start,
             commands::kiro::kiro_login_cancel,
+            commands::kiro::kiro_social_start,
+            commands::kiro::kiro_social_complete,
+            commands::kiro::kiro_social_cancel,
             commands::kiro::kiro_import_cli,
             commands::kiro::kiro_import_text,
             commands::kiro::kiro_remove,
             commands::kiro::kiro_set_enabled,
             commands::kiro::kiro_set_note,
+            commands::kiro::kiro_refresh_usage,
+            commands::kiro::kiro_switch_to_client,
+            commands::kiro::kiro_active_client,
             commands::zcode::zcode_list,
             commands::zcode::zcode_probe_client,
             commands::zcode::zcode_import_client,
@@ -313,6 +462,7 @@ pub fn run() {
             commands::qoder::qoder_remove,
             commands::qoder::qoder_set_enabled,
             commands::qoder::qoder_set_note,
+            commands::qoder::qoder_refresh_usage,
             commands::claude::claude_list,
             commands::claude::claude_login_start,
             commands::claude::claude_login_cancel,
@@ -323,6 +473,21 @@ pub fn run() {
             commands::claude::claude_remove,
             commands::claude::claude_set_enabled,
             commands::claude::claude_set_note,
+            commands::antigravity::antigravity_list,
+            commands::antigravity::antigravity_login_start,
+            commands::antigravity::antigravity_login_cancel,
+            commands::antigravity::antigravity_import_text,
+            commands::antigravity::antigravity_probe_local,
+            commands::antigravity::antigravity_import_local,
+            commands::antigravity::antigravity_refresh_quota,
+            commands::antigravity::antigravity_remove,
+            commands::antigravity::antigravity_set_enabled,
+            commands::antigravity::antigravity_set_note,
+            commands::gemini_web::gemini_web_list,
+            commands::gemini_web::gemini_web_import,
+            commands::gemini_web::gemini_web_remove,
+            commands::gemini_web::gemini_web_set_enabled,
+            commands::gemini_web::gemini_web_set_note,
             // 一键接入（改客户端配置文件）
             commands::connect::connect_inspect,
             commands::connect::connect_inspect_all,
@@ -357,6 +522,17 @@ pub fn run() {
             commands::playground::playground_image_reveal,
             commands::playground::playground_assets,
             commands::playground::playground_image_delete,
+            // Nexus Mesh (去中心化共享网络)
+            commands::mesh::mesh_get_status,
+            commands::mesh::mesh_set_sharing,
+            commands::mesh::mesh_update_config,
+            commands::mesh::mesh_list_market_nodes,
+            commands::mesh::mesh_generate_pairing_code,
+            commands::mesh::mesh_pair_device,
+            commands::mesh::mesh_unpair_device,
+            commands::mesh::mesh_update_peer_channels,
+            commands::mesh::mesh_update_host_channel,
+            commands::mesh::mesh_update_device_name,
         ])
         // 游乐场生成的图片按 id 经这个协议给 WebView：`nexus-image://localhost/<id>`
         // （Windows 上是 `http://nexus-image.localhost/<id>`，前端用 `convertFileSrc(id, "nexus-image")`

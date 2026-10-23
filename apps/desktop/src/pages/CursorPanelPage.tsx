@@ -15,7 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { crsr, sand } from "../ipc/api";
 import type { CrsrStatus, SandStatus } from "../ipc/types";
 import { go, type PanelMode, type Route } from "../shell/nav";
-import { Banner, ErrorNote, Icon, Opt, Tag } from "../ui/primitives";
+import { Banner, ErrorNote, Icon, Opt } from "../ui/primitives";
 import { CrsrPage } from "./CrsrPage";
 import { SandPage } from "./SandPage";
 
@@ -102,6 +102,23 @@ export function CursorPanelPage({ route, onGo }: { route: Route; onGo: (r: Route
         </button>
       </div>
 
+      <div style={{ marginBottom: 16 }}>
+        <Banner
+          tone="info"
+          title="⚡ Cursor 控制台已全面升级并合并至「客户端接入」"
+          hint="全新网关架构已打通！Cursor IDE 现已支持直接在「客户端接入」页中实现「原生直通」（本地号池 / Mesh 跨机共享）与「跨协议异构模型转译」（无缝支持 Claude 3.7 Extended Thinking、OpenAI、DeepSeek 等）。下方的 CRSR / Sand 历史补丁仍可保留查看与卸载。"
+          action={
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => onGo(go("connect", { client: "cursor" }))}
+            >
+              前往全新 Cursor 接入页 ›
+            </button>
+          }
+        />
+      </div>
+
       <ErrorNote error={error} onRetry={() => void reload()} />
 
       {mode === null ? (
@@ -114,15 +131,17 @@ export function CursorPanelPage({ route, onGo }: { route: Route; onGo: (r: Route
               const onDisk = installed === m.id;
               return (
                 <Opt key={m.id} icon={m.icon} title={m.label} desc={m.desc} tone={active ? "on" : undefined}>
-                  {onDisk ? <Tag tone="ok">盘上</Tag> : null}
-                  <button
-                    type="button"
-                    className={active ? "btn btn-sm btn-primary" : "btn btn-sm"}
-                    aria-pressed={active}
-                    onClick={() => onGo(go("panel", { mode: m.id }))}
-                  >
-                    {active ? "查看中" : "查看"}
-                  </button>
+                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                    {onDisk ? <span className="disk-active-pill">● 当前磁盘已生效</span> : null}
+                    <button
+                      type="button"
+                      className={active ? "btn btn-sm btn-primary" : "btn btn-sm"}
+                      aria-pressed={active}
+                      onClick={() => onGo(go("panel", { mode: m.id }))}
+                    >
+                      {active ? "查看中" : "查看"}
+                    </button>
+                  </div>
                 </Opt>
               );
             })}

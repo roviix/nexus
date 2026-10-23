@@ -76,11 +76,12 @@ export function AssetsView({ onOpenThread, onGoImages }: { onOpenThread: (thread
       {/* 标题一行到底：标题 + 等宽计数在左，筛选与搜索在右。图标和第二行副标题都撤掉了——
           侧栏已经标着「资产」，这一行只需要回答「一共多少、怎么筛」。 */}
       <header className="pg-assets-head">
-        <h1 className="pg-title">资产</h1>
-        <p className="pg-assets-sub">{assets == null ? "…" : assets.length ? `${assetCountLabel(counts)} · ${fmtBytes(totalBytes)}` : "还没有内容"}</p>
+        <div className="pg-assets-meta-badge">
+          {assets == null ? "读取中…" : assets.length ? `${assetCountLabel(counts)} · ${fmtBytes(totalBytes)}` : "暂无生成资产"}
+        </div>
         <span className="grow" />
         {counts.image > 0 && counts.video > 0 ? (
-          <div className="pg-seg" role="tablist" aria-label="类型">
+          <div className="tabs pg-assets-seg" role="tablist" aria-label="类型">
             {(
               [
                 ["all", "全部", counts.image + counts.video],
@@ -88,15 +89,33 @@ export function AssetsView({ onOpenThread, onGoImages }: { onOpenThread: (thread
                 ["video", "视频", counts.video],
               ] as Array<[AssetKind, string, number]>
             ).map(([id, label, n]) => (
-              <button key={id} type="button" role="tab" className="pg-seg-btn" aria-selected={kind === id} onClick={() => setKind(id)}>
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                className={`tab${kind === id ? " is-active" : ""}`}
+                aria-selected={kind === id}
+                onClick={() => setKind(id)}
+              >
                 {id !== "all" ? <PgIcon name={id === "video" ? "play" : "image"} size={12} /> : null}
-                {label}
+                <span>{label}</span>
                 <span className="pg-seg-n num">{n}</span>
               </button>
             ))}
           </div>
         ) : null}
-        {models.length > 1 ? <PillMenu label="模型" align="right" value={model} options={[{ id: null, label: "全部", meta: String(inKind.length) }, ...models.map(([m, n]) => ({ id: m as string | null, label: m, meta: String(n) }))]} onChange={setModel} /> : null}
+        {models.length > 1 ? (
+          <PillMenu
+            label="模型"
+            align="right"
+            value={model}
+            options={[
+              { id: null, label: "全部模型", meta: String(inKind.length) },
+              ...models.map(([m, n]) => ({ id: m as string | null, label: m, meta: String(n) })),
+            ]}
+            onChange={setModel}
+          />
+        ) : null}
         {/* 一张图都没有时不摆筛选和搜索：对着空墙给一排筛选器只是噪音。 */}
         {assets?.length ? (
           <label className="search pg-search">

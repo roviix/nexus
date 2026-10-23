@@ -55,16 +55,16 @@ describe("planLabel", () => {
   });
 
   it("falls back to a readable form for plans it has never seen", () => {
-    expect(planLabel(usage({ plan: "super_duper" }))).toBe("Super Duper");
+    expect(planLabel(usage({ plan: "mega_duper" }))).toBe("Mega Duper");
     expect(planLabel(usage())).toBe("未知");
     expect(planLabel(null)).toBe("未知");
   });
 
   it("gives each tier a visually distinct tone", () => {
-    const tones = ["ultra", "pro_plus", "pro", "team", "free"].map((p) =>
+    const tones = ["ultra", "super", "premium", "pro_plus", "pro", "plus", "team", "free"].map((p) =>
       planTone(usage({ plan: p })),
     );
-    expect(new Set(tones).size).toBe(5);
+    expect(new Set(tones).size).toBe(8);
   });
 });
 
@@ -152,16 +152,20 @@ describe("startOfLocalDay / daysText / moneyShort", () => {
 describe("planGroup", () => {
   it("groups Cursor's raw plan names into the filter's buckets", () => {
     expect(planGroup(usage({ plan: "ultra" }))).toBe("ultra");
+    expect(planGroup(usage({ plan: "super" }))).toBe("super");
+    expect(planGroup(usage({ plan: "premium" }))).toBe("premium");
     expect(planGroup(usage({ plan: "pro_plus" }))).toBe("proplus");
     expect(planGroup(usage({ plan: "pro" }))).toBe("pro");
+    expect(planGroup(usage({ plan: "plus" }))).toBe("plus");
     expect(planGroup(usage({ plan: "free" }))).toBe("free");
     expect(planGroup(usage({ plan: "free_trial" }))).toBe("free");
     expect(planGroup(usage({ plan: "enterprise" }))).toBe("team");
   });
 
-  it("checks plus before pro — pro_plus contains both", () => {
+  it("checks plus before pro — pro_plus contains both, standalone plus is distinct", () => {
     expect(planGroup("pro_plus")).toBe("proplus");
     expect(planGroup("ProPlus")).toBe("proplus");
+    expect(planGroup("plus")).toBe("plus");
   });
 
   it("never passes an unchecked or unrecognised plan off as Free", () => {
@@ -169,12 +173,12 @@ describe("planGroup", () => {
     expect(planGroup(usage())).toBe("unknown");
     expect(planGroup(null)).toBe("unknown");
     expect(planGroup("")).toBe("unknown");
-    expect(planGroup(usage({ plan: "super_duper" }))).toBe("unknown");
+    expect(planGroup(usage({ plan: "mega_duper" }))).toBe("unknown");
   });
 
   it("keeps planTone's palette unchanged — unknown wears Free's grey", () => {
     expect(planTone(usage())).toBe("plan-free");
-    expect(planTone(usage({ plan: "super_duper" }))).toBe("plan-free");
+    expect(planTone(usage({ plan: "mega_duper" }))).toBe("plan-free");
   });
 });
 
@@ -200,11 +204,9 @@ describe("meter", () => {
     expect(meterColor(91)).toBe("var(--bad)");
   });
 
-  it("leaves the healthy range colourless", () => {
-    // 一屏十几二十张卡、每张三条，健康的占绝大多数。全染成品牌绿之后
-    // 「有颜色 = 要看的」这条规矩就废了，红的还得在一片绿里抢注意力。
-    expect(meterColor(10)).toBe("var(--track-fill)");
-    expect(meterColor(69)).toBe("var(--track-fill)");
+  it("gives the healthy range emerald tone", () => {
+    expect(meterColor(10)).toBe("var(--ok)");
+    expect(meterColor(69)).toBe("var(--ok)");
   });
 
   it("keeps a sliver visible for tiny usage", () => {

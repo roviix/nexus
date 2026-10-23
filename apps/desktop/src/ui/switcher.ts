@@ -131,3 +131,77 @@ function compareSwitchPoolEntries(
 
   return left.email.localeCompare(right.email);
 }
+
+export interface UnifiedSwitchEntry {
+  key: string;
+  email: string;
+  account: Account | null;
+  profile: SwitchProfile | null;
+  isCurrent: boolean;
+  canSwitch: boolean;
+}
+
+/**
+ * Nexus 2.0 统一切号清单：
+ * 消除「账号库」与「切号池」割裂的二次操作门槛。所有托管的 Cursor 账号与切号快照
+ * 合并为一个开箱即用的换号列表。如果账号未曾写入 switch book，点击时自动完成入池并换号。
+ */
+export function buildUnifiedSwitchList(
+  profiles: SwitchProfile[],
+  accounts: Account[],
+  currentEmail?: string | null,
+): UnifiedSwitchEntry[] {
+  const accountByEmail = new Map(
+    accounts.map((a) => [a.email.toLowerCase(), a]),
+  );
+  const profileByEmail = new Map(
+    profiles.map((p) => [p.email.toLowerCase(), p]),
+  );
+
+  const allEmails = new Set<string>();
+  for (const p of profiles) allEmails.add(p.email.toLowerCase());
+  for (const a of accounts) allEmails.add(a.email.toLowerCase());
+  if (currentEmail) allEmails.add(currentEmail.toLowerCase());
+
+  const entries: UnifiedSwitchEntry[] = [];
+
+  for (const key of allEmails) {
+    const prof = profileByEmail.get(key) ?? null;
+    const acct = accountByEmail.get(key) ?? null;
+    const email = prof?.email ?? acct?.email ?? key;
+    const isCurrent =
+      Boolean(prof?.isCurrent) ||
+      (currentEmail ? currentEmail.toLowerCase() === key : false);
+
+    const canSwitch = prof ? prof.hasAuth : acct ? canAddToSwitchPool(acct) : false;
+
+    entries.push({
+      key,
+      email,
+      account: acct,
+      profile: prof,
+      isCurrent,
+      canSwitch,
+    });
+  }
+
+  return entries.sort((left, right) => {
+    if (left.isCurrent !== right.isCurrent) {
+      return left.isCurrent ? -1 : 1;
+    }
+    if (left.canSwitch !== right.canSwitch) {
+      return left.canSwitch ? -1 : 1;
+    }
+    const leftSwitchedAt = left.profile?.lastSwitchedAt
+      ? Date.parse(left.profile.lastSwitchedAt)
+      : 0;
+    const rightSwitchedAt = right.profile?.lastSwitchedAt
+      ? Date.parse(right.profile.lastSwitchedAt)
+      : 0;
+    if (leftSwitchedAt !== rightSwitchedAt) {
+      return rightSwitchedAt - leftSwitchedAt;
+    }
+    return left.email.localeCompare(right.email);
+  });
+}
+

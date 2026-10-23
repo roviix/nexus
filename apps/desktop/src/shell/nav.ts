@@ -17,6 +17,7 @@
 
 export type Section =
   | "overview"
+  | "channels"
   | "models"
   | "playground"
   | "connect"
@@ -31,10 +32,10 @@ export type Section =
  * 其余几家的号只喂本机网关。供应商（`provider`）是用户自己的 API Key——它同样是一条通道，
  * 「号」是一家家供应商，所以和它们并列一页签。
  */
-export type AccountPlatform = "cursor" | "chatgpt" | "grok" | "kiro" | "zcode" | "qoder" | "claude" | "provider";
+export type AccountPlatform = "cursor" | "chatgpt" | "grok" | "kiro" | "zcode" | "qoder" | "claude" | "antigravity" | "gemini-web" | "provider";
 
 /** 能一键写配置的客户端。接入页按它选中哪一个。 */
-export type ClientId = "claude" | "codex" | "opencode" | "grok";
+export type ClientId = "cursor" | "claude" | "codex" | "opencode" | "grok";
 
 /**
  * 游乐场的三个子项。对话与图片是两种会话（走的接口不同：chat completions / images），
@@ -60,12 +61,13 @@ export type PanelMode = "native" | "crsr" | "sand";
  * 比页面上其它所有东西加起来还长。拆成自己一页：网关页只剩「开没开」和「几条通道各什么光景」，
  * 号池有完整的宽度摆卡、有自己的动作行，地址栏也能直达。
  */
-export type GatewaySub = "pool";
+export type GatewaySub = "pool" | AccountPlatform;
+export type ChannelSub = "pool" | "models";
 
 export interface Route {
   section: Section;
   /**
-   * 只对 `connect` / `models` 有意义：网关里的哪一条通道（平台 id：`cursor` / `chatgpt` …）。
+   * 只对 `connect` / `models` / `channels` 有意义：网关里的哪一条通道（平台 id：`cursor` / `chatgpt` …）。
    * 缺省由页面按状态定（默认 Cursor）。
    */
   channel?: string;
@@ -84,8 +86,8 @@ export interface Route {
   view?: PlaygroundView;
   /** 只对 `settings` 有意义：哪个页签。缺省是通用。 */
   tab?: SettingsTab;
-  /** 只对 `gateway` 有意义：下钻到哪一页。缺省是网关主页。 */
-  sub?: GatewaySub;
+  /** 只对 `gateway` / `channels` 有意义：下钻到哪一页（网关 pool、通道 pool / models）。 */
+  sub?: GatewaySub | ChannelSub | string;
   /** 只对 `panel` 有意义：看哪一档。缺省跟盘上装着的那一档。 */
   mode?: PanelMode;
 }
@@ -101,13 +103,11 @@ export interface SectionMeta {
 
 export const SECTIONS: SectionMeta[] = [
   { id: "overview", label: "概览", icon: "grid" },
-  { id: "models", label: "模型广场", icon: "layers" },
-  { id: "playground", label: "游乐场", icon: "flask" },
   { id: "connect", label: "接入", icon: "plug" },
-  { id: "gateway", label: "本地网关", icon: "gateway" },
+  { id: "channels", label: "通道", icon: "channels" },
+  { id: "models", label: "模型", icon: "layers" },
+  { id: "playground", label: "体验", icon: "flask" },
   { id: "accounts", label: "账号", icon: "accounts" },
-  { id: "switcher", label: "切号", icon: "switcher" },
-  { id: "panel", label: "Cursor 面板", icon: "crsr" },
   { id: "settings", label: "设置", icon: "settings" },
 ];
 
@@ -118,12 +118,11 @@ export interface NavGroup {
   items: Section[];
 }
 
-/** 侧栏的分组。设置不在这里 —— 它固定在侧栏底部。 */
+/** 侧栏的分组。概览单独置顶作为首页菜单，设置固定在侧栏底部，网关常驻左下角底座。 */
 export const NAV_GROUPS: NavGroup[] = [
-  { id: "top", label: null, items: ["overview"] },
-  { id: "relay", label: "中转 API", items: ["models", "playground", "connect", "gateway"] },
-  { id: "accounts", label: "账号", items: ["accounts", "switcher"] },
-  { id: "patch", label: "补丁", items: ["panel"] },
+  { id: "home", label: null, items: ["overview"] },
+  { id: "relay", label: "路由与网关", items: ["connect", "channels", "models", "playground"] },
+  { id: "assets", label: "资产库", items: ["accounts"] },
 ];
 
 export interface PlaygroundViewMeta {
@@ -154,10 +153,11 @@ export const ACCOUNT_PLATFORMS: AccountPlatformMeta[] = [
   { id: "zcode", label: "ZCode" },
   { id: "qoder", label: "Qoder" },
   { id: "claude", label: "Claude" },
+  { id: "antigravity", label: "Antigravity" },
   { id: "provider", label: "供应商" },
 ];
 
-export const CLIENT_IDS: ClientId[] = ["claude", "codex", "opencode", "grok"];
+export const CLIENT_IDS: ClientId[] = ["cursor", "claude", "codex", "opencode", "grok"];
 
 export interface SettingsTabMeta {
   id: SettingsTab;
@@ -175,12 +175,12 @@ export const SETTINGS_TABS: SettingsTabMeta[] = [
   { id: "about", label: "关于", icon: "info" },
 ];
 
-const SECTION_IDS = new Set<string>(SECTIONS.map((s) => s.id));
+const SECTION_IDS = new Set<string>([...SECTIONS.map((s) => s.id), "switcher", "panel"]);
 const VIEW_IDS = new Set<string>(PLAYGROUND_VIEWS.map((v) => v.id));
 const TAB_IDS = new Set<string>(SETTINGS_TABS.map((t) => t.id));
 const PLATFORM_IDS = new Set<string>(ACCOUNT_PLATFORMS.map((p) => p.id));
 /** 认 `?channel=` / `?model=` 的页：`#connect?channel=chatgpt&model=gpt-5`。 */
-const CHANNELED = new Set<Section>(["connect", "models"]);
+const CHANNELED = new Set<Section>(["channels", "connect", "models"]);
 /** 子路径是平台的页：`#accounts/chatgpt`。 */
 const PLATFORMED = new Set<Section>(["accounts"]);
 /**
@@ -194,7 +194,7 @@ const EMAILED = new Set<Section>(["switcher"]);
 const TABBED = new Set<Section>(["settings"]);
 /** 子路径是下钻页的页：`#gateway/pool`。 */
 const SUBBED = new Set<Section>(["gateway"]);
-const SUB_IDS = new Set<string>(["pool"]);
+const SUB_IDS = new Set<string>(["pool", ...ACCOUNT_PLATFORMS.map((p) => p.id)]);
 /** 子路径是档位的页：`#panel/sand`。 */
 const MODED = new Set<Section>(["panel"]);
 const MODE_IDS = new Set<string>(["native", "crsr", "sand"]);
@@ -204,8 +204,11 @@ const MODE_IDS = new Set<string>(["native", "crsr", "sand"]);
  * Sand / CRSR 两页并成了「Cursor 面板」，旧地址各落到自己那一档（见 `LEGACY_MODE`）。
  */
 const LEGACY: Record<string, Section> = {
+  gateway: "overview",
+  "use/gateway": "overview",
+  mesh: "channels",
+  "use/mesh": "channels",
   "use/switcher": "switcher",
-  "use/gateway": "gateway",
   "use/sand": "panel",
   sand: "panel",
   crsr: "panel",
@@ -221,7 +224,7 @@ const LEGACY_MODE: Record<string, PanelMode> = {
 };
 
 export function sectionMeta(id: Section): SectionMeta {
-  return SECTIONS.find((s) => s.id === id)!;
+  return SECTIONS.find((s) => s.id === id) ?? { id, label: id === "panel" ? "Cursor 面板" : id, icon: "settings" };
 }
 
 /**
@@ -231,8 +234,8 @@ export function sectionMeta(id: Section): SectionMeta {
 export function parseRoute(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
   const [pathPart = "", queryPart = ""] = raw.split("?", 2);
-  const legacy = LEGACY[pathPart];
   const [head = "", tail = ""] = pathPart.split("/", 2);
+  const legacy = LEGACY[pathPart] ?? LEGACY[head];
   const section: Section = legacy ?? (SECTION_IDS.has(head) ? (head as Section) : DEFAULT_ROUTE.section);
   const route: Route = { section };
   const query = new URLSearchParams(queryPart);
@@ -241,6 +244,8 @@ export function parseRoute(hash: string): Route {
     if (model) route.model = model;
     const channel = query.get("channel")?.trim();
     if (channel) route.channel = channel;
+    const sub = query.get("sub")?.trim();
+    if (section === "channels" && sub) route.sub = sub;
     // 上一版供应商不是通道，接入页地址里带的是 `?provider=<id>`：落到供应商通道。
     if (!channel && query.get("provider")?.trim()) route.channel = "provider";
     const client = query.get("client")?.trim();
@@ -272,6 +277,7 @@ export function routeHash(r: Route): string {
     if (r.section === "connect" && r.client) q.set("client", r.client);
     if (r.channel) q.set("channel", r.channel);
     if (r.model) q.set("model", r.model);
+    if (r.section === "channels" && r.sub) q.set("sub", r.sub);
     const qs = q.toString();
     if (qs) hash += `?${qs}`;
   }
@@ -298,13 +304,14 @@ export function go(
     platform?: AccountPlatform;
     view?: PlaygroundView;
     tab?: SettingsTab;
-    sub?: GatewaySub;
+    sub?: GatewaySub | ChannelSub | string;
     mode?: PanelMode;
   },
 ): Route {
   const r: Route = { section };
   if ((CHANNELED.has(section) || VIEWED.has(section)) && opts?.model?.trim()) r.model = opts.model.trim();
   if (CHANNELED.has(section) && opts?.channel?.trim()) r.channel = opts.channel.trim();
+  if (section === "channels" && opts?.sub) r.sub = opts.sub;
   if (section === "connect" && opts?.client) r.client = opts.client;
   if (VIEWED.has(section) && opts?.view) r.view = opts.view;
   if (EMAILED.has(section) && opts?.email?.trim()) r.email = opts.email.trim();

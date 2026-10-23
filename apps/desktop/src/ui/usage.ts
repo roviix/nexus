@@ -20,10 +20,13 @@ export const DAY_MS = 86_400_000;
  */
 const PLAN_LABEL: Record<string, string> = {
   ultra: "Ultra",
+  super: "Super",
+  premium: "Premium",
   pro_plus: "Pro+",
   "pro-plus": "Pro+",
   proplus: "Pro+",
   pro: "Pro",
+  plus: "Plus",
   free: "Free",
   free_trial: "Pro Trial",
   enterprise: "Team",
@@ -61,15 +64,18 @@ export function planLabel(p: PlanLike): string {
  * 已核实的档 —— 同 poolState 那条「未查不进正常」的规矩。判断顺序要紧：`pro_plus` 既含
  * plus 又含 pro，plus 必须先判；`free_trial` 落在 free。
  */
-export type PlanGroup = "ultra" | "proplus" | "team" | "pro" | "free" | "unknown";
+export type PlanGroup = "ultra" | "super" | "premium" | "proplus" | "pro" | "plus" | "team" | "free" | "unknown";
 
 export function planGroup(p: PlanLike): PlanGroup {
   const raw = planOf(p).plan.toLowerCase().trim();
   if (!raw) return "unknown";
   if (raw.includes("ultra")) return "ultra";
-  if (raw.includes("plus")) return "proplus";
+  if (raw.includes("super")) return "super";
+  if (raw.includes("premium")) return "premium";
+  if (raw.includes("pro_plus") || raw.includes("pro-plus") || raw.includes("proplus")) return "proplus";
   if (raw.includes("enterprise") || raw.includes("team") || raw.includes("business")) return "team";
   if (raw.includes("pro")) return "pro";
+  if (raw.includes("plus")) return "plus";
   // `credit-grant-churn-power-user-3p` 这类：订阅已退、靠 Cursor 赠的积分在用 —— 没有付费档，按 Free 归。
   if (raw.includes("free") || raw.includes("trial") || raw.includes("credit-grant")) return "free";
   return "unknown";
@@ -102,7 +108,7 @@ export function meterColor(percent: number): string {
   const p = Math.max(0, Math.min(100, percent));
   if (p > 90) return "var(--bad)";
   if (p >= 70) return "var(--warn)";
-  return "var(--track-fill)";
+  return "var(--ok)";
 }
 
 /** 条子宽度。用了一点点也要看得见。 */

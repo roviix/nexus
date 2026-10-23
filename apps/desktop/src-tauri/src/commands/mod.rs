@@ -8,6 +8,7 @@
 //!   - **秘密永不经过 IPC**，除用户显式点「显示明文」的那一次（并记活动日志）。
 
 pub mod accounts;
+pub mod antigravity;
 pub mod app;
 pub mod backup;
 pub mod chatgpt;
@@ -15,10 +16,12 @@ pub mod claude;
 pub mod connect;
 pub mod crsr;
 pub mod gateway;
+pub mod gemini_web;
 pub mod grok;
 pub mod grokbot;
 pub mod key_providers;
 pub mod kiro;
+pub mod mesh;
 pub mod perms;
 pub mod playground;
 pub mod qoder;
@@ -37,6 +40,8 @@ pub mod events {
     pub const CHATGPT_LOGIN: &str = "chatgpt://login";
     /// Claude 授权（等本机 54545 回调）的状态。载荷是 `nexus_claude::LoginState`。
     pub const CLAUDE_LOGIN: &str = "claude://login";
+    /// Google Antigravity 授权（等本机 51121 回调）的状态。载荷是 `nexus_antigravity::LoginState`。
+    pub const ANTIGRAVITY_LOGIN: &str = "antigravity://login";
     pub const GROK_LOGIN: &str = "grok://login";
     pub const KIRO_LOGIN: &str = "kiro://login";
     /// 批量刷用量的逐个结果。

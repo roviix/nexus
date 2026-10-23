@@ -1,18 +1,20 @@
 /**
  * 账号页的「供应商」：网关 `provider/` 通道背后那几家。
  *
- * 和别的页签一样，这里管的是「这条通道的号」：加一家、测一下、看它此刻在网关里是什么样子
- * （正在用 / 冷却 / 钥匙被拒停着）、临时停用。列表顺序就是同一个模型有几家都声明时的接力
- * 顺序。写进客户端在「接入」里做：客户端的通道选成供应商就走这里。
+ * 现代化、克制、精致质感（完全对标 Cursor / Antigravity / Kiro 卡片 + 抽屉规范）：
+ * - 卡片网格：服务商身份、协议徽章、端点地址、支持模型、时延与启停开关；
+ * - 点击任意卡片滑出详情抽屉：完整模型清单、连通性探测、网关优先调度与配置编辑。
  */
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { errorText, gateway, keyProviders } from "../../ipc/api";
 import type { ApiFormat, GatewayCandidateState, GatewayStatus, KeyProvider, ProviderPing } from "../../ipc/types";
 import { go, type Route } from "../../shell/nav";
 import { confirm } from "../../ui/confirm";
-import { Banner, Empty, Icon, Spinner, Switch } from "../../ui/primitives";
+import { Banner, Empty, Icon, Spinner } from "../../ui/primitives";
+import { GatewayCard } from "./GatewayCard";
 import { KeyProviderModal } from "./KeyProviderModal";
 import { formatLabel, primaryModel } from "./keyModel";
+import { ProviderDrawer } from "./ProviderDrawer";
 
 type FormatFilter = "all" | ApiFormat;
 
@@ -30,7 +32,9 @@ export function ProviderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Ro
   const [status, setStatus] = useState<GatewayStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FormatFilter>("all");
+  const [availFilter, setAvailFilter] = useState<"all" | "enabled" | "disabled">("all");
   const [modal, setModal] = useState<KeyProvider | null | "closed">("closed");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pinging, setPinging] = useState<string | null>(null);
   const [pings, setPings] = useState<Record<string, Ping>>({});
 
@@ -58,16 +62,18 @@ export function ProviderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Ro
   }, [status?.running]);
 
   const lane = status?.channels.find((c) => c.id === "provider")?.lane;
-  const stateOf = (name: string): GatewayCandidateState | null => lane?.candidates.find((c) => c.label === name)?.state ?? null;
+  const stateOf = (name: string): GatewayCandidateState | null =>
+    lane?.candidates.find((c) => c.label === name)?.state ?? null;
   const troubled = (lane?.candidates ?? []).some((c) => c.state.kind === "exhausted" || c.state.kind === "cooled");
 
   async function remove(p: KeyProvider) {
-    const ok = await confirm(`网关里就没有「${p.name}」了；客户端的路由如果指着它的模型，会换到别家（没有别家声明就报错）。`, {
+    const ok = await confirm(`网关里就没有「${p.name}」了；客户端的路由如果指着它的模型，会换到别家。`, {
       title: `删除 ${p.name}？`,
       okLabel: "删除",
       danger: true,
     });
     if (!ok) return;
+    if (selectedId === p.id) setSelectedId(null);
     try {
       await keyProviders.remove(p.id);
       await load();
@@ -115,7 +121,18 @@ export function ProviderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Ro
   }
 
   const providers = list ?? [];
-  const shown = filter === "all" ? providers : providers.filter((p) => p.apiFormat === filter);
+  const enabledCount = providers.filter((p) => p.enabled).length;
+  const disabledCount = providers.length - enabledCount;
+  const shown = providers.filter((p) => {
+    if (availFilter === "enabled" && !p.enabled) return false;
+    if (availFilter === "disabled" && p.enabled) return false;
+    if (filter !== "all" && p.apiFormat !== filter) return false;
+    return true;
+  });
+  const selectedProvider = useMemo(
+    () => providers.find((p) => p.id === selectedId) ?? null,
+    [providers, selectedId],
+  );
 
   return (
     <>
@@ -123,11 +140,22 @@ export function ProviderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Ro
         {tabs}
         <div className="row" style={{ gap: 8 }}>
           {troubled ? (
-            <button type="button" className="btn btn-sm btn-quiet" onClick={() => void resetLane()} title="清掉冷却和停用记录，让每一家重新可选">
+            <button
+              type="button"
+              className="btn btn-sm btn-quiet"
+              onClick={() => void resetLane()}
+              title="清掉冷却和停用记录，让每一家重新可选"
+            >
               清掉冷却
             </button>
           ) : null}
-          <button type="button" className="btn btn-sm btn-icon btn-soft" onClick={() => void load()} title="刷新" aria-label="刷新">
+          <button
+            type="button"
+            className="btn btn-sm btn-icon btn-soft"
+            onClick={() => void load()}
+            title="刷新"
+            aria-label="刷新"
+          >
             <Icon name="refresh" size={14} />
           </button>
           <button type="button" className="btn btn-primary" onClick={() => setModal(null)}>
@@ -162,20 +190,55 @@ export function ProviderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Ro
 
       {providers.length > 0 ? (
         <>
-          <p className="prov-intro">
-            网关通道 <code className="mono">provider/</code>
-            {status?.running ? null : " · 网关没开，接入客户端时会自动开启"}。同一个模型有几家声明时按下面的顺序接力：一家钥匙被拒、没余额、限流或连不上，下一条请求就换下一家。
-          </p>
+          <div className="status-pills" role="tablist" aria-label="供应商状态" style={{ marginBottom: 12 }}>
+            <button
+              type="button"
+              className={`status-pill${availFilter === "all" ? " is-active" : ""}`}
+              onClick={() => setAvailFilter("all")}
+            >
+              <span>全部</span>
+              <span className="pill-n">{providers.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`status-pill${availFilter === "enabled" ? " is-active" : ""}`}
+              onClick={() => setAvailFilter("enabled")}
+            >
+              <i className="status-dot is-long_lived" />
+              <span>可用</span>
+              <span className="pill-n">{enabledCount}</span>
+            </button>
+            {disabledCount > 0 ? (
+              <button
+                type="button"
+                className={`status-pill${availFilter === "disabled" ? " is-active" : ""}`}
+                onClick={() => setAvailFilter("disabled")}
+              >
+                <i className="status-dot is-dead" />
+                <span>已停用</span>
+                <span className="pill-n">{disabledCount}</span>
+              </button>
+            ) : null}
+          </div>
+
           {providers.length > 3 ? (
-            <div className="prov-filters" role="tablist" aria-label="协议">
+            <div className="prov-filters" role="tablist" aria-label="协议" style={{ marginBottom: 12 }}>
               {FILTERS.map((f) => (
-                <button key={f.id} type="button" role="tab" aria-selected={filter === f.id} className={`chan-chip${filter === f.id ? " is-active" : ""}`} onClick={() => setFilter(f.id)}>
+                <button
+                  key={f.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={filter === f.id}
+                  className={`chan-chip${filter === f.id ? " is-active" : ""}`}
+                  onClick={() => setFilter(f.id)}
+                >
                   {f.label}
                 </button>
               ))}
             </div>
           ) : null}
-          <div className="prov-list">
+
+          <div className="accts">
             {shown.map((p) => (
               <ProviderCard
                 key={p.id}
@@ -183,21 +246,44 @@ export function ProviderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Ro
                 state={stateOf(p.name)}
                 ping={pings[p.id]}
                 pinging={pinging === p.id}
+                onOpen={() => setSelectedId(p.id)}
                 onPing={() => void ping(p)}
-                onEdit={() => setModal(p)}
-                onRemove={() => void remove(p)}
-                onToggle={(v) => void setEnabled(p, v)}
-                onPrefer={() => void prefer(p)}
-                onConnect={() => onGo(go("connect", { channel: "provider", model: primaryModel(p) ? `provider/${primaryModel(p)}` : undefined }))}
               />
             ))}
-            {!shown.length ? (
-              <Empty icon={null} title="这一类还没有">
-                换一个协议看看。
-              </Empty>
-            ) : null}
           </div>
+
+          {!shown.length ? (
+            <Empty icon={null} title="这一类还没有">
+              换一个协议看看。
+            </Empty>
+          ) : null}
         </>
+      ) : null}
+
+      {/* 详情抽屉 */}
+      {selectedProvider ? (
+        <ProviderDrawer
+          provider={selectedProvider}
+          state={stateOf(selectedProvider.name)}
+          ping={pings[selectedProvider.id]}
+          pinging={pinging === selectedProvider.id}
+          onClose={() => setSelectedId(null)}
+          onPing={() => void ping(selectedProvider)}
+          onEdit={() => {
+            setModal(selectedProvider);
+          }}
+          onRemove={() => void remove(selectedProvider)}
+          onToggle={(v) => void setEnabled(selectedProvider, v)}
+          onPrefer={() => void prefer(selectedProvider)}
+          onConnect={() =>
+            onGo(
+              go("connect", {
+                channel: "provider",
+                model: primaryModel(selectedProvider) ? `provider/${primaryModel(selectedProvider)}` : undefined,
+              }),
+            )
+          }
+        />
       ) : null}
 
       {modal !== "closed" ? (
@@ -214,8 +300,7 @@ export function ProviderAccounts({ tabs, onGo }: { tabs: ReactNode; onGo: (r: Ro
   );
 }
 
-/** 它此刻在网关里的样子。null = 网关还没见过它（或者网关没开）。 */
-function healthOf(state: GatewayCandidateState | null): { tone: "ok" | "warn" | "bad" | "flat"; text: string } | null {
+function healthOf(state: GatewayCandidateState | null): { tone: "ok" | "warn" | "bad" | "default"; text: string } | null {
   if (!state) return null;
   switch (state.kind) {
     case "current":
@@ -223,7 +308,7 @@ function healthOf(state: GatewayCandidateState | null): { tone: "ok" | "warn" | 
     case "ready":
       return null;
     case "cooled":
-      return { tone: "warn", text: `${state.models.join("、")} 冷却中 · ${state.secsLeft} 秒后再试` };
+      return { tone: "warn", text: `${state.models.join("、")} 冷却中` };
     case "exhausted":
       return { tone: "bad", text: `停用 ${Math.ceil(state.retryInSecs / 60)} 分钟：${state.reason}` };
     case "quota_line":
@@ -236,87 +321,89 @@ function ProviderCard({
   state,
   ping,
   pinging,
+  onOpen,
   onPing,
-  onEdit,
-  onRemove,
-  onToggle,
-  onPrefer,
-  onConnect,
 }: {
   p: KeyProvider;
   state: GatewayCandidateState | null;
   ping: Ping | undefined;
   pinging: boolean;
+  onOpen: () => void;
   onPing: () => void;
-  onEdit: () => void;
-  onRemove: () => void;
-  onToggle: (enabled: boolean) => void;
-  onPrefer: () => void;
-  onConnect: () => void;
 }) {
+  const isCurrent = state?.kind === "current";
   const health = p.enabled ? healthOf(state) : null;
-  const shownModels = p.models.slice(0, 6);
-  return (
-    <article className={`card prov-card${p.enabled ? "" : " is-off"}`}>
-      <div className="prov-card-main">
-        <div className="prov-card-name">
-          {p.name}
-          <span className="role-meta">{formatLabel(p.apiFormat)}</span>
-          {p.keyTail ? <span className="role-meta mono">····{p.keyTail}</span> : null}
-          {health ? (
-            <span className={`prov-health is-${health.tone}`}>
-              <i aria-hidden />
-              {health.tone === "ok" ? health.text : health.tone === "warn" ? "冷却中" : "停着"}
-            </span>
-          ) : null}
-          {!p.enabled ? <span className="role-meta">已停用</span> : null}
-        </div>
-        <div className="prov-card-sub mono truncate" title={p.baseUrl}>
-          {p.baseUrl}
-        </div>
-        <div className="prov-models">
-          {shownModels.map((m) => (
-            <span key={m} className="pchip mono is-static">
-              {m}
+  const host = (() => {
+    try {
+      return new URL(p.baseUrl).host;
+    } catch {
+      return p.baseUrl;
+    }
+  })();
+
+  const emptyState =
+    ping && !ping.ok
+      ? {
+          title: "连通失败",
+          hint: ping.error,
+          tone: "bad" as const,
+        }
+      : undefined;
+
+  const footSpend = (
+    <span className="qf-meta">
+      <span className="mono">{host}</span>
+      {p.keyTail ? <i className="qf-sep">·</i> : null}
+      {p.keyTail ? <span className="mono tiny">••••{p.keyTail}</span> : null}
+    </span>
+  );
+
+  const kv = (
+    <>
+      <div>
+        <span>响应延时</span>
+        <b className={ping?.ok ? "is-ok" : ""}>
+          {ping?.ok ? `${ping.r.durationMs}ms` : "就绪"}
+        </b>
+      </div>
+      <div>
+        <span>声明模型</span>
+        <div className="chip-row">
+          {p.models.slice(0, 3).map((m) => (
+            <span key={m} className="chip" title={m}>
+              {m.length > 18 ? `${m.slice(0, 16)}…` : m}
             </span>
           ))}
-          {p.models.length > shownModels.length ? <span className="faint tiny">+{p.models.length - shownModels.length}</span> : null}
-        </div>
-        {health && health.tone !== "ok" ? <p className={`prov-note is-${health.tone}`}>{health.text}</p> : null}
-        {ping ? (
-          ping.ok ? (
-            <p className="prov-note is-ok">
-              {ping.r.model} · {(ping.r.durationMs / 1000).toFixed(1)}s：{ping.r.text}
-            </p>
-          ) : (
-            <p className="prov-note is-bad">{ping.error}</p>
-          )
-        ) : null}
-      </div>
-      <div className="prov-card-acts">
-        <Switch checked={p.enabled} label={p.enabled ? "停用" : "启用"} onChange={onToggle} />
-        <div className="row" style={{ gap: 4 }}>
-          <button type="button" className="btn btn-sm btn-quiet" disabled={pinging} onClick={onPing} title={`直接打这家（不经过网关），用 ${p.models[0] ?? "第一个模型"} 说一句`}>
-            {pinging ? <Spinner /> : null}
-            测一下
-          </button>
-          {p.enabled && state && state.kind !== "current" ? (
-            <button type="button" className="btn btn-sm btn-quiet" onClick={onPrefer} title="它声明的模型都先找它">
-              优先用它
-            </button>
+          {p.models.length > 3 ? (
+            <span className="chip" title={p.models.slice(3).join(", ")}>
+              +{p.models.length - 3}
+            </span>
           ) : null}
-          <button type="button" className="btn btn-sm btn-quiet" onClick={onEdit}>
-            编辑
-          </button>
-          <button type="button" className="btn btn-sm btn-icon btn-quiet" aria-label={`删除 ${p.name}`} onClick={onRemove}>
-            <Icon name="trash" size={13} />
-          </button>
-          <button type="button" className="btn btn-sm" disabled={!p.enabled} onClick={onConnect}>
-            接入
-            <Icon name="chevron" size={12} />
-          </button>
         </div>
       </div>
-    </article>
+    </>
+  );
+
+  return (
+    <GatewayCard
+      logo={<Icon name="key" size={14} />}
+      title={p.name}
+      plan={formatLabel(p.apiFormat)}
+      planClass="plan pill-key"
+      current={isCurrent}
+      dimmed={!p.enabled}
+      tone={!p.enabled ? "none" : health?.tone === "bad" ? "bad" : health?.tone === "warn" ? "warn" : "ok"}
+      compact={true}
+      kv={!emptyState ? kv : undefined}
+      emptyState={emptyState}
+      spend={footSpend}
+      stamp={p.enabled ? "就绪可用" : "已停用"}
+      problem={ping && !ping.ok ? ping.error : health && health.tone !== "ok" ? health.text : null}
+      refreshing={pinging}
+      refreshLabel="测速"
+      onOpen={onOpen}
+      onRefresh={onPing}
+    />
   );
 }
+

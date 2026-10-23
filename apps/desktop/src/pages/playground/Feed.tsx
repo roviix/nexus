@@ -281,24 +281,40 @@ function Reply({ m, artifact, regenerate, onDelete }: { m: Message; artifact?: A
     () => (artifact ? { messageId: m.id, active: artifact.active, onOpen: artifact.onOpen } : undefined),
     [artifact, m.id],
   );
+
+  // 清除 [网关错误] 及全量错误内容，避免与下方 ErrorCard 叠印两遍
+  const cleanContent = useMemo(() => {
+    if (!m.content) return "";
+    const gwIdx = m.content.indexOf("[网关错误]");
+    if (gwIdx !== -1) {
+      return m.content.slice(0, gwIdx).trim();
+    }
+    if (m.error && m.content.trim() === m.error.trim()) {
+      return "";
+    }
+    return m.content;
+  }, [m.content, m.error]);
+
   function copy() {
-    void navigator.clipboard.writeText(m.content).catch(() => {});
+    void navigator.clipboard.writeText(cleanContent).catch(() => {});
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }
-  const failedOutright = !m.content && m.error;
+
+  const isInterrupted = Boolean(cleanContent && m.error);
+
   return (
     <div className={`pg-msg is-reply${m.error ? " has-error" : ""}`}>
       <Avatar />
       <div className="pg-reply">
         <ModelLine m={m} />
         {m.thinking ? <Thinking text={m.thinking} /> : null}
-        {m.content ? <Markdown text={m.content} artifactLink={link} /> : null}
-        {m.error ? <ErrorLine text={failedOutright ? m.error : `流在这里断了：${m.error}`} onRetry={regenerate} /> : null}
+        {cleanContent ? <Markdown text={cleanContent} artifactLink={link} /> : null}
+        {m.error ? <ErrorCard raw={m.error} isInterrupted={isInterrupted} onRetry={regenerate} /> : null}
         <div className="pg-foot">
           <Stats m={m} />
           <div className="pg-msg-acts">
-            {m.content ? <ActButton icon={copied ? "check" : "copy"} label={copied ? "已复制" : "复制"} on={copied} onClick={copy} /> : null}
+            {cleanContent ? <ActButton icon={copied ? "check" : "copy"} label={copied ? "已复制" : "复制"} on={copied} onClick={copy} /> : null}
             {regenerate && !m.error ? <ActButton icon="refresh" label="重新生成" onClick={regenerate} /> : null}
             <ActButton icon="trash" label="删除这条回复" danger onClick={onDelete} />
           </div>
@@ -386,27 +402,116 @@ function StreamingReply({ run, model, artifact }: { run: Run; model?: string; ar
           </div>
         ) : null}
         {run.error ? (
-          <p className="pg-error">
-            <span className="pg-error-dot" />
-            {run.error}
-          </p>
+          <ErrorCard raw={run.error} isInterrupted={Boolean(run.text.length > 0)} />
         ) : null}
       </div>
     </div>
   );
 }
 
-/** 一句错误 + 该给的出口：至少能重试。 */
-function ErrorLine({ text, onRetry }: { text: string; onRetry?: () => void }) {
+export interface FormattedError {
+  title: string;
+  message: string;
+  code?: string;
+}
+
+export function formatErrorMessage(raw: string, isInterrupted = false): FormattedError {
+  let text = (raw || "").trim();
+  text = text.replace(/^\[网关错误\]\s*/, "");
+
+  // 匹配前缀与可能内嵌的 JSON，如：Kiro 额度用尽：{"message":"...","reason":"..."}
+  const colonIdx = text.search(/[:：]\s*\{/);
+  let prefix = "";
+  let jsonPart = "";
+  if (colonIdx !== -1) {
+    prefix = text.slice(0, colonIdx).trim();
+    jsonPart = text.slice(colonIdx + 1).trim();
+  } else if (text.startsWith("{") && text.endsWith("}")) {
+    jsonPart = text;
+  }
+
+  if (jsonPart) {
+    try {
+      const parsed = JSON.parse(jsonPart);
+      const innerMsg =
+        typeof parsed.message === "string"
+          ? parsed.message
+          : typeof parsed.error?.message === "string"
+            ? parsed.error.message
+            : typeof parsed.error === "string"
+              ? parsed.error
+              : null;
+      const code =
+        typeof parsed.reason === "string"
+          ? parsed.reason
+          : typeof parsed.code === "string"
+            ? String(parsed.code)
+            : typeof parsed.error?.type === "string"
+              ? parsed.error.type
+              : typeof parsed.error?.code === "string"
+                ? String(parsed.error.code)
+                : undefined;
+
+      if (innerMsg) {
+        return {
+          title: prefix || (isInterrupted ? "回复中断" : "请求失败"),
+          message: innerMsg,
+          code,
+        };
+      }
+    } catch {
+      // 非合法 JSON 则进入下方兜底
+    }
+  }
+
+  // 普通前缀匹配：前缀：具体说明
+  const plainColon = text.search(/[:：]/);
+  if (plainColon !== -1 && plainColon < 32) {
+    prefix = text.slice(0, plainColon).trim();
+    const rest = text.slice(plainColon + 1).trim();
+    if (rest) {
+      return {
+        title: prefix,
+        message: rest,
+      };
+    }
+  }
+
+  return {
+    title: isInterrupted ? "回复中断" : "请求失败",
+    message: text || "发生未知错误",
+  };
+}
+
+/** 结构化、克制的错误信息展示卡片。 */
+function ErrorCard({
+  raw,
+  isInterrupted = false,
+  onRetry,
+}: {
+  raw: string;
+  isInterrupted?: boolean;
+  onRetry?: () => void;
+}) {
+  const err = useMemo(() => formatErrorMessage(raw, isInterrupted), [raw, isInterrupted]);
+
   return (
-    <div className="pg-error">
-      <span className="pg-error-dot" />
-      <span className="pg-error-text">{text}</span>
-      {onRetry ? (
-        <button type="button" className="btn btn-sm btn-quiet pg-error-act" onClick={onRetry}>
-          <Icon name="refresh" size={12} />
-          重试
-        </button>
+    <div className="pg-error-card" role="alert">
+      <div className="pg-error-head">
+        <span className="pg-error-badge">
+          <Icon name="alert" size={13} />
+          <span>{err.title}</span>
+        </span>
+        {err.code ? <span className="pg-error-tag">{err.code}</span> : null}
+        {onRetry ? (
+          <button type="button" className="btn btn-xs pg-error-retry" onClick={onRetry}>
+            <Icon name="refresh" size={11} />
+            重试
+          </button>
+        ) : null}
+      </div>
+      {err.message && err.message !== err.title ? (
+        <div className="pg-error-msg">{err.message}</div>
       ) : null}
     </div>
   );
@@ -457,7 +562,7 @@ function ImageReply({ m, onOpen, onDelete, onRetry }: { m: Message; onOpen: (ima
           <p className="pg-revised selectable">{m.images.some(isVideoRef) || m.content.startsWith("任务 ") ? m.content : `上游改写后的提示词：${m.content}`}</p>
         ) : null}
         {mismatch ? <p className="pg-revised">{mismatch}</p> : null}
-        {m.error ? <ErrorLine text={m.error} onRetry={onRetry} /> : null}
+        {m.error ? <ErrorCard raw={m.error} onRetry={onRetry} /> : null}
         <div className="pg-foot">
           <Stats m={{ ttftMs: null, durationMs: m.durationMs, usage: null }} />
           <div className="pg-msg-acts">
@@ -523,10 +628,7 @@ function GeneratingCard({ run }: { run: Run }) {
           ))}
         </div>
         {run.error ? (
-          <p className="pg-error">
-            <span className="pg-error-dot" />
-            {run.error}
-          </p>
+          <ErrorCard raw={run.error} />
         ) : null}
       </div>
     </div>

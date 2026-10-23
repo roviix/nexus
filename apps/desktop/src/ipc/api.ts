@@ -35,7 +35,10 @@ import type {
   ConnectReverted,
   DeviceAccount,
   DeviceLoginHandle,
+  SocialLoginStart,
   DeviceLoginState,
+  KiroActiveInfo,
+  KiroSwitchOutcome,
   ExportOutcome,
   GatewaySettings,
   GatewayStatus,
@@ -84,6 +87,12 @@ import type {
   UsageSummary,
   ZcodeClientProbe,
   ZcodeImportReport,
+  MeshConfig,
+  MeshStatus,
+  MarketNode,
+  PairingCodeInfo,
+  MeshPeer,
+  HostChannel,
 } from "./types";
 
 /** Rust 侧返回的错误都是 `AppError`；这里把它认出来，别让界面显示 `[object Object]`。 */
@@ -296,6 +305,12 @@ export const crsr = {
   /** 用这个号的 crsr_ 兑票写成凭证。不必重装补丁。 */
   mintForAccount: (id: string) => call<CrsrCredentialInfo>("crsr_mint_for_account", { id }),
   clearCredential: () => call<void>("crsr_clear_credential"),
+  setGatewayUrl: (gatewayUrl: string | null) =>
+    call<CrsrCredentialInfo | null>("crsr_set_gateway_url", { gatewayUrl }),
+  /** 把自定义扩展模型写入 Cursor 的 state.vscdb，使其直接显示在 Cursor 模型选择器中 */
+  syncCustomModel: (model: string) => call<boolean>("crsr_sync_custom_model", { model }),
+  /** 获取当前已同步进 Cursor 库的自定义模型列表 */
+  getCustomModels: () => call<string[]>("crsr_get_custom_models"),
 };
 
 // ── Grok Bot 桥（不是账号系统；Sand / 网关按需借额度）──────────────────────────
@@ -377,6 +392,9 @@ export const gateway = {
     forceModel?: string | null;
     defaultChannel?: string;
   }) => call<GatewaySettings>("gateway_update_settings", { patch }),
+  /** 更新指定客户端（如 cursor）的路由。 */
+  setRoute: (client: string, route: ClientRoute | null) =>
+    call<GatewayStatus>("gateway_set_route", { client, route }),
   /** 把号放进网关的接力队。名单外的号网关一概不碰，所以只有用户点了才进来。 */
   enroll: (labels: string[]) => call<GatewayStatus>("gateway_enroll", { labels }),
   unenroll: (label: string) => call<GatewayStatus>("gateway_unenroll", { label }),
@@ -457,11 +475,22 @@ export const kiro = {
   list: () => call<DeviceAccount[]>("kiro_list"),
   loginStart: (note?: string) => call<DeviceLoginHandle>("kiro_login_start", { note }),
   loginCancel: (sessionId: string) => call<void>("kiro_login_cancel", { sessionId }),
+  socialStart: (provider?: string, note?: string) =>
+    call<SocialLoginStart>("kiro_social_start", { provider, note }),
+  socialComplete: (sessionId: string, callback: string) =>
+    call<DeviceAccount>("kiro_social_complete", { sessionId, callback }),
+  socialCancel: (sessionId: string) => call<void>("kiro_social_cancel", { sessionId }),
   importLocal: () => call<DeviceAccount>("kiro_import_cli"),
   importText: (text: string, note?: string) => call<DeviceAccount>("kiro_import_text", { text, note }),
   remove: (id: string) => call<void>("kiro_remove", { id }),
   setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("kiro_set_enabled", { id, enabled }),
   setNote: (id: string, note: string | null) => call<DeviceAccount>("kiro_set_note", { id, note }),
+  /** 现在问一次套餐和额度。 */
+  refreshQuota: (id: string) => call<DeviceAccount>("kiro_refresh_usage", { id }),
+  /** 切号到本机 Kiro IDE 客户端。 */
+  switchToClient: (id: string) => call<KiroSwitchOutcome>("kiro_switch_to_client", { id }),
+  /** 获取本机 Kiro IDE 客户端当前激活账号信息。 */
+  activeClient: () => call<KiroActiveInfo | null>("kiro_active_client"),
   setCurrent: (label: string) => gateway.channelSetCurrent("kiro", label),
   resetLane: () => gateway.channelResetLane("kiro"),
 };
@@ -511,6 +540,35 @@ export const claude = {
 };
 
 /**
+ * Google 反重力 (Antigravity)。Google OAuth 2.0 PKCE 授权与静默续期。
+ */
+export const antigravity = {
+  list: () => call<DeviceAccount[]>("antigravity_list"),
+  loginStart: (note?: string) =>
+    call<{ loginId: string; authorizeUrl: string; callbackListening: boolean }>("antigravity_login_start", { note }),
+  loginCancel: () => call<void>("antigravity_login_cancel"),
+  importText: (text: string, note?: string) => call<DeviceAccount>("antigravity_import_text", { text, note }),
+  probeLocal: () => call<{ present: boolean; path: string; also?: string | null }>("antigravity_probe_local"),
+  importLocal: (note?: string) => call<DeviceAccount>("antigravity_import_local", { note }),
+  refreshQuota: (id: string) => call<DeviceAccount>("antigravity_refresh_quota", { id }),
+  remove: (id: string) => call<void>("antigravity_remove", { id }),
+  setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("antigravity_set_enabled", { id, enabled }),
+  setNote: (id: string, note: string | null) => call<DeviceAccount>("antigravity_set_note", { id, note }),
+  setCurrent: (label: string) => gateway.channelSetCurrent("antigravity", label),
+  resetLane: () => gateway.channelResetLane("antigravity"),
+};
+
+/** Gemini 网页协议。Cookie 打 gemini.google.com，和反重力分开。 */
+export const geminiWeb = {
+  list: () => call<DeviceAccount[]>("gemini_web_list"),
+  importCookie: (cookie: string, email?: string, note?: string) =>
+    call<DeviceAccount>("gemini_web_import", { cookie, email, note }),
+  remove: (id: string) => call<void>("gemini_web_remove", { id }),
+  setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("gemini_web_set_enabled", { id, enabled }),
+  setNote: (id: string, note: string | null) => call<DeviceAccount>("gemini_web_set_note", { id, note }),
+};
+
+/**
  * Qoder。聊天走官方网关的 COSY 签名 SSE，不经过 qodercli。没有设备码登录：贴一把
  * Personal Access Token，国际版和国内版各算一个号。
  */
@@ -521,6 +579,7 @@ export const qoder = {
   remove: (id: string) => call<void>("qoder_remove", { id }),
   setEnabled: (id: string, enabled: boolean) => call<DeviceAccount>("qoder_set_enabled", { id, enabled }),
   setNote: (id: string, note: string | null) => call<DeviceAccount>("qoder_set_note", { id, note }),
+  refreshQuota: (id: string) => call<DeviceAccount>("qoder_refresh_usage", { id }),
   setCurrent: (label: string) => gateway.channelSetCurrent("qoder", label),
   resetLane: () => gateway.channelResetLane("qoder"),
 };
@@ -588,6 +647,7 @@ export const EVENTS = {
   oauthState: "oauth://state",
   chatgptLogin: "chatgpt://login",
   claudeLogin: "claude://login",
+  antigravityLogin: "antigravity://login",
   grokLogin: "grok://login",
   kiroLogin: "kiro://login",
   accountRefreshed: "accounts://refreshed",
@@ -631,6 +691,16 @@ export function onClaudeLogin(cb: (s: ClaudeLoginState) => void): Promise<Unlist
   return listen<ClaudeLoginState>(EVENTS.claudeLogin, (e) => cb(e.payload));
 }
 
+export type AntigravityLoginState =
+  | { state: "waiting"; sessionId: string; elapsedSecs: number }
+  | { state: "succeeded"; sessionId: string; account: DeviceAccount }
+  | { state: "failed"; sessionId: string; message: string; hint: string | null }
+  | { state: "cancelled"; sessionId: string };
+
+export function onAntigravityLogin(cb: (s: AntigravityLoginState) => void): Promise<UnlistenFn> {
+  return listen<AntigravityLoginState>(EVENTS.antigravityLogin, (e) => cb(e.payload));
+}
+
 export function onGrokLogin(cb: (s: DeviceLoginState) => void): Promise<UnlistenFn> {
   return listen<DeviceLoginState>(EVENTS.grokLogin, (e) => cb(e.payload));
 }
@@ -653,3 +723,48 @@ export function onAccountRefreshed(cb: (r: AccountRefreshed) => void): Promise<U
 export function onAccountProvisioned(cb: (r: ProvisionReport) => void): Promise<UnlistenFn> {
   return listen<ProvisionReport>(EVENTS.accountProvisioned, (e) => cb(e.payload));
 }
+
+// ==========================================
+// Nexus Mesh (去中心化共享网络)
+// ==========================================
+
+export async function meshGetStatus(): Promise<MeshStatus> {
+  return invoke<MeshStatus>("mesh_get_status");
+}
+
+export async function meshSetSharing(enabled: boolean): Promise<MeshStatus> {
+  return invoke<MeshStatus>("mesh_set_sharing", { enabled });
+}
+
+export async function meshUpdateConfig(config: MeshConfig): Promise<MeshStatus> {
+  return invoke<MeshStatus>("mesh_update_config", { config });
+}
+
+export async function meshListMarketNodes(): Promise<MarketNode[]> {
+  return invoke<MarketNode[]>("mesh_list_market_nodes");
+}
+
+export async function meshGeneratePairingCode(): Promise<PairingCodeInfo> {
+  return invoke<PairingCodeInfo>("mesh_generate_pairing_code");
+}
+
+export async function meshPairDevice(code: string, peerName?: string): Promise<MeshPeer> {
+  return invoke<MeshPeer>("mesh_pair_device", { code, peerName: peerName ?? null });
+}
+
+export async function meshUnpairDevice(peerNodeId: string): Promise<boolean> {
+  return invoke<boolean>("mesh_unpair_device", { peerNodeId });
+}
+
+export async function meshUpdatePeerChannels(peerNodeId: string, sharedChannels: string[]): Promise<boolean> {
+  return invoke<boolean>("mesh_update_peer_channels", { peerNodeId, sharedChannels });
+}
+
+export async function meshUpdateHostChannel(channel: HostChannel): Promise<boolean> {
+  return invoke<boolean>("mesh_update_host_channel", { channel });
+}
+
+export async function meshUpdateDeviceName(name: string): Promise<MeshStatus> {
+  return invoke<MeshStatus>("mesh_update_device_name", { name });
+}
+

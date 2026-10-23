@@ -3,9 +3,54 @@
 use crate::commands::events;
 use crate::state::AppState;
 use nexus_core::{AppError, ErrorCode, KiroAccountId, Result};
-use nexus_kiro::{KiroAccount, LoginHandle, LoginState};
+use nexus_kiro::{KiroAccount, LoginHandle, LoginState, SocialLoginStart};
 use nexus_store::activity;
 use tauri::{AppHandle, Emitter, State};
+
+#[tauri::command]
+pub async fn kiro_social_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: Option<String>,
+    note: Option<String>,
+) -> Result<SocialLoginStart> {
+    let prov = provider.unwrap_or_else(|| "Google".to_string());
+    let handle = state.kiro.start_social_login(&prov, note)?;
+    open_default_browser(&app, &handle.authorize_url)?;
+    activity::info(
+        &state.db,
+        "kiro",
+        None,
+        format!("发起 Kiro {} 授权登录", handle.provider),
+    );
+    Ok(handle)
+}
+
+#[tauri::command]
+pub async fn kiro_social_complete(
+    state: State<'_, AppState>,
+    session_id: String,
+    callback: String,
+) -> Result<KiroAccount> {
+    let up = state.kiro.complete_social_login(&session_id, &callback).await?;
+    activity::info(
+        &state.db,
+        "kiro",
+        Some(&up.account.label()),
+        if up.created {
+            "已通过社交登录添加 Kiro 账号"
+        } else {
+            "已重新授权 Kiro 账号"
+        },
+    );
+    Ok(up.account)
+}
+
+#[tauri::command(async)]
+pub fn kiro_social_cancel(state: State<'_, AppState>, session_id: String) -> Result<()> {
+    state.kiro.cancel_social_login(&session_id);
+    Ok(())
+}
 
 #[tauri::command(async)]
 pub fn kiro_list(state: State<'_, AppState>) -> Result<Vec<KiroAccount>> {
@@ -137,6 +182,12 @@ pub fn kiro_set_enabled(
     Ok(account)
 }
 
+#[tauri::command]
+pub async fn kiro_refresh_usage(state: State<'_, AppState>, id: String) -> Result<KiroAccount> {
+    let id = KiroAccountId::from_raw(id);
+    state.kiro.refresh_usage(&id).await
+}
+
 #[tauri::command(async)]
 pub fn kiro_set_note(
     state: State<'_, AppState>,
@@ -147,6 +198,30 @@ pub fn kiro_set_note(
     state
         .kiro
         .set_note(&KiroAccountId::from_raw(id), note.as_deref())
+}
+
+#[tauri::command]
+pub async fn kiro_switch_to_client(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<nexus_kiro::KiroSwitchOutcome> {
+    let account_id = KiroAccountId::from_raw(id);
+    let outcome = state
+        .kiro
+        .switch_to_client(&account_id, &state.home_dir)
+        .await?;
+    activity::info(
+        &state.db,
+        "kiro",
+        Some(&outcome.label),
+        "已切号至 Kiro 客户端",
+    );
+    Ok(outcome)
+}
+
+#[tauri::command(async)]
+pub fn kiro_active_client(state: State<'_, AppState>) -> Result<Option<nexus_kiro::KiroActiveInfo>> {
+    state.kiro.active_client(&state.home_dir)
 }
 
 fn open_default_browser(app: &AppHandle, url: &str) -> Result<()> {
