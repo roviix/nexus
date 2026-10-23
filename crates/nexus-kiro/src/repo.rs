@@ -1,7 +1,8 @@
 //! Kiro 账号仓库：`kiro_accounts` 表存元信息，凭证交给 `SecretStore`。
 
-use crate::model::{KiroAccount, KiroStatus};
-use crate::oauth::{Identity, TokenSet};
+use crate::model::{assign_labels, KiroAccount, KiroStatus};
+use crate::oauth::{names_one_user, Identity, TokenSet};
+use crate::usage::KiroUsage;
 use nexus_core::{now_iso, AppError, ErrorCode, KiroAccountId, Result, Secret};
 use nexus_store::keys::{kiro_secret, KiroSecret};
 use nexus_store::{Db, SecretStore};
@@ -25,12 +26,15 @@ impl KiroAccounts {
         Self { db, secrets }
     }
 
+    /// 按建号先后排。标签要看整张表才定得下来（同一个邮箱可能有两行），所以单查一行也走这里。
     pub fn list(&self) -> Result<Vec<KiroAccount>> {
-        self.db.with(|c| {
+        let mut rows: Vec<KiroAccount> = self.db.with(|c| {
             let mut stmt = c.prepare(&format!("{SELECT} ORDER BY created_at ASC, id ASC"))?;
             let rows = stmt.query_map([], row_to_account)?;
             rows.collect()
-        })
+        })?;
+        assign_labels(&mut rows);
+        Ok(rows)
     }
 
     pub fn get(&self, id: &KiroAccountId) -> Result<KiroAccount> {
@@ -38,15 +42,11 @@ impl KiroAccounts {
     }
 
     pub fn by_ref(&self, account_ref: &str) -> Result<Option<KiroAccount>> {
-        self.db.with(|c| {
-            c.query_row(
-                &format!("{SELECT} WHERE account_ref = ?1"),
-                [account_ref.trim()],
-                row_to_account,
-            )
-            .map(Some)
-            .or_else(no_rows)
-        })
+        let account_ref = account_ref.trim();
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|a| a.account_ref == account_ref))
     }
 
     pub fn upsert(
@@ -199,6 +199,84 @@ impl KiroAccounts {
         Ok(())
     }
 
+    /// 把一行改记到另一个身份上。别的行已经是这个身份时不动，回 `false`。
+    ///
+    /// 旧身份是 ARN 而 `profile_arn` 还空着（v21 以前导入的号），顺手把 ARN 挪进 `profile_arn`：
+    /// 出站和问额度还要用它。SET 右边读到的都是改之前的值。
+    pub fn rekey(&self, id: &KiroAccountId, account_ref: &str) -> Result<bool> {
+        let account_ref = account_ref.trim();
+        if account_ref.is_empty() {
+            return Ok(false);
+        }
+        let n = self.db.with(|c| {
+            c.execute(
+                "UPDATE kiro_accounts SET
+                   account_ref = ?2,
+                   profile_arn = COALESCE(
+                     NULLIF(profile_arn, ''),
+                     CASE WHEN account_ref LIKE 'arn:%' THEN account_ref END
+                   ),
+                   updated_at = ?3
+                 WHERE id = ?1
+                   AND NOT EXISTS (SELECT 1 FROM kiro_accounts WHERE account_ref = ?2 AND id <> ?1)",
+                rusqlite::params![id.as_str(), account_ref, now_iso()],
+            )
+        })?;
+        Ok(n > 0)
+    }
+
+    /// 旧版按共用 profileArn / `client:` 记下的号，再导进来时改记到 `account_ref` 上，别另起一行：
+    ///
+    /// - refresh token 和这次导入的一样：同一个登录，直接认回来；
+    /// - 按这次的共用 profileArn 记、但已经用不了的那一行（需要重新授权 / 停用）：凭证早就失效，
+    ///   重新授权认回它顶不掉一个还能用的号。旧版在这种情况下也是原地复活那一行。
+    ///
+    /// 已经有行是这个身份、或者没有对得上的旧行，就什么都不做。
+    pub fn adopt_legacy(
+        &self,
+        account_ref: &str,
+        refresh: Option<&str>,
+        shared_ref: Option<&str>,
+    ) -> Result<bool> {
+        if self.by_ref(account_ref)?.is_some() {
+            return Ok(false);
+        }
+        let legacy: Vec<KiroAccount> = self
+            .list()?
+            .into_iter()
+            .filter(|a| !names_one_user(&a.account_ref))
+            .collect();
+        if let Some(refresh) = refresh {
+            for a in &legacy {
+                let same = self
+                    .secret(&a.id, KiroSecret::Refresh)?
+                    .is_some_and(|s| s.expose() == refresh);
+                if same {
+                    return self.rekey(&a.id, account_ref);
+                }
+            }
+        }
+        let shared = shared_ref.map(str::trim).filter(|s| s.starts_with("arn:"));
+        if let Some(dead) = shared.and_then(|shared| {
+            legacy
+                .iter()
+                .find(|a| a.account_ref == shared && a.status != KiroStatus::Active)
+        }) {
+            return self.rekey(&dead.id, account_ref);
+        }
+        Ok(false)
+    }
+
+    pub fn set_profile_arn(&self, id: &KiroAccountId, profile_arn: &str) -> Result<()> {
+        self.db.with(|c| {
+            c.execute(
+                "UPDATE kiro_accounts SET profile_arn = ?2, updated_at = ?3 WHERE id = ?1",
+                rusqlite::params![id.as_str(), profile_arn, now_iso()],
+            )
+        })?;
+        Ok(())
+    }
+
     pub fn set_note(&self, id: &KiroAccountId, note: Option<&str>) -> Result<KiroAccount> {
         self.db.with(|c| {
             c.execute(
@@ -233,22 +311,50 @@ impl KiroAccounts {
         Ok(())
     }
 
-    fn find(&self, id: &KiroAccountId) -> Result<Option<KiroAccount>> {
-        self.db.with(|c| {
-            c.query_row(
-                &format!("{SELECT} WHERE id = ?1"),
-                [id.as_str()],
-                row_to_account,
+    /// 存额度快照。邮箱以上游为准：它说的是这组凭证现在属于谁。旧版按共用 profileArn 记号时
+    /// 凭证可能被另一个号盖过，表里留着的邮箱就不对了，这里顺带改回来。
+    pub fn save_usage(&self, id: &KiroAccountId, usage: &KiroUsage) -> Result<()> {
+        let json = serde_json::to_string(usage)
+            .map_err(|e| AppError::internal(format!("用量快照无法保存：{e}")))?;
+        let email = usage
+            .email
+            .as_deref()
+            .map(|e| e.trim().to_ascii_lowercase())
+            .filter(|e| !e.is_empty());
+        let now = now_iso();
+        let n = self.db.with(|c| {
+            c.execute(
+                "UPDATE kiro_accounts SET
+                   usage_json = ?2,
+                   plan_type = COALESCE(?3, plan_type),
+                   email = COALESCE(?4, NULLIF(email, '')),
+                   last_checked_at = ?5,
+                   last_error = NULL,
+                   updated_at = ?5
+                 WHERE id = ?1",
+                rusqlite::params![
+                    id.as_str(),
+                    json,
+                    usage.subscription_title.as_deref(),
+                    email.as_deref(),
+                    now,
+                ],
             )
-            .map(Some)
-            .or_else(no_rows)
-        })
+        })?;
+        if n == 0 {
+            return Err(not_found(id.as_str()));
+        }
+        Ok(())
+    }
+
+    fn find(&self, id: &KiroAccountId) -> Result<Option<KiroAccount>> {
+        Ok(self.list()?.into_iter().find(|a| &a.id == id))
     }
 }
 
 const SELECT: &str = "SELECT id, account_ref, email, plan_type, status, enabled, note, auth_method,
         last_checked_at, last_error, has_refresh, access_expires_at, created_at, updated_at,
-        profile_arn
+        profile_arn, usage_json
  FROM kiro_accounts";
 
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<KiroAccount> {
@@ -267,16 +373,15 @@ fn row_to_account(row: &Row<'_>) -> rusqlite::Result<KiroAccount> {
         last_error: row.get(9)?,
         has_refresh: row.get::<_, i64>(10)? != 0,
         access_expires_at: row.get(11)?,
+        usage: row
+            .get::<_, Option<String>>(15)?
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<KiroUsage>(s).ok()),
+        // `list()` 看完整张表再填。
+        label: String::new(),
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
     })
-}
-
-fn no_rows<T>(err: rusqlite::Error) -> rusqlite::Result<Option<T>> {
-    match err {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        other => Err(other),
-    }
 }
 
 fn not_found(id: &str) -> AppError {

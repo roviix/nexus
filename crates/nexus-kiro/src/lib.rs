@@ -9,9 +9,14 @@ pub mod oauth;
 pub mod protocol;
 pub mod repo;
 pub mod service;
+pub mod usage;
 
-pub use model::{KiroAccount, KiroStatus};
+pub use model::{KiroAccount, KiroActiveInfo, KiroStatus, KiroSwitchOutcome};
 pub use oauth::{Identity, TokenSet};
 pub use protocol::{is_kiro_model, split_route_prefix, upstream_model, KIRO_MODELS, REFRESH_AHEAD};
 pub use repo::{KiroAccounts, Upserted};
-pub use service::{parse_import_text, KiroOutbound, KiroService, LoginHandle, LoginState};
+pub use service::{
+    is_kiro_running, parse_import_text, KiroOutbound, KiroService, LoginHandle, LoginState,
+    SocialLoginStart,
+};
+pub use usage::KiroUsage;

@@ -1,6 +1,9 @@
 //! AWS Builder ID 的 OIDC：注册 client、device code、刷新。
 //!
-//! 协议事实见 `docs/relay/KIRO.md`。AWS SSO OIDC 用 JSON 体，不是 form。
+//! AWS SSO OIDC 用 JSON 体，不是 form。
+//!
+//! 协议事实靠真机探针钉住，不靠文档：
+//! `cargo run -p nexus-gateway --example kiro_matrix -- status | usage | profiles`。
 
 use nexus_core::{AppError, ErrorCode, Secret};
 use serde_json::{json, Value};
@@ -219,6 +222,35 @@ impl TokenClient {
         ))
     }
 
+    /// Kiro 桌面社交登录通过授权码换票。
+    pub async fn exchange_social_code(
+        &self,
+        code: &str,
+        code_verifier: &str,
+    ) -> Result<(TokenSet, Option<String>), AppError> {
+        let body = json!({
+            "code": code,
+            "code_verifier": code_verifier,
+            "redirect_uri": crate::protocol::SOCIAL_REDIRECT_URI,
+        });
+        let res = self
+            .http
+            .post(format!("{}/oauth/token", crate::protocol::SOCIAL_AUTH_BASE))
+            .timeout(HTTP_TIMEOUT)
+            .json(&body)
+            .send()
+            .await
+            .map_err(net)?;
+        let status = res.status().as_u16();
+        let v: Value = res.json().await.map_err(net)?;
+        if !(200..300).contains(&status) {
+            return Err(oauth_err(&v, status == 401 || status == 403));
+        }
+        let profile_arn = v.get("profileArn").and_then(|x| x.as_str()).map(str::to_string);
+        let tokens = tokens_from(&v, None, None)?;
+        Ok((tokens, profile_arn))
+    }
+
     /// Kiro 桌面社交登录没有 SSO client 对，刷新走桌面端点。
     pub async fn refresh_social(&self, refresh_token: &str) -> Result<TokenSet, AppError> {
         let body = json!({ "refreshToken": refresh_token });
@@ -237,6 +269,180 @@ impl TokenClient {
         }
         Err(oauth_err(&v, status == 401 || status == 403))
     }
+
+    /// Enterprise / IdC 的真实 profileArn 不在刷新响应里，只能问 `ListAvailableProfiles`。
+    /// 成功但列表为空返回 `Ok(None)`（纯 Builder ID）。两端点都失败才是 `Err`。
+    pub async fn list_profiles(
+        &self,
+        access_token: &str,
+        token_type: Option<&str>,
+    ) -> Result<Option<String>, AppError> {
+        let mut saw_empty = false;
+        let mut last = None;
+        for region in ["us-east-1", "eu-central-1"] {
+            let host = format!("q.{region}.amazonaws.com");
+            let mut req = self
+                .http
+                .post(format!("https://{host}/"))
+                .timeout(HTTP_TIMEOUT)
+                .header("content-type", "application/x-amz-json-1.0")
+                .header(
+                    "x-amz-target",
+                    "AmazonCodeWhispererService.ListAvailableProfiles",
+                )
+                .header(
+                    "user-agent",
+                    "aws-sdk-js/1.0.0 KiroIDE-0.11.132 ua/2.1 api/codewhispererruntime#1.0.0 m/N,E",
+                )
+                .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+                .header("amz-sdk-request", "attempt=1; max=1")
+                .header("authorization", format!("Bearer {access_token}"))
+                .body(r#"{"maxResults":10}"#);
+            if let Some(token_type) = token_type.map(str::trim).filter(|s| !s.is_empty()) {
+                req = req.header("tokentype", token_type);
+            }
+            let res = match req.send().await {
+                Ok(res) => res,
+                Err(err) => {
+                    last = Some(err.to_string());
+                    continue;
+                }
+            };
+            let status = res.status().as_u16();
+            if !(200..300).contains(&status) {
+                let text = res.text().await.unwrap_or_default();
+                last = Some(format!("{status} {text}"));
+                continue;
+            }
+            let v: Value = res.json().await.map_err(net)?;
+            let arn = v
+                .get("profiles")
+                .and_then(Value::as_array)
+                .and_then(|profiles| {
+                    profiles.iter().find_map(|profile| {
+                        profile
+                            .get("arn")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string)
+                    })
+                });
+            if let Some(arn) = arn {
+                return Ok(Some(arn));
+            }
+            saw_empty = true;
+        }
+        if saw_empty {
+            return Ok(None);
+        }
+        Err(AppError::upstream(
+            last.unwrap_or_else(|| "获取可用 profile 失败".to_string()),
+        ))
+    }
+
+    /// `GET /getUsageLimits`。真实 profileArn 先带上试，400/403 再退回不带。
+    /// Builder ID 的占位 ARN 不送。401 直接失败，不再换区域。
+    pub async fn usage_limits(
+        &self,
+        access_token: &str,
+        token_type: Option<&str>,
+        profile_arn: Option<&str>,
+    ) -> Result<crate::usage::KiroUsage, AppError> {
+        let arn = profile_arn
+            .map(str::trim)
+            .filter(|s| s.starts_with("arn:") && !crate::protocol::is_placeholder_profile_arn(s));
+        let mut last = String::from("获取 Kiro 用量失败");
+        for region in ["us-east-1", "eu-central-1"] {
+            let passes: Vec<Option<&str>> = if arn.is_some() {
+                vec![arn, None]
+            } else {
+                vec![None]
+            };
+            for profile in passes {
+                match self
+                    .usage_once(region, access_token, token_type, profile)
+                    .await
+                {
+                    Ok(body) => {
+                        return crate::usage::parse_usage(&body).map_err(AppError::upstream)
+                    }
+                    Err(err) if err.code == ErrorCode::Unauthorized => return Err(err),
+                    Err(err) => {
+                        let retry_without = profile.is_some()
+                            && (err.message.contains("403")
+                                || err.message.contains("400")
+                                || err.message.contains("Improperly formed request")
+                                || err.message.contains("Invalid profileArn"));
+                        last = err.message;
+                        if retry_without {
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        Err(AppError::upstream(last))
+    }
+
+    async fn usage_once(
+        &self,
+        region: &str,
+        access_token: &str,
+        token_type: Option<&str>,
+        profile_arn: Option<&str>,
+    ) -> Result<Value, AppError> {
+        let host = format!("q.{region}.amazonaws.com");
+        let mut url = format!(
+            "https://{host}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST&isEmailRequired=true"
+        );
+        if let Some(arn) = profile_arn {
+            url.push_str("&profileArn=");
+            url.push_str(&query_escape(arn));
+        }
+        let mut req = self
+            .http
+            .get(url)
+            .timeout(HTTP_TIMEOUT)
+            .header(
+                "user-agent",
+                "aws-sdk-js/1.0.0 KiroIDE-0.6.18 ua/2.1 api/codewhispererruntime#1.0.0 m/N,E",
+            )
+            .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+            .header("amz-sdk-request", "attempt=1; max=1")
+            .header("authorization", format!("Bearer {access_token}"));
+        if let Some(token_type) = token_type.map(str::trim).filter(|s| !s.is_empty()) {
+            req = req.header("tokentype", token_type);
+        }
+        let res = req.send().await.map_err(net)?;
+        let status = res.status().as_u16();
+        if (200..300).contains(&status) {
+            return res.json().await.map_err(net);
+        }
+        let text = res.text().await.unwrap_or_default();
+        let head: String = text.chars().take(240).collect();
+        if status == 401 {
+            return Err(AppError::new(
+                ErrorCode::Unauthorized,
+                format!("Kiro 登录失效：{head}"),
+            ));
+        }
+        Err(AppError::upstream(format!("{status} {head}")))
+    }
+}
+
+fn query_escape(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 fn tokens_from(
@@ -284,6 +490,16 @@ fn expires_from(body: &Value, access: &str) -> Option<OffsetDateTime> {
     jwt_expiry(access)
 }
 
+/// 这个 `account_ref` 指不指得到一个人。
+///
+/// profileArn 不行：社交登录所有 Google / GitHub 号共用一个，IdC 是一个组织一个，Builder ID
+/// 的占位符人人都一样——拿它当身份，导第二个号就会把第一个的凭证盖掉。`client:` 是某次
+/// 设备授权注册出来的 client，重新授权就换一个。这两种要等问到 `userInfo.userId` 再改记。
+pub fn names_one_user(account_ref: &str) -> bool {
+    let r = account_ref.trim();
+    !r.is_empty() && !r.starts_with("arn:") && !r.starts_with("client:")
+}
+
 pub fn identity_from_tokens(tokens: &TokenSet, fallback_ref: Option<&str>) -> Identity {
     let mut id = Identity::default();
     if let Some(claims) = decode_jwt_claims(tokens.access_token.expose()) {
@@ -312,7 +528,10 @@ pub fn identity_from_tokens(tokens: &TokenSet, fallback_ref: Option<&str>) -> Id
             id.subject = format!("client:{}", cid.expose());
         }
     }
-    if let Some(arn) = fallback_ref.map(str::trim).filter(|s| s.starts_with("arn:")) {
+    if let Some(arn) = fallback_ref
+        .map(str::trim)
+        .filter(|s| s.starts_with("arn:"))
+    {
         id.profile_arn = Some(arn.to_string());
     }
     id
