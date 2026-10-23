@@ -5,7 +5,8 @@
 
 use super::Dialect;
 use crate::normalized::{
-    ChatRequest, ImageInput, Message, Role, Sampling, ToolCall, ToolChoice, ToolDef, ToolResult,
+    ChatRequest, ImageInput, Message, Reasoning, Role, Sampling, ToolCall, ToolChoice, ToolDef,
+    ToolResult,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -103,6 +104,26 @@ fn normalize_role(raw: Option<&Value>) -> Role {
     }
 }
 
+fn media_mime(kind: &str, format: &str, fallback: &str) -> String {
+    let format = format.trim();
+    if format.contains('/') {
+        return format.to_string();
+    }
+    if format.is_empty() {
+        return fallback.to_string();
+    }
+    format!("{kind}/{format}")
+}
+
+fn default_mime(kind: &str) -> &'static str {
+    match kind {
+        "audio" => "audio/wav",
+        "video" => "video/mp4",
+        "document" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
 fn str_of(v: Option<&Value>) -> String {
     v.and_then(Value::as_str).unwrap_or("").to_string()
 }
@@ -161,6 +182,41 @@ fn extract_images(content: Option<&Value>) -> Result<Vec<ImageInput>, ParseError
                 }
             }
             // Anthropic：{ type: "image", source: { type: "base64" | "url", media_type, data | url } }
+            Some("input_audio") => {
+                let audio = part.get("input_audio").and_then(Value::as_object);
+                let data = str_of(audio.and_then(|a| a.get("data")));
+                if !data.is_empty() {
+                    let format = str_of(audio.and_then(|a| a.get("format")));
+                    out.push(ImageInput {
+                        data,
+                        mime_type: media_mime("audio", &format, "audio/wav"),
+                    });
+                }
+            }
+            Some("audio") | Some("video") | Some("document") => {
+                let kind = part
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("application");
+                let src = part.get("source").and_then(Value::as_object);
+                let Some(src) = src else { continue };
+                let media = src.get("media_type").and_then(Value::as_str);
+                if src.get("type").and_then(Value::as_str) == Some("base64") {
+                    let data = str_of(src.get("data"));
+                    if !data.is_empty() {
+                        out.push(ImageInput {
+                            data,
+                            mime_type: media
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| media_mime(kind, "", default_mime(kind))),
+                        });
+                    }
+                } else if let Some(u) = src.get("url").and_then(Value::as_str) {
+                    if let Some(img) = image_from(u, media)? {
+                        out.push(img);
+                    }
+                }
+            }
             Some("image") => {
                 let src = part.get("source").and_then(Value::as_object);
                 let Some(src) = src else { continue };
@@ -261,22 +317,31 @@ fn parse_message(raw: &Value) -> Result<Vec<Message>, ParseError> {
         }
     }
 
+    // 图同时记两份：跟着各自的结果走（上游分得清哪张图是哪个工具的），和整条消息的汇总
+    // （给不区分结果的上游）。
     let mut tool_results = Vec::new();
+    let mut tool_images = Vec::new();
     if role == Role::Tool {
+        let images = extract_images(content)?;
+        tool_images.extend(images.iter().cloned());
         tool_results.push(ToolResult {
             tool_call_id: str_of(m.get("tool_call_id")),
             tool_name: str_of(m.get("name")),
             text: content_to_text(content),
             is_error: false,
+            images,
         });
     }
     for p in &parts {
         if p.get("type").and_then(Value::as_str) == Some("tool_result") {
+            let images = extract_images(p.get("content"))?;
+            tool_images.extend(images.iter().cloned());
             tool_results.push(ToolResult {
                 tool_call_id: str_of(p.get("tool_use_id")),
                 tool_name: String::new(),
                 text: content_to_text(p.get("content")),
                 is_error: p.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                images,
             });
         }
     }
@@ -293,9 +358,10 @@ fn parse_message(raw: &Value) -> Result<Vec<Message>, ParseError> {
         out.push(Message {
             role: Role::Tool,
             text: String::new(),
-            images: Vec::new(),
+            images: tool_images,
             tool_calls: Vec::new(),
             tool_results,
+            reasoning: Vec::new(),
         });
         return Ok(out);
     }
@@ -303,28 +369,68 @@ fn parse_message(raw: &Value) -> Result<Vec<Message>, ParseError> {
         out.push(Message {
             role: Role::Tool,
             text: String::new(),
-            images: Vec::new(),
+            images: tool_images,
             tool_calls: Vec::new(),
             tool_results,
+            reasoning: Vec::new(),
         });
     }
     let has_body = !text.trim().is_empty() || !images.is_empty() || !tool_calls.is_empty();
     // 只承载 tool_result 的 user 消息拆完就没剩下什么了；system 即便为空也留着（无害，
     // 上游映射会过滤），其余空消息不发。
     if has_body || role == Role::System {
+        let assistant = role == Role::Assistant;
         out.push(Message {
             role,
             text,
             images,
-            tool_calls: if role == Role::Assistant {
-                tool_calls
+            tool_calls: if assistant { tool_calls } else { Vec::new() },
+            tool_results: Vec::new(),
+            reasoning: if assistant {
+                reasoning_of(&parts)
             } else {
                 Vec::new()
             },
-            tool_results: Vec::new(),
         });
     }
     Ok(out)
+}
+
+/// assistant 内容里的思考块。`content_to_text` 只认 `text` 字段，思考正文在 `thinking` /
+/// `data` 里，不会混进正文；这里单独收，好让认得签名的上游接上自己上一轮的推理。
+fn reasoning_of(parts: &[Value]) -> Vec<Reasoning> {
+    let mut out = Vec::new();
+    for p in parts {
+        match p.get("type").and_then(Value::as_str) {
+            Some("thinking") => {
+                let text = str_of(p.get("thinking"));
+                let signature = p
+                    .get("signature")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                if !text.is_empty() || signature.is_some() {
+                    out.push(Reasoning {
+                        text,
+                        signature,
+                        redacted: None,
+                    });
+                }
+            }
+            Some("redacted_thinking") => {
+                let data = str_of(p.get("data"));
+                if !data.is_empty() {
+                    out.push(Reasoning {
+                        redacted: Some(data),
+                        ..Reasoning::default()
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn parse_chat_like_messages(body: &Value) -> Result<Vec<Message>, ParseError> {
@@ -439,35 +545,41 @@ fn parse_responses_item(it: &Value) -> Result<Vec<Message>, ParseError> {
                 arguments,
             }],
             tool_results: Vec::new(),
+            reasoning: Vec::new(),
         }]);
     }
 
     if t == "function_call_output" || t == "custom_tool_call_output" {
-        let text = content_to_text(o.get("output").or_else(|| o.get("result")));
+        let output = o.get("output").or_else(|| o.get("result"));
+        let text = content_to_text(output);
+        // output 也可以是内容数组（input_text / input_image），截图类工具的图就在这里。
+        let images = extract_images(output)?;
         return Ok(vec![Message {
             role: Role::Tool,
             text: String::new(),
-            images: Vec::new(),
+            images: images.clone(),
             tool_calls: Vec::new(),
             tool_results: vec![ToolResult {
                 tool_call_id: call_id(),
                 tool_name: String::new(),
                 text,
                 is_error: false,
+                images,
             }],
+            reasoning: Vec::new(),
         }]);
     }
 
     // 图片有时不裹在 message 里，直接就是一个 input item。
-    if matches!(t, "input_image" | "image_url" | "image") {
+    if matches!(
+        t,
+        "input_image" | "image_url" | "image" | "input_audio" | "audio" | "video" | "document"
+    ) {
         let imgs = extract_images(Some(&Value::Array(vec![it.clone()])))?;
         return Ok(match imgs.into_iter().next() {
             Some(img) => vec![Message {
-                role: Role::User,
-                text: String::new(),
                 images: vec![img],
-                tool_calls: Vec::new(),
-                tool_results: Vec::new(),
+                ..Message::text(Role::User, "")
             }],
             None => Vec::new(),
         });
@@ -480,11 +592,8 @@ fn parse_responses_item(it: &Value) -> Result<Vec<Message>, ParseError> {
     let images = extract_images(content)?;
     if !text.is_empty() || !images.is_empty() {
         return Ok(vec![Message {
-            role: normalize_role(o.get("role")),
-            text,
             images,
-            tool_calls: Vec::new(),
-            tool_results: Vec::new(),
+            ..Message::text(normalize_role(o.get("role")), text)
         }]);
     }
 
@@ -748,9 +857,16 @@ fn parse_sampling(dialect: Dialect, body: &Value) -> Sampling {
     }
 }
 
-/// 上游对话缓存的键。优先客户端自己给的；都没有就对前两条有内容的 user 消息求哈希——
-/// 同一会话内这两条不变（第一条是开场，第二条在首轮就定型）。只哈希第一条不够：
-/// Claude Code 每个会话首条 user 是同一段固定的 caveat，全部会话会算出同一个键。
+/// 上游对话缓存的键。同一会话的每一轮必须算出同一个键，第二轮才能命中第一轮写下的前缀。
+///
+/// 顺序：
+/// 1. 客户端显式给的会话号（头、`conversation_id`、`previous_response_id`、`user`）。
+/// 2. Claude Code 放在 `metadata.user_id` 里的 `session_id`。它从第一轮就在，而且每轮不变。
+///    不用整段 `user_id`，也不用里面的 `device_id`：那是这台机器的，同机所有会话会撞成一个键。
+/// 3. 都没有，就哈希开场：第一条 assistant 之前的 system，加上那里的前两条 user。
+///    跟在 assistant 后面的追问不参与——把它算进去的话，第一轮还没有这条，第二轮键就变了，
+///    缓存要到第三轮才接得上。assistant 之前的第二条 user 仍然要算：Claude Code 的第一条
+///    user 经常是一段所有会话共用的 caveat，只哈希它会让不同会话撞车。
 /// **必须带上模型**：缓存按（账号 × 模型 × 对话）存，换了模型本来就命不中。
 fn conversation_key(
     body: &Value,
@@ -767,20 +883,63 @@ fn conversation_key(
                 .find_map(|k| body.get(*k).and_then(Value::as_str))
                 .map(str::to_string)
                 .filter(|s| !s.is_empty())
-        });
+        })
+        .or_else(|| session_id_from_metadata(body));
     if let Some(g) = given {
         return format!("{model}:{g}");
     }
-    let seed = messages
-        .iter()
-        .filter(|m| m.role == Role::User && !m.text.trim().is_empty())
-        .take(2)
-        .map(|m| m.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\u{0}\n");
-    let seed: String = seed.chars().take(4096).collect();
+    let seed: String = opening_seed(messages).chars().take(4096).collect();
     let h = crate::identity::sha256_hex(seed.as_bytes());
     format!("{model}:{}", &h[..16])
+}
+
+/// `metadata.user_id` 里的会话号。Claude Code 把它做成 JSON 字符串，字段是
+/// `device_id` / `account_uuid` / `session_id`。只认非空的 `session_id`。
+fn session_id_from_metadata(body: &Value) -> Option<String> {
+    let uid = body.get("metadata")?.get("user_id")?;
+    let sid = match uid {
+        Value::Object(o) => o
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        Value::String(s) => {
+            let parsed = serde_json::from_str::<Value>(s).ok()?;
+            parsed
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }
+        _ => None,
+    }?;
+    let sid = sid.trim();
+    if sid.is_empty() {
+        None
+    } else {
+        Some(sid.to_string())
+    }
+}
+
+/// 开场文本。第一条 assistant（或工具结果）之前的 system / user 才算；user 最多两条。
+fn opening_seed(messages: &[Message]) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    let mut users = 0usize;
+    for m in messages {
+        if matches!(m.role, Role::Assistant | Role::Tool) {
+            break;
+        }
+        if m.text.trim().is_empty() {
+            continue;
+        }
+        match m.role {
+            Role::System => parts.push(m.text.as_str()),
+            Role::User if users < 2 => {
+                parts.push(m.text.as_str());
+                users += 1;
+            }
+            _ => {}
+        }
+    }
+    parts.join("\n\u{0}\n")
 }
 
 /// 解析一次请求。`explicit_conversation` 来自 `x-conversation-id` 头。
@@ -981,6 +1140,110 @@ mod tests {
     }
 
     #[test]
+    fn audio_and_video_ride_along_as_inline_media() {
+        let p = openai(json!({"messages":[{"role":"user","content":[
+            {"type":"input_audio","input_audio":{"data":"QQQ","format":"wav"}},
+            {"type":"video","source":{"type":"base64","media_type":"video/mp4","data":"VVV"}}
+        ]}]}));
+        let media = &p.request.messages[0].images;
+        assert_eq!(media[0].mime_type, "audio/wav");
+        assert_eq!(media[0].data, "QQQ");
+        assert_eq!(media[1].mime_type, "video/mp4");
+        assert_eq!(media[1].data, "VVV");
+    }
+
+    #[test]
+    fn anthropic_thinking_blocks_ride_on_the_assistant_message_not_in_its_text() {
+        let p = anthropic(json!({
+            "messages": [
+                {"role":"user","content":"x"},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"let me look","signature":"EqQBsig"},
+                    {"type":"redacted_thinking","data":"ENCRYPTED"},
+                    {"type":"thinking","thinking":"","signature":"   "},
+                    {"type":"text","text":"reading"},
+                    {"type":"tool_use","id":"t","name":"f","input":{}}
+                ]}
+            ]
+        }));
+        let a = &p.request.messages[1];
+        assert_eq!(a.text, "reading", "思考正文不混进正文");
+        assert_eq!(
+            a.reasoning,
+            vec![
+                Reasoning {
+                    text: "let me look".into(),
+                    signature: Some("EqQBsig".into()),
+                    redacted: None,
+                },
+                Reasoning {
+                    redacted: Some("ENCRYPTED".into()),
+                    ..Reasoning::default()
+                },
+            ],
+            "空的思考块（无正文、签名只有空白）不收"
+        );
+        assert!(p.request.messages[0].reasoning.is_empty());
+    }
+
+    #[test]
+    fn tool_result_images_stay_with_their_own_result() {
+        let img = |data: &str| json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":data}});
+        let p = anthropic(json!({
+            "messages": [
+                {"role":"user","content":"x"},
+                {"role":"assistant","content":[
+                    {"type":"tool_use","id":"a","name":"shot","input":{}},
+                    {"type":"tool_use","id":"b","name":"read","input":{}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"a","content":[{"type":"text","text":"screen"}, img("AAAA")]},
+                    {"type":"tool_result","tool_use_id":"b","content":"plain"},
+                    {"type":"text","text":"<system-reminder>r</system-reminder>"}
+                ]}
+            ]
+        }));
+        let tool = &p.request.messages[2];
+        assert_eq!(tool.role, Role::Tool);
+        assert_eq!(tool.tool_results[0].text, "screen");
+        assert_eq!(tool.tool_results[0].images.len(), 1);
+        assert_eq!(tool.tool_results[0].images[0].data, "AAAA");
+        assert!(tool.tool_results[1].images.is_empty(), "图不串到别的结果上");
+        assert_eq!(tool.images.len(), 1, "整条消息的汇总照旧");
+        assert_eq!(p.request.messages[3].role, Role::User);
+
+        // OpenAI 的 tool 消息：一条结果，图跟着它。
+        let p = openai(json!({"messages":[
+            {"role":"user","content":"x"},
+            {"role":"tool","tool_call_id":"c","content":[
+                {"type":"text","text":"ok"},
+                {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,BBBB"}}
+            ]}
+        ]}));
+        let r = &p.request.messages[1].tool_results[0];
+        assert_eq!(
+            (r.text.as_str(), r.images[0].mime_type.as_str()),
+            ("ok", "image/jpeg")
+        );
+    }
+
+    #[test]
+    fn responses_function_call_output_images_are_kept() {
+        let p = responses(json!({"input":[
+            {"type":"message","role":"user","content":"x"},
+            {"type":"function_call","call_id":"c","name":"shot","arguments":"{}"},
+            {"type":"function_call_output","call_id":"c","output":[
+                {"type":"input_text","text":"here"},
+                {"type":"input_image","image_url":"data:image/png;base64,CCCC"}
+            ]}
+        ]}));
+        let tool = &p.request.messages[2];
+        assert_eq!(tool.tool_results[0].text, "here");
+        assert_eq!(tool.tool_results[0].images[0].data, "CCCC");
+        assert_eq!(tool.images.len(), 1);
+    }
+
+    #[test]
     fn tools_dedupe_by_name_and_walk_namespaces() {
         let p = openai(json!({
             "messages":[{"role":"user","content":"x"}],
@@ -1079,6 +1342,70 @@ mod tests {
         assert_eq!(
             explicit.request.conversation_id.as_deref(),
             Some("m1:conv-9")
+        );
+    }
+
+    #[test]
+    fn conversation_key_ignores_the_follow_up_that_arrives_on_turn_two() {
+        // 第一轮只有开场 user。第二轮把追问接在 assistant 后面。键必须不变，缓存才能在第二轮命中。
+        let turn1 = json!({"model":"m","system":"rules","messages":[
+            {"role":"user","content":"the real question"}]});
+        let turn2 = json!({"model":"m","system":"rules","messages":[
+            {"role":"user","content":"the real question"},
+            {"role":"assistant","content":"answer"},
+            {"role":"user","content":"follow up"}]});
+        let k1 = anthropic(turn1).request.conversation_id.unwrap();
+        let k2 = anthropic(turn2).request.conversation_id.unwrap();
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn conversation_key_still_separates_sessions_that_share_the_opening_caveat() {
+        // assistant 还没出现时，第二条 user 是开场的一部分，必须进键。
+        let a = json!({"model":"m","messages":[
+            {"role":"user","content":"shared caveat"},
+            {"role":"user","content":"question A"}]});
+        let b = json!({"model":"m","messages":[
+            {"role":"user","content":"shared caveat"},
+            {"role":"user","content":"question B"}]});
+        assert_ne!(
+            openai(a).request.conversation_id.unwrap(),
+            openai(b).request.conversation_id.unwrap()
+        );
+    }
+
+    #[test]
+    fn claude_session_id_is_stable_and_beats_a_shared_caveat() {
+        let uid = |sid: &str| {
+            json!(format!(
+                r#"{{"device_id":"same-machine","account_uuid":"","session_id":"{sid}"}}"#
+            ))
+        };
+        let body = |sid: &str| {
+            json!({"model":"m","metadata":{"user_id": uid(sid)},"messages":[
+                {"role":"user","content":"shared caveat"}]})
+        };
+        let turn2 = json!({"model":"m","metadata":{"user_id": uid("sess-a")},
+            "messages":[
+                {"role":"user","content":"shared caveat"},
+                {"role":"assistant","content":"answer"},
+                {"role":"user","content":"follow up"}]});
+        let k1 = anthropic(body("sess-a")).request.conversation_id.unwrap();
+        let k2 = anthropic(turn2).request.conversation_id.unwrap();
+        assert_eq!(k1, k2, "同一 session_id 跨轮不变");
+        assert_ne!(
+            k1,
+            anthropic(body("sess-b")).request.conversation_id.unwrap(),
+            "不同会话不能因为 caveat 相同就撞键"
+        );
+        // 只有 device_id、没有 session_id：退回开场哈希，不把整台机器收成一个键。
+        let device_only = json!({"model":"m","metadata":{"user_id":
+            r#"{"device_id":"same-machine","session_id":""}"#},"messages":[
+            {"role":"user","content":"shared caveat"}]});
+        let no_meta = json!({"model":"m","messages":[{"role":"user","content":"shared caveat"}]});
+        assert_eq!(
+            anthropic(device_only).request.conversation_id.unwrap(),
+            anthropic(no_meta).request.conversation_id.unwrap()
         );
     }
 

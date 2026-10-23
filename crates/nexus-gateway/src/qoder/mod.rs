@@ -418,6 +418,8 @@ async fn read_sse(
         ttft_ms: collected.ttft,
         turn_ms: started.elapsed().as_millis() as u64,
         raw_response: None,
+        thinking_signature: None,
+        redacted_thinking: None,
     })
 }
 
@@ -469,6 +471,7 @@ fn handle_event(
                     cache_read_tokens: usage.cache_read_tokens,
                     cache_write_tokens: usage.cache_write_tokens,
                     reasoning_tokens: usage.reasoning_tokens,
+                    ..Default::default()
                 };
                 collected.usage_measured = true;
             }

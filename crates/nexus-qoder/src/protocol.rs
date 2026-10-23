@@ -151,6 +151,16 @@ pub fn user_info_url(backend: QoderBackend) -> String {
     format!("{}/api/v1/userinfo", openapi_base(backend))
 }
 
+/// 账号 Credits 额度。官方 CLI 的 `getUsageInfo` 读的就是这一路。
+pub fn quota_url(backend: QoderBackend) -> String {
+    format!("{}/api/v2/quota/usage", openapi_base(backend))
+}
+
+/// 套餐名和重置日。`userTag` / `plan` 在这里，额度数字在 `quota_url`。
+pub fn user_status_url(backend: QoderBackend) -> String {
+    format!("{}/api/v3/user/status", openapi_base(backend))
+}
+
 pub fn chat_url(backend: QoderBackend) -> String {
     format!(
         "{}algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1",

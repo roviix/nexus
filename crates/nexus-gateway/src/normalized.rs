@@ -37,6 +37,20 @@ pub struct ToolResult {
     pub tool_name: String,
     pub text: String,
     pub is_error: bool,
+    /// 这条结果自己带的图（截图、读图工具）。一条消息里有几条结果时，图得跟着各自的结果走；
+    /// [`Message::images`] 那份是整条消息的汇总，给不区分结果的上游用。
+    pub images: Vec<ImageInput>,
+}
+
+/// assistant 历史里的一段思考：客户端原样带回来的 Anthropic `thinking` / `redacted_thinking` 块。
+///
+/// 回放价值全在凭据上：签名 / 密文是上游接上自己上一轮推理的依据，光有正文对它没用。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Reasoning {
+    pub text: String,
+    pub signature: Option<String>,
+    /// 加密思考（`redacted_thinking.data`）。有它时 `text` 为空。
+    pub redacted: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +63,8 @@ pub struct Message {
     pub tool_calls: Vec<ToolCall>,
     /// 只对 tool 有意义。
     pub tool_results: Vec<ToolResult>,
+    /// 只对 assistant 有意义：客户端带回来的思考块，顺序与原文一致。
+    pub reasoning: Vec<Reasoning>,
 }
 
 impl Message {
@@ -59,8 +75,27 @@ impl Message {
             images: Vec::new(),
             tool_calls: Vec::new(),
             tool_results: Vec::new(),
+            reasoning: Vec::new(),
         }
     }
+}
+
+/// 没有上游签名时给思考块的占位签名：正文的 sha256（base64）。Claude Code 收思考块时要求
+/// 带签名，没有就不收。它只对我们自己有意义——客户端把它带回来时要认出来，不能当真签名
+/// 转给上游（上游验不过，整轮 400）。
+pub fn placeholder_thinking_signature(text: &str) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    if text.is_empty() {
+        return String::new();
+    }
+    let digest = sha2::Sha256::digest(text.as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(digest)
+}
+
+/// 这个签名是不是 [`placeholder_thinking_signature`] 给这段正文造的。
+pub fn is_placeholder_signature(text: &str, signature: &str) -> bool {
+    !text.is_empty() && placeholder_thinking_signature(text) == signature
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -159,6 +194,24 @@ impl FinishReason {
     }
 }
 
+/// [`Usage::input_tokens`] 按哪种口径记。
+///
+/// 两家口径相反：OpenAI 的 `prompt_tokens` 含缓存命中，Anthropic 的 `input_tokens` 只算没命中
+/// 缓存的那部分（总输入 = input + cache_read + cache_creation）。转成另一种方言时要换算，
+/// 不换的话 Claude Code 会把缓存算两遍——它按 Anthropic 口径三项相加求上下文占用，
+/// 缓存命中率越高、离真实上下文越远，没到一半就自动压缩。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputBasis {
+    /// 上游没声明：各方言原样透出，不换算。
+    #[default]
+    Unspecified,
+    /// 含缓存读写（OpenAI 口径）。Cursor 的 `extended_usage` 也是：账本里每一行都满足
+    /// `input = 未命中 + cache_read + cache_write`。
+    IncludesCache,
+    /// 只算未命中缓存的部分（Anthropic 口径）。
+    ExcludesCache,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Usage {
     pub input_tokens: u32,
@@ -166,6 +219,31 @@ pub struct Usage {
     pub cache_read_tokens: u32,
     pub cache_write_tokens: u32,
     pub reasoning_tokens: u32,
+    pub input_basis: InputBasis,
+}
+
+impl Usage {
+    /// Anthropic 口径的输入：没命中缓存的那部分。
+    pub fn uncached_input(&self) -> u32 {
+        match self.input_basis {
+            InputBasis::IncludesCache => self
+                .input_tokens
+                .saturating_sub(self.cache_read_tokens)
+                .saturating_sub(self.cache_write_tokens),
+            InputBasis::Unspecified | InputBasis::ExcludesCache => self.input_tokens,
+        }
+    }
+
+    /// OpenAI 口径的输入：含缓存。
+    pub fn total_input(&self) -> u32 {
+        match self.input_basis {
+            InputBasis::ExcludesCache => self
+                .input_tokens
+                .saturating_add(self.cache_read_tokens)
+                .saturating_add(self.cache_write_tokens),
+            InputBasis::Unspecified | InputBasis::IncludesCache => self.input_tokens,
+        }
+    }
 }
 
 /// 流式增量。刻意比任何单一协议都窄：各方言的花样（OpenAI 的 index、Anthropic 的
@@ -184,6 +262,10 @@ pub enum Delta {
     /// 上游响应头里值得转给客户端的那几个（会话状态印、额度）。在任何内容帧之前、至多一次；
     /// 它不是给客户端的字节，换号重试的判据不算它。
     Headers(Vec<(String, String)>),
+    /// 这段思考的上游签名。不是正文：序列化层在关上思考块时优先用它。
+    ThinkingSignature(String),
+    /// 加密思考。Anthropic 要单独的 `redacted_thinking` 块，不能混进正文。
+    RedactedThinking(String),
 }
 
 /// 一轮跑完的结果。
@@ -204,6 +286,10 @@ pub struct Completion {
     /// 透传时上游最终的 `response` 对象（`response.completed` 里那份）。非流式请求直接回它，
     /// 而不是照着中间表示再拼一遍。其他情况 `None`。
     pub raw_response: Option<serde_json::Value>,
+    /// 上游给的思考签名。空则序列化层用正文哈希占位，Claude Code 才肯收下这块。
+    pub thinking_signature: Option<String>,
+    /// 上游加密思考块。
+    pub redacted_thinking: Option<String>,
 }
 
 /// 粗估 token 数：中日韩 1.5 字符一个、其余 4 字符一个，至少 1。只在上游没报用量时兜底，
@@ -243,5 +329,57 @@ mod tests {
     fn finish_reason_strings_are_the_openai_ones() {
         assert_eq!(FinishReason::ToolCalls.as_str(), "tool_calls");
         assert_eq!(FinishReason::Length.as_str(), "length");
+    }
+
+    #[test]
+    fn input_basis_converts_between_the_two_dialects() {
+        // 账本里一行真实的 Cursor 用量：input 已含缓存读写。
+        let cursor = Usage {
+            input_tokens: 67_385,
+            cache_read_tokens: 67_194,
+            cache_write_tokens: 189,
+            input_basis: InputBasis::IncludesCache,
+            ..Default::default()
+        };
+        assert_eq!(cursor.uncached_input(), 2);
+        assert_eq!(cursor.total_input(), 67_385);
+
+        let anthropic = Usage {
+            input_tokens: 2,
+            cache_read_tokens: 67_194,
+            cache_write_tokens: 189,
+            input_basis: InputBasis::ExcludesCache,
+            ..Default::default()
+        };
+        assert_eq!(anthropic.uncached_input(), 2);
+        assert_eq!(anthropic.total_input(), 67_385);
+
+        // 没声明的原样透出：不替不认识的上游猜。
+        let unknown = Usage {
+            input_tokens: 10,
+            cache_read_tokens: 40,
+            ..Default::default()
+        };
+        assert_eq!((unknown.uncached_input(), unknown.total_input()), (10, 10));
+
+        // 估出来的 input 比缓存还小也不能下溢。
+        let odd = Usage {
+            input_tokens: 5,
+            cache_read_tokens: 40,
+            input_basis: InputBasis::IncludesCache,
+            ..Default::default()
+        };
+        assert_eq!(odd.uncached_input(), 0);
+    }
+
+    #[test]
+    fn placeholder_signatures_are_recognised_only_for_their_own_text() {
+        let sig = placeholder_thinking_signature("hmm");
+        assert!(!sig.is_empty());
+        assert!(is_placeholder_signature("hmm", &sig));
+        assert!(!is_placeholder_signature("other", &sig));
+        assert!(!is_placeholder_signature("hmm", "EqQBCkYIBxgCKkDreal"));
+        assert_eq!(placeholder_thinking_signature(""), "");
+        assert!(!is_placeholder_signature("", ""), "空正文不算占位");
     }
 }

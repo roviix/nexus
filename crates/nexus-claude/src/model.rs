@@ -157,7 +157,7 @@ pub enum LoginState {
     },
     Succeeded {
         session_id: String,
-        account: ClaudeAccount,
+        account: Box<ClaudeAccount>,
         created: bool,
     },
     Failed {

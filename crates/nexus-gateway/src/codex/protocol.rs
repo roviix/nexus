@@ -69,22 +69,40 @@ pub const DEFAULT_CHAT_MODEL: &str = "gpt-5.4";
 pub const PREFERRED_CHAT_MODEL: &str = "gpt-6-astra";
 
 /// 短名 → 上游 slug。只做显式别名，不按家族猜。
-const CODEX_ALIASES: &[(&str, &str)] = &[("gpt-6", PREFERRED_CHAT_MODEL)];
+const CODEX_ALIASES: &[(&str, &str)] = &[
+    ("gpt-6", PREFERRED_CHAT_MODEL),
+    ("gpt-6-0-astra", PREFERRED_CHAT_MODEL),
+    ("gpt-5.5", "gpt-5.6"),
+    ("gpt-5.3-codex", "gpt-5.4"),
+    ("gpt-5.2", "gpt-5.4"),
+    ("gpt-5.1", "gpt-5.4"),
+    ("gpt-5", "gpt-5.4"),
+    ("gpt-4", "gpt-4o"),
+    ("gpt-3.5-turbo", "gpt-4o-mini"),
+    ("gpt-3.5", "gpt-4o-mini"),
+    ("o1-preview", "o1"),
+    ("o3", "o3-mini"),
+    ("gpt-4.5", "gpt-4.5-preview"),
+];
 
-/// 本地目录里的 Codex 模型（静态兜底；上游目录接口能拉到更新的清单）。和云端控制面的
-/// `CODEX_MODELS` 同一份。第一项是空模型的默认；Astra 在账号目录确认有了再往前排。
+/// 本地目录里的 Codex 模型。精选前沿活跃梯队：
+/// - GPT-6 时代旗舰: gpt-6-astra, gpt-6-sol, gpt-6-luna
+/// - GPT-5.6 现役主力: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.6
+/// - 兼容工作马: gpt-5.4 (默认)
+/// - 深度推理: o3-mini, o3, o1
+/// - 专项审查: codex-auto-review
 pub const CODEX_MODELS: &[&str] = &[
     DEFAULT_CHAT_MODEL,
-    "gpt-5.4-mini",
+    PREFERRED_CHAT_MODEL,
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
-    "gpt-5.6",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
-    "gpt-5.5",
-    PREFERRED_CHAT_MODEL,
-    "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
-    "gpt-5.2",
+    "gpt-5.6",
+    "o3-mini",
+    "o3",
+    "o1",
     "codex-auto-review",
 ];
 
@@ -95,7 +113,12 @@ pub const ROUTE_PREFIXES: &[&str] = &["chatgpt/", "codex/", "openai-oauth/"];
 pub fn is_codex_model(model: &str) -> bool {
     let (name, _) = split_route_prefix(model);
     let base = split_effort_suffix(name).0.to_ascii_lowercase();
-    CODEX_MODELS.contains(&base.as_str()) || CODEX_ALIASES.iter().any(|(from, _)| *from == base)
+    CODEX_MODELS.contains(&base.as_str())
+        || CODEX_ALIASES.iter().any(|(from, _)| *from == base)
+        || base.starts_with("gpt-")
+        || base.starts_with("o1-")
+        || base.starts_with("o3-")
+        || base.starts_with("chatgpt-")
 }
 
 /// 目录项上要挂的短名（给广场搜索 / 接入提示）。
@@ -2018,6 +2041,7 @@ mod tests {
                         arguments: r#"{"p":"a"}"#.into(),
                     }],
                     tool_results: vec![],
+                    reasoning: vec![],
                 },
                 Message {
                     role: Role::Tool,
@@ -2029,7 +2053,9 @@ mod tests {
                         tool_name: "read".into(),
                         text: "body".into(),
                         is_error: true,
+                        images: vec![],
                     }],
+                    reasoning: vec![],
                 },
             ],
             tools: vec![ToolDef {

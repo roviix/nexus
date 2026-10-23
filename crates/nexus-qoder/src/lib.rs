@@ -24,8 +24,10 @@ pub mod model;
 pub mod protocol;
 pub mod repo;
 pub mod service;
+pub mod usage;
 
 pub use model::{QoderAccount, QoderBackend, QoderIdentity, QoderStatus};
 pub use protocol::{catalog, resolve_model, ResolvedModel, ROUTE_PREFIXES};
 pub use repo::{QoderAccounts, Upserted};
 pub use service::{ImportReport, QoderService};
+pub use usage::QoderUsage;

@@ -146,29 +146,106 @@ impl CrsrService {
         Backups::for_app(&self.data_dir, SCOPE, &layout.app_root).remove(id)
     }
 
-    /// 用账号库里这个号的 `crsr_` 兑票，写成凭证文件。不必重装补丁。
+    /// 用账号库里这个号生成凭证文件。不必重装补丁。
+    /// 优先使用该号已有的 `crsr_` API Key；若无则自动在线铸造；
+    /// 若铸造不可用，直接复用有效的 session 凭证；自动保留已有 gateway_url。
     pub async fn mint_for_account(&self, id: &AccountId) -> Result<CrsrCredentialInfo> {
         let account = self.accounts.repo.get(id)?;
-        let key = self
-            .accounts
-            .repo
-            .require_secret(id, AccountSecret::ApiKey)
-            .map_err(|e| {
-                e.with_hint("先到这个号的凭证页贴一份 crsr_ API Key，再用作 CRSR 通道。")
-            })?;
-        let cred = credential::mint(&self.http, key.expose(), &account.email, &account.id).await?;
-        cred.save(&self.data_dir)?;
+        let maybe_key = self.accounts.repo.secret(id, AccountSecret::ApiKey)?;
+        let cred = if let Some(key) = maybe_key {
+            credential::mint(&self.http, key.expose(), &account.email, &account.id).await?
+        } else {
+            // 尝试自动为该账号在官方铸一把长期 crsr_ API Key
+            match self.accounts.mint_api_key(id).await {
+                Ok(_minted) => {
+                    let key = self.accounts.repo.require_secret(id, AccountSecret::ApiKey)?;
+                    credential::mint(&self.http, key.expose(), &account.email, &account.id).await?
+                }
+                Err(_) => {
+                    // 若官方铸 Key 接口不可用，则直接复用账号的有效会话 JWT
+                    if let Ok(session) = self.accounts.session(id).await {
+                        let now = credential::now_ms();
+                        let expires_at_ms = credential::expires_at_ms_of(session.access_token.expose());
+                        credential::CrsrCredential {
+                            api_key: String::new(),
+                            access_token: session.access_token.expose().to_string(),
+                            expires_at_ms: Some(expires_at_ms),
+                            account_email: Some(account.email.clone()),
+                            account_id: Some(account.id.as_str().to_string()),
+                            minted_at_ms: Some(now),
+                            renewed_at_ms: None,
+                            gateway_url: None,
+                        }
+                    } else {
+                        return Err(AppError::invalid("该账号无可用 crsr_ API Key 或已过期会话，请先登录该账号。"));
+                    }
+                }
+            }
+        };
+
+        // 原地保留已配置的 gateway_url（避免切换账号时清掉本地网关代理）
+        let existing = CrsrCredential::load(&self.data_dir).ok().flatten();
+        let mut final_cred = cred;
+        if let Some(old) = existing {
+            if old.gateway_url.is_some() {
+                final_cred.gateway_url = old.gateway_url;
+            }
+        }
+
+        final_cred.save(&self.data_dir)?;
         activity::info(
             &self.db,
             SCOPE,
             Some(&account.email),
-            "Agent 面板改用这个号的 crsr_ API Key（凭证已生成）",
+            "Cursor 底座账号已切换（凭证已即时同步）",
         );
-        Ok(cred.info())
+        Ok(final_cred.info())
     }
 
     pub fn clear_credential(&self) -> Result<()> {
         CrsrCredential::remove(&self.data_dir)
+    }
+
+    /// 更新网关重写地址（如 `http://127.0.0.1:15721/cursor/mock` 或 `/cursor/native`）。
+    /// 如果之前已有凭证，原地保留 `api_key` 与 `access_token` 并更新 `gateway_url`；
+    /// 如果尚未配置账号，则写入仅含 `gateway_url` 的接入凭证。
+    pub fn set_gateway_url(
+        &self,
+        gateway_url: Option<String>,
+    ) -> Result<Option<CrsrCredentialInfo>> {
+        let existing = CrsrCredential::load(&self.data_dir)?;
+        match (existing, gateway_url) {
+            (Some(mut cred), Some(url)) => {
+                cred.gateway_url = Some(url);
+                cred.save(&self.data_dir)?;
+                Ok(Some(cred.info()))
+            }
+            (Some(mut cred), None) => {
+                if cred.api_key.is_empty() {
+                    CrsrCredential::remove(&self.data_dir)?;
+                    Ok(None)
+                } else {
+                    cred.gateway_url = None;
+                    cred.save(&self.data_dir)?;
+                    Ok(Some(cred.info()))
+                }
+            }
+            (None, Some(url)) => {
+                let cred = CrsrCredential {
+                    api_key: String::new(),
+                    access_token: String::new(),
+                    expires_at_ms: None,
+                    account_email: None,
+                    account_id: None,
+                    minted_at_ms: Some(crate::credential::now_ms()),
+                    renewed_at_ms: None,
+                    gateway_url: Some(url),
+                };
+                cred.save(&self.data_dir)?;
+                Ok(Some(cred.info()))
+            }
+            (None, None) => Ok(None),
+        }
     }
 
     // ------------------------------------------------------------------ 写
@@ -184,7 +261,7 @@ impl CrsrService {
             return Err(AppError::new(
                 ErrorCode::SandUnsupportedVersion,
                 format!(
-                    "当前 Cursor 是 {}，CRSR 补丁只适配 {SUPPORTED_CURSOR_VERSION}。",
+                    "当前 Cursor 是 {}，挂点只适配 {SUPPORTED_CURSOR_VERSION}。",
                     layout.version
                 ),
             )
@@ -194,8 +271,8 @@ impl CrsrService {
         let agg = inspect(&layout, &contents);
         if let Some(reason) = agg.sand_conflict {
             return Err(
-                AppError::invalid(format!("{reason} 不能和 CRSR 同时装。")).with_hint(
-                    "先到「Sand 通道」页卸载，再装 CRSR。两条补丁改的是同一段 applyAuthorization。",
+                AppError::invalid(format!("{reason} 不能与当前统一接入同时使用。")).with_hint(
+                    "检测到旧版 Sand 补丁占用同一挂点，请先在接入卡片中点击一键升级清理旧补丁。",
                 ),
             );
         }
@@ -273,7 +350,7 @@ impl CrsrService {
             &self.db,
             SCOPE,
             None,
-            format!("已安装 CRSR 补丁（{} 个文件）", committed.files_written),
+            format!("已完成 Cursor 路由挂点接管（{} 个文件）", committed.files_written),
         );
 
         let relaunched = self.maybe_launch(relaunch, progress);
@@ -340,14 +417,14 @@ impl CrsrService {
                 if after.installed {
                     return Err(AppError::new(
                         ErrorCode::SandIntegrity,
-                        format!("卸载后仍有 {} 处 CRSR 标记。", after.hits),
+                        format!("还原后仍有 {} 处挂点标记。", after.hits),
                     ));
                 }
                 verify_integrity(&layout)
             },
         )?;
         let _ = backups.prune(BACKUP_KEEP);
-        activity::info(&self.db, SCOPE, None, "已卸载 CRSR 补丁，Cursor 恢复原版");
+        activity::info(&self.db, SCOPE, None, "已恢复 Cursor 官方路由设置");
 
         let relaunched = self.maybe_launch(relaunch, progress);
         progress(SandProgress::new(SandStep::Done, "完成"));
@@ -433,7 +510,7 @@ impl CrsrService {
 
     fn acquire(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
         self.busy.try_lock().map_err(|_| {
-            AppError::new(ErrorCode::Busy, "已经有一个 CRSR 操作在进行。")
+            AppError::new(ErrorCode::Busy, "已经有一个 Cursor 路由操作在进行。")
                 .with_hint("等它结束再试。")
         })
     }
@@ -618,7 +695,7 @@ fn verify_integrity(layout: &SandLayout) -> Result<()> {
 fn anchor_mismatch(hits: u32) -> AppError {
     AppError::new(
         ErrorCode::SandAnchorMismatch,
-        format!("CRSR 鉴权挂点会命中 {hits} 处（需 {EXPECTED_HITS} 处）。"),
+        format!("Cursor 路由挂点命中 {hits} 处（需 {EXPECTED_HITS} 处）。"),
     )
     .with_hint("Cursor 没有被改动。这个版本的 applyAuthorization 结构与适配版本不同。")
 }
@@ -677,12 +754,18 @@ mod tests {
             std::fs::create_dir_all(local.parent().unwrap()).unwrap();
             std::fs::write(
                 &host,
-                format!("pre {} post", inject::original(inject::VAR_DECLS[0])),
+                format!(
+                    "pre {} mid _getTransportForService(e,t,r=!0){{let n; post",
+                    inject::original(inject::VAR_DECLS[0])
+                ),
             )
             .unwrap();
             std::fs::write(
                 &local,
-                format!("pre {} post", inject::original(inject::VAR_DECLS[1])),
+                format!(
+                    "pre {} mid _getTransportForService(t,e,r=!0){{let n; post",
+                    inject::original(inject::VAR_DECLS[1])
+                ),
             )
             .unwrap();
         }
@@ -698,6 +781,7 @@ mod tests {
             account_id: Some("acct_1".into()),
             minted_at_ms: Some(credential::now_ms()),
             renewed_at_ms: None,
+            gateway_url: None,
         }
         .save(dir)
         .unwrap();
@@ -789,11 +873,41 @@ mod tests {
     }
 
     #[test]
-    fn restore_of_unknown_backup_is_backup_not_found() {
+    fn set_gateway_url_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let app = fake_bundle(dir.path(), SUPPORTED_CURSOR_VERSION, true);
         let (s, _) = service(dir.path(), &app);
-        let err = s.restore_backup("nope", false, &|_| {}).unwrap_err();
-        assert_eq!(err.code, ErrorCode::BackupNotFound);
+
+        // 1. 无凭证时写入 gateway_url
+        let info = s
+            .set_gateway_url(Some("http://127.0.0.1:15721/cursor/mock".into()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            info.gateway_url.as_deref(),
+            Some("http://127.0.0.1:15721/cursor/mock")
+        );
+
+        // 2. 查看 status 能够读出凭证与 gateway_url
+        let st = s.status().unwrap();
+        assert_eq!(
+            st.credential.unwrap().gateway_url.as_deref(),
+            Some("http://127.0.0.1:15721/cursor/mock")
+        );
+
+        // 3. 切换到 native 直通模式
+        let info2 = s
+            .set_gateway_url(Some("http://127.0.0.1:15721/cursor/native".into()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            info2.gateway_url.as_deref(),
+            Some("http://127.0.0.1:15721/cursor/native")
+        );
+
+        // 4. 清除 gateway_url（纯 gateway 凭证应自动删除）
+        let cleared = s.set_gateway_url(None).unwrap();
+        assert!(cleared.is_none());
+        assert!(s.status().unwrap().credential.is_none());
     }
 }

@@ -31,6 +31,8 @@ pub struct CrsrCredential {
     pub minted_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renewed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_url: Option<String>,
 }
 
 /// 给界面看的、不含秘密的摘要。
@@ -42,6 +44,8 @@ pub struct CrsrCredentialInfo {
     pub expires_at_ms: Option<u64>,
     pub expired: bool,
     pub can_renew: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_url: Option<String>,
 }
 
 pub fn now_ms() -> u64 {
@@ -72,11 +76,14 @@ pub fn resolve_path(override_value: Option<&OsStr>, data_dir: &Path) -> PathBuf 
 
 impl CrsrCredential {
     pub fn validate(&self) -> Result<()> {
-        if !looks_like_user_api_key(&self.api_key) {
+        if !self.api_key.is_empty() && !looks_like_user_api_key(&self.api_key) {
             return Err(AppError::invalid("apiKey 不是 crsr_ API Key。").with_hint("形如 crsr_…"));
         }
-        if self.access_token.split('.').count() != 3 {
+        if !self.access_token.is_empty() && self.access_token.split('.').count() != 3 {
             return Err(AppError::invalid("accessToken 不是 JWT。"));
+        }
+        if self.api_key.is_empty() && self.access_token.is_empty() && self.gateway_url.is_none() {
+            return Err(AppError::invalid("凭证既无 API Key，也无 Access Token 或网关地址。"));
         }
         Ok(())
     }
@@ -96,6 +103,7 @@ impl CrsrCredential {
             expires_at_ms: self.expires_at_ms,
             expired: self.is_expired(now),
             can_renew: looks_like_user_api_key(&self.api_key),
+            gateway_url: self.gateway_url.clone(),
         }
     }
 
@@ -157,6 +165,7 @@ pub async fn mint(
         account_id: Some(id.as_str().to_string()),
         minted_at_ms: Some(now),
         renewed_at_ms: None,
+        gateway_url: None,
     })
 }
 
@@ -194,7 +203,7 @@ mod tests {
             PathBuf::from("/tmp/elsewhere.json")
         );
         // 注入体读的是同一个变量名；改一边就得改另一边。
-        assert!(crate::inject::auth_block().contains(CREDENTIAL_FILE_ENV));
+        assert!(crate::inject::auth_block("e").contains(CREDENTIAL_FILE_ENV));
     }
 
     #[test]
@@ -208,6 +217,7 @@ mod tests {
             account_id: Some(AccountId::new().as_str().to_string()),
             minted_at_ms: Some(now_ms()),
             renewed_at_ms: None,
+            gateway_url: None,
         };
         c.save(dir.path()).unwrap();
         let loaded = CrsrCredential::load(dir.path()).unwrap().unwrap();
@@ -241,6 +251,7 @@ mod tests {
             account_id: None,
             minted_at_ms: None,
             renewed_at_ms: None,
+            gateway_url: None,
         };
         assert!(c.validate().is_err());
     }

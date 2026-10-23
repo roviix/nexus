@@ -50,7 +50,7 @@ pub fn grok_box_relay_auth_block() -> &'static str {
         r#"__sandValue.length&&e.header.set(__sandHeader,__sandValue);"#,
         r#"e.header.set("x-cursor-client-type",String("sand")),"#,
         r#"e.header.set("x-cursor-client-source","sand-desktop"),"#,
-        r#"e.header.set("x-cursor-client-version","0.44.0"),"#,
+        r#"e.header.set("x-cursor-client-version","0.65.0"),"#,
         r#"e.header.set("x-sand-box-namespace","prod");return}"#,
     )
 }
@@ -64,6 +64,92 @@ pub fn grok_box_relay_auth_block() -> &'static str {
 ///
 /// 续期失败静默：token 还没过期就照旧发；真过期了服务端会回 16，界面上的凭证状态卡会提示重生成。
 pub fn grokbot_direct_auth_block() -> &'static str {
+    concat!(
+        "/*SAND_GROKBOT_DIRECT_AUTH_V1*/",
+        r#"const __sandGrokStream=e?.service?.typeName==="aiserver.v1.InferenceService""#,
+        r#"&&e?.method?.name==="Stream";"#,
+        r#"if(__sandGrokStream){"#,
+        r#"const __sdFs=require("node:fs"),__sdPath=require("node:path"),__sdOs=require("node:os"),"#,
+        r#"__sdFile=process.env.NEXUS_GROKBOT_CREDENTIAL_FILE||("#,
+        r#"process.platform==="win32"?"#,
+        r#"__sdPath.join(process.env.APPDATA||__sdPath.join(__sdOs.homedir(),"AppData","Roaming"),"#,
+        r#""com.roviix.nexus","grokbot-stream-credential.json"):"#,
+        r#"__sdPath.join(__sdOs.homedir(),"#,
+        r#"process.platform==="darwin"?"Library/Application Support":".config","#,
+        r#""com.roviix.nexus","grokbot-stream-credential.json"));"#,
+        r#"let __sdCred=JSON.parse(__sdFs.readFileSync(__sdFile,"utf8"));"#,
+        r#"if(!__sdCred?.grokBotToken)throw new Error("#,
+        r#""[SAND_GROKBOT_DIRECT_CONFIG_INVALID] Nexus grokbot credential is missing");"#,
+        r#"const __sdVer="0.65.0","#,
+        r#"__sdUa=`Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Sand/${__sdVer} Safari/537.36`;"#,
+        r#"if(__sdCred.renewalCredential&&(!__sdCred.expiresAtMs||Date.now()>__sdCred.expiresAtMs-12e4)){"#,
+        r#"try{const __sdResp=yield fetch("https://api2.cursor.sh/sand-box/inference-credential","#,
+        r#"{method:"POST",headers:{"content-type":"application/json","#,
+        r#""user-agent":__sdUa,"x-cursor-client-type":String("sand"),"#,
+        r#""x-cursor-client-source":"sand-desktop","x-cursor-client-version":__sdVer,"#,
+        r#""x-cursor-client-os":"linux","x-sand-box-namespace":__sdCred.namespace||"prod"},"#,
+        r#"body:JSON.stringify({credential:__sdCred.renewalCredential})}),"#,
+        r#"__sdBody=yield __sdResp.json();"#,
+        r#"if(__sdBody?.grokBotToken){__sdCred.grokBotToken=__sdBody.grokBotToken,"#,
+        r#"__sdCred.expiresAtMs=__sdBody.expiresAtMs||Date.now()+6e5,__sdCred.renewedAtMs=Date.now(),"#,
+        r#"__sdFs.writeFileSync(__sdFile,JSON.stringify(__sdCred,null,2)+"\n")}}catch(__sdErr){}}"#,
+        r#"e.header.set("Authorization",`Bearer ${__sdCred.grokBotToken}`);"#,
+        r#"if(__sdCred.machineId){const __sdTs=Math.floor(Date.now()/1e6),"#,
+        r#"__sdIn=[__sdTs>>40&255,__sdTs>>32&255,__sdTs>>24&255,__sdTs>>16&255,__sdTs>>8&255,__sdTs&255],"#,
+        r#"__sdOut=new Uint8Array(6);let __sdPrev=165;"#,
+        r#"for(let __sdI=0;__sdI<6;__sdI++)__sdOut[__sdI]=(__sdIn[__sdI]^__sdPrev)+__sdI&255,__sdPrev=__sdOut[__sdI];"#,
+        r#"e.header.set("x-cursor-checksum",Buffer.from(__sdOut).toString("base64url")+__sdCred.machineId)}"#,
+        r#"e.header.set("x-cursor-client-type",String("sand")),"#,
+        r#"e.header.set("x-cursor-client-source","sand-desktop"),"#,
+        r#"e.header.set("x-cursor-client-version",__sdVer),"#,
+        r#"e.header.set("x-cursor-client-os","linux"),"#,
+        r#"e.header.set("user-agent",__sdUa),"#,
+        r#"e.header.set("x-sand-box-namespace",__sdCred.namespace||"prod"),"#,
+        r#"e.header.set("x-ghost-mode","false");return}"#,
+    )
+}
+
+/// Frozen byte-for-byte snapshot written by the 0.44 Box Relay injector.
+///
+/// Do not derive this from the current block: [`crate::engine`] needs the exact historical bytes
+/// to migrate and uninstall an existing installation after the runtime headers change.
+pub(crate) fn legacy_grok_box_relay_auth_block_044() -> &'static str {
+    concat!(
+        "/*SAND_GROK_BOX_RELAY_AUTH_V1*/",
+        r#"const __sandGrokStream=e?.service?.typeName==="aiserver.v1.InferenceService""#,
+        r#"&&e?.method?.name==="Stream";"#,
+        r#"if(__sandGrokStream){"#,
+        r#"const __sandRelayFs=require("node:fs"),"#,
+        r#"__sandRelayPath=require("node:path"),__sandRelayOs=require("node:os"),"#,
+        r#"__sandRelayConfigPath=process.env.SAND_GROK_BOX_RELAY_CONFIG||("#,
+        r#"process.platform==="win32"?"#,
+        r#"__sandRelayPath.join(process.env.LOCALAPPDATA||process.env.APPDATA||"#,
+        r#"__sandRelayPath.join(__sandRelayOs.homedir(),"AppData","Local"),"#,
+        r#""SandClientModeStream","sand-client-cli","grok-box-relay.json"):"#,
+        r#"__sandRelayPath.join(__sandRelayOs.homedir(),"#,
+        r#"process.platform==="darwin"?"Library/Application Support":".config","#,
+        r#""SandClientModeStream","sand-client-cli","grok-box-relay.json")),"#,
+        r#"__sandRelayConfig=JSON.parse(__sandRelayFs.readFileSync("#,
+        r#"__sandRelayConfigPath,"utf8"));"#,
+        r#"if(!__sandRelayConfig?.baseUrl||!__sandRelayConfig?.token)throw new Error("#,
+        r#""[SAND_GROK_BOX_RELAY_CONFIG_INVALID] Grok Bot gateway descriptor is missing");"#,
+        r#"e.url=new URL(__sandRelayConfig.relayPath||"#,
+        r#""/sand-stream-relay/aiserver.v1.InferenceService/Stream","#,
+        r#"__sandRelayConfig.baseUrl).toString();"#,
+        r#"e.header.set("Authorization",`Bearer ${__sandRelayConfig.token}`);"#,
+        r#"for(const[__sandHeader,__sandValue]of Object.entries("#,
+        r#"__sandRelayConfig.headers||{}))"string"==typeof __sandValue&&"#,
+        r#"__sandValue.length&&e.header.set(__sandHeader,__sandValue);"#,
+        r#"e.header.set("x-cursor-client-type",String("sand")),"#,
+        r#"e.header.set("x-cursor-client-source","sand-desktop"),"#,
+        r#"e.header.set("x-cursor-client-version","0.44.0"),"#,
+        r#"e.header.set("x-sand-box-namespace","prod");return}"#,
+    )
+}
+
+/// Frozen byte-for-byte snapshot written by the 0.44 Direct injector. Keep this independent from
+/// the current block because 0.65 changed both the version and the renewal request structure.
+pub(crate) fn legacy_grokbot_direct_auth_block_044() -> &'static str {
     concat!(
         "/*SAND_GROKBOT_DIRECT_AUTH_V1*/",
         r#"const __sandGrokStream=e?.service?.typeName==="aiserver.v1.InferenceService""#,
@@ -131,8 +217,28 @@ mod tests {
         assert!(b.contains(nexus_grokbot::STREAM_CREDENTIAL_FILENAME));
         assert!(b.contains("com.roviix.nexus"));
         assert!(b.contains("sand-box/inference-credential"));
+        assert!(b.contains(r#"const __sdVer="0.65.0""#));
+        assert!(!b.contains("__sdCred.clientVersion||"));
+        assert!(b.contains(r#""x-cursor-client-type":String("sand")"#));
+        assert!(!b.contains(r#""x-cursor-client-type":"sand""#));
         // 只补头不删头：容忍度矩阵已证明 IDE 多余头无害。
         assert!(!b.contains("header.delete"));
+
+        let old_box = legacy_grok_box_relay_auth_block_044();
+        let old_direct = legacy_grokbot_direct_auth_block_044();
+        assert!(old_box.contains(r#""x-cursor-client-version","0.44.0""#));
+        assert!(!old_box.contains("0.65.0"));
+        assert!(old_direct.contains(r#"__sdCred.clientVersion||"0.44.0""#));
+        assert!(!old_direct.contains("0.65.0"));
+        assert!(!old_direct.contains("__sdUa"));
+
+        // 第一代 originTransport 字节必须继续固定在 0.44，才能精确识别旧安装。
+        assert_eq!(
+            legacy_direct_stream_interceptor()
+                .matches(r#"j.clientVersion||"0.44.0""#)
+                .count(),
+            2
+        );
     }
 
     /// 直连块是合法 JS（放进一个 generator 里 `node --check`）。

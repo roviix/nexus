@@ -45,28 +45,35 @@ pub const OAUTH_SCOPES: &[&str] = &[
     "user:file_upload",
 ];
 
-/// 目录里报的模型。带 `claude/` 前缀之后才是对外 id；裸名不抢别的通道。
-/// 短名是对外写的；OAuth 出站时部分短名要换成带日期的上游 id，见 [`normalize_model_id`]。
+/// 目录里报的模型。按三档共识精选暴露：
+/// - 前沿超旗舰: claude-opus-5-5, claude-opus-5
+/// - 编程与对话主力: claude-sonnet-5, claude-sonnet-4-6
+/// - 经济高吞吐: claude-haiku-4-5
+/// - 实验旗舰: claude-fable-5-1, claude-fable-5
 pub const MODELS: &[&str] = &[
-    "claude-fable-5-1",
-    "claude-fable-5",
     "claude-opus-5-5",
     "claude-opus-5",
-    "claude-opus-4-8",
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-opus-4-5",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
-    "claude-sonnet-4-5",
     "claude-haiku-4-5",
+    "claude-fable-5-1",
+    "claude-fable-5",
 ];
 
 /// OAuth 出站必须用带日期的 id 的那几个短名。其余原样。
 const MODEL_ID_OVERRIDES: &[(&str, &str)] = &[
+    ("claude-opus-5-5", "claude-opus-5-5-20260201"),
+    ("claude-opus-5", "claude-opus-5-20251101"),
+    ("claude-sonnet-5", "claude-sonnet-5-20251001"),
+    ("claude-sonnet-4-6", "claude-sonnet-4-6-20250929"),
     ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929"),
+    ("claude-opus-4-6", "claude-opus-4-6-20251101"),
     ("claude-opus-4-5", "claude-opus-4-5-20251101"),
     ("claude-haiku-4-5", "claude-haiku-4-5-20251001"),
+    ("claude-3-7-sonnet", "claude-3-7-sonnet-20250219"),
+    ("claude-3-5-sonnet", "claude-3-5-sonnet-20241022"),
+    ("claude-3-5-haiku", "claude-3-5-haiku-20241022"),
+    ("claude-3-opus", "claude-3-opus-20240229"),
 ];
 
 /// 发给 `api.anthropic.com` 的模型名。短名按官方 OAuth 规则补日期。
@@ -92,10 +99,7 @@ pub fn owns_model(model: &str) -> bool {
         return true;
     }
     let lower = base.to_ascii_lowercase();
-    lower.starts_with("claude-sonnet-")
-        || lower.starts_with("claude-opus-")
-        || lower.starts_with("claude-haiku-")
-        || lower.starts_with("claude-fable-")
+    lower.starts_with("claude-")
 }
 
 pub const ROUTE_PREFIXES: &[&str] = &["claude/"];
@@ -451,14 +455,24 @@ mod tests {
     fn upstream_model_strips_prefix_and_context_suffix() {
         assert_eq!(
             upstream_model("claude/claude-sonnet-4-6[1M]"),
-            "claude-sonnet-4-6"
+            "claude-sonnet-4-6-20250929"
         );
         assert_eq!(
             upstream_model("claude-sonnet-4-5"),
             "claude-sonnet-4-5-20250929"
         );
         assert!(wants_one_million("claude-opus-4-8[1m]"));
-        assert!(!wants_one_million("claude-opus-4-8"));
+        assert_eq!(
+            upstream_model("claude-3-7-sonnet"),
+            "claude-3-7-sonnet-20250219"
+        );
+        assert_eq!(
+            upstream_model("claude/claude-3-5-sonnet[1M]"),
+            "claude-3-5-sonnet-20241022"
+        );
+        assert!(owns_model("claude-3-7-sonnet"));
+        assert!(owns_model("claude-3-5-sonnet"));
+        assert!(owns_model("claude-3-opus"));
         assert!(owns_model("claude-sonnet-4-5-20250929"));
         assert!(owns_model("claude/claude-fable-5[1M]"));
         assert!(!owns_model("gpt-5.4"));

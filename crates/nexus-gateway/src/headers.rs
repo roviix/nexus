@@ -13,6 +13,14 @@ use uuid::Uuid;
 
 /// 以 CLI 身份出面时报的版本。
 pub const CLI_CLIENT_VERSION: &str = "cli-2026.08.11-e8db854";
+/// Grok Bot/Sand 客户端自己的版本与命名空间。`sand` 不是普通 CLI 身份，服务端会按
+/// 这三项识别 Bot 推理来源；值与 `nexus-sand::grokbot_direct_auth_block` 一致。
+pub const SAND_CLIENT_VERSION: &str = "0.65.0";
+pub const SAND_CLIENT_SOURCE: &str = "sand-desktop";
+pub const SAND_CLIENT_OS: &str = "linux";
+pub const SAND_USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Sand/0.65.0 Safari/537.36";
+pub const SAND_BOX_NAMESPACE: &str = "prod";
 /// 以 IDE 身份出面时报的版本。
 ///
 /// **必须跟得上真机在装的 Cursor**：api2 对过旧的 IDE 版本直接拒服务，回的是
@@ -48,10 +56,10 @@ impl RequestNonce {
 
 /// 版本号跟 client-type 配套：报 ide 就要配 IDE 版本，否则形态对不上。
 pub fn client_version_for(client_type: &str) -> &'static str {
-    if client_type == "ide" {
-        IDE_CLIENT_VERSION
-    } else {
-        CLI_CLIENT_VERSION
+    match client_type {
+        "ide" => IDE_CLIENT_VERSION,
+        "sand" => SAND_CLIENT_VERSION,
+        _ => CLI_CLIENT_VERSION,
     }
 }
 
@@ -66,7 +74,24 @@ pub fn ai_headers(
     nonce: RequestNonce,
 ) -> HeaderList {
     let req_id = nonce.request_id.to_string();
-    vec![
+    // 0.65 packaged sand-host 不走 IDE 的 client-key/session/config 指纹组；它只带自身
+    // browser UA、Linux OS、source/namespace 与 pod host machine checksum。
+    if client_type == "sand" {
+        return vec![
+            ("authorization", format!("Bearer {access_token}")),
+            ("connect-protocol-version", "1".into()),
+            ("user-agent", SAND_USER_AGENT.into()),
+            ("x-cursor-checksum", identity.checksum(nonce.now_ms)),
+            ("x-cursor-client-version", SAND_CLIENT_VERSION.into()),
+            ("x-cursor-client-type", "sand".into()),
+            ("x-cursor-client-source", SAND_CLIENT_SOURCE.into()),
+            ("x-cursor-client-os", SAND_CLIENT_OS.into()),
+            ("x-sand-box-namespace", SAND_BOX_NAMESPACE.into()),
+            ("x-ghost-mode", "false".into()),
+            ("x-request-id", req_id),
+        ];
+    }
+    let headers = vec![
         ("authorization", format!("Bearer {access_token}")),
         ("connect-protocol-version", "1".into()),
         ("user-agent", CONNECT_USER_AGENT.into()),
@@ -88,7 +113,8 @@ pub fn ai_headers(
         ("x-new-onboarding-completed", "true".into()),
         ("x-request-id", req_id),
         ("x-session-id", identity.session_id()),
-    ]
+    ];
+    headers
 }
 
 #[cfg(test)]
@@ -126,23 +152,19 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_fields_match_protocol_js_output() {
-        // 期望值来自 /tmp/vec.mjs 跑 buildAiHeaders(jwt, "sand")。
+    fn deterministic_sand_fields_match_the_0_65_host() {
         let h = ai_headers(JWT, &DeviceIdentity::derived(JWT), "sand", fixed_nonce());
-        assert_eq!(
-            get(&h, "x-client-key"),
-            "14bf27c057322f2115b7e183b2df2bded0fb6fac73537af7624bf98793f8a293"
-        );
-        assert_eq!(
-            get(&h, "x-session-id"),
-            "c4bbe3fc-3b68-5816-a637-881411c33b49"
-        );
-        assert_eq!(
-            get(&h, "x-cursor-config-version"),
-            "1f91df2b-ed39-592c-9b0c-1ad75928fea3"
-        );
+        assert_eq!(h.len(), 11);
+        assert!(!h.iter().any(|(name, _)| matches!(
+            *name,
+            "x-client-key" | "x-session-id" | "x-cursor-config-version"
+        )));
         assert_eq!(get(&h, "x-cursor-client-type"), "sand");
-        assert_eq!(get(&h, "x-cursor-client-version"), "cli-2026.08.11-e8db854");
+        assert_eq!(get(&h, "x-cursor-client-version"), SAND_CLIENT_VERSION);
+        assert_eq!(get(&h, "x-cursor-client-source"), SAND_CLIENT_SOURCE);
+        assert_eq!(get(&h, "x-cursor-client-os"), SAND_CLIENT_OS);
+        assert_eq!(get(&h, "x-sand-box-namespace"), SAND_BOX_NAMESPACE);
+        assert_eq!(get(&h, "user-agent"), SAND_USER_AGENT);
         assert!(get(&h, "x-cursor-checksum")
             .ends_with("472863d1b0bf416aec181ad7721c730801a3c10ec4418cbfdb7e494b2e6045db"));
         assert_eq!(get(&h, "x-cursor-checksum").len(), 8 + 64);
@@ -170,7 +192,7 @@ mod tests {
                 &ai_headers(JWT, &id, "sand", fixed_nonce()),
                 "x-cursor-client-version"
             ),
-            CLI_CLIENT_VERSION
+            SAND_CLIENT_VERSION
         );
     }
 

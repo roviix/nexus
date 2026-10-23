@@ -940,6 +940,8 @@ impl StreamReader {
             } else {
                 None
             },
+            thinking_signature: None,
+            redacted_thinking: None,
         })
     }
 }
@@ -966,6 +968,7 @@ fn parse_usage(u: &Value) -> Usage {
         cache_read_tokens: n("/input_tokens_details/cached_tokens"),
         cache_write_tokens: 0,
         reasoning_tokens: n("/output_tokens_details/reasoning_tokens"),
+        ..Default::default()
     }
 }
 

@@ -904,6 +904,8 @@ async fn read_sse(
         ttft_ms: c.ttft,
         turn_ms: started.elapsed().as_millis() as u64,
         raw_response: c.raw_response,
+        thinking_signature: None,
+        redacted_thinking: None,
     })
 }
 
@@ -922,6 +924,7 @@ fn usage_of(v: &Value) -> Option<Usage> {
             .pointer("/output_tokens_details/reasoning_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32,
+        ..Default::default()
     })
 }
 
@@ -1111,6 +1114,7 @@ mod tests {
             tool_name: "lookup".into(),
             text: "42".into(),
             is_error: false,
+            ..Default::default()
         });
         let req = ChatRequest {
             model: "grok-4.5-high".into(),

@@ -503,7 +503,7 @@ async fn send_shared(
         .send()
         .await
         .map_err(|e| net_err(target, e.is_timeout(), &e))?;
-    finish_send(target, UpResp::Shared(resp)).await
+    finish_send(target, UpResp::Shared(Box::new(resp))).await
 }
 
 async fn send_claude(
@@ -540,7 +540,7 @@ async fn send_claude(
     )
     .await
     .map_err(|e| net_err(target, e.timeout, &e))?;
-    finish_send(target, UpResp::Claude(resp)).await
+    finish_send(target, UpResp::Claude(Box::new(resp))).await
 }
 
 fn apply_auth_reqwest(req: reqwest::RequestBuilder, target: &Target) -> reqwest::RequestBuilder {
@@ -562,8 +562,8 @@ async fn finish_send(target: &Target, resp: UpResp) -> Result<UpResp, UpstreamEr
 
 /// 共享客户端和 Claude 专用客户端的响应，读的方式一样。
 enum UpResp {
-    Shared(reqwest::Response),
-    Claude(transport::Response),
+    Shared(Box<reqwest::Response>),
+    Claude(Box<transport::Response>),
 }
 
 impl UpResp {
@@ -590,19 +590,19 @@ impl UpResp {
 
     async fn error_text(self) -> String {
         match self {
-            Self::Shared(resp) => resp.text().await.unwrap_or_default(),
-            Self::Claude(resp) => resp.text().await.unwrap_or_default(),
+            Self::Shared(resp) => (*resp).text().await.unwrap_or_default(),
+            Self::Claude(resp) => (*resp).text().await.unwrap_or_default(),
         }
     }
 
     async fn bytes(self, target: &Target) -> Result<Vec<u8>, UpstreamError> {
         match self {
-            Self::Shared(resp) => resp
+            Self::Shared(resp) => (*resp)
                 .bytes()
                 .await
                 .map(|b| b.to_vec())
                 .map_err(|e| net_err(target, e.is_timeout(), &e)),
-            Self::Claude(resp) => resp
+            Self::Claude(resp) => (*resp)
                 .bytes()
                 .await
                 .map_err(|e| net_err(target, e.timeout, &e)),
@@ -1108,6 +1108,8 @@ impl Acc {
                 .map(|t| t.duration_since(self.started).as_millis() as u64),
             turn_ms: self.started.elapsed().as_millis() as u64,
             raw_response: None,
+            thinking_signature: None,
+            redacted_thinking: None,
         }
     }
 }

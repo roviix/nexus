@@ -250,7 +250,9 @@ impl ChatGptAccounts {
                 "UPDATE chatgpt_accounts SET
                    usage_json = ?2, plan_type = COALESCE(?3, plan_type),
                    user_id = COALESCE(?4, user_id),
-                   last_checked_at = ?5, updated_at = ?5
+                   last_checked_at = ?5, updated_at = ?5,
+                   last_error = NULL,
+                   status = CASE WHEN status = 'needs_login' THEN 'active' ELSE status END
                  WHERE id = ?1",
                 rusqlite::params![
                     id.as_str(),
@@ -270,7 +272,9 @@ impl ChatGptAccounts {
         self.db.with(|c| {
             c.execute(
                 "UPDATE chatgpt_accounts SET
-                   billing_json = ?2, plan_type = COALESCE(?3, plan_type), updated_at = ?4
+                   billing_json = ?2, plan_type = COALESCE(?3, plan_type), updated_at = ?4,
+                   last_error = NULL,
+                   status = CASE WHEN status = 'needs_login' THEN 'active' ELSE status END
                  WHERE id = ?1",
                 rusqlite::params![id.as_str(), json, billing.plan_type.as_deref(), now_iso()],
             )

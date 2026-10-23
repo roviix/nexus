@@ -2,7 +2,8 @@
 //!
 //! - `grokBotToken`：JWT（`type: grok_bot`），约 10 分钟；Stream 的 Bearer。
 //! - `renewalCredential`：`sbi_*`，pod 生命周期内稳定；凭它 `POST /sand-box/inference-credential`
-//!   就能拿新 token，**不需要任何鉴权**（2026-09-09 实测：无 Authorization、无 sand 头都 200）。
+//!   就能拿新 token，**不需要 Authorization**。2026-09-09 曾验证只发 content-type 也能续；当前
+//!   0.65 sand-host 会同时带 sand/source/version/os/namespace 与 UA，本实现按当前形状发送。
 //! - `machineId`：Grok Bot 的 cursor-machine-id，拼 `x-cursor-checksum`。实测 checksum 用别的
 //!   machineId 也放行，带上只是形态一致。
 //!
@@ -15,7 +16,9 @@ use std::time::Duration;
 
 pub const STREAM_CREDENTIAL_FILENAME: &str = "grokbot-stream-credential.json";
 pub const RENEWAL_URL: &str = "https://api2.cursor.sh/sand-box/inference-credential";
-pub const DEFAULT_CLIENT_VERSION: &str = "0.44.0";
+pub const DEFAULT_CLIENT_VERSION: &str = "0.65.0";
+pub const DEFAULT_CLIENT_SOURCE: &str = "sand-desktop";
+pub const DEFAULT_CLIENT_OS: &str = "linux";
 pub const DEFAULT_NAMESPACE: &str = "prod";
 /// 过期前多久就算「该续了」。补丁注入体用同一个数（12e4）。
 pub const RENEW_LEEWAY_MS: u64 = 120_000;
@@ -198,6 +201,19 @@ pub async fn renew(renewal_credential: &str) -> Result<Renewed> {
     let resp = client
         .post(RENEWAL_URL)
         .header("content-type", "application/json")
+        // 0.65 sand-host 在续票阶段就带这组身份；旧实现只发 content-type，会让探针
+        // 无法区分「票据权限不同」与「Stream 请求形状不同」。
+        .header(
+            "user-agent",
+            format!(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Sand/{DEFAULT_CLIENT_VERSION} Safari/537.36"
+            ),
+        )
+        .header("x-cursor-client-type", "sand")
+        .header("x-cursor-client-source", DEFAULT_CLIENT_SOURCE)
+        .header("x-cursor-client-version", DEFAULT_CLIENT_VERSION)
+        .header("x-cursor-client-os", DEFAULT_CLIENT_OS)
+        .header("x-sand-box-namespace", DEFAULT_NAMESPACE)
         .json(&serde_json::json!({ "credential": renewal_credential }))
         .send()
         .await

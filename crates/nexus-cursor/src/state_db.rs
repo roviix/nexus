@@ -633,7 +633,216 @@ impl StateDb {
         }
         tx.commit().map_err(|err| schema_error(err, &self.path))
     }
+
+    /// 确保给定的自定义模型名称被写入 Cursor 的 `userAddedModels` 和 `modelOverrideEnabled` 中。
+    /// 这样 Cursor 启动或重载时，模型选择器中会直接出现该模型选项。
+    pub fn add_custom_model(&self, model: &str) -> Result<bool> {
+        use rusqlite::OptionalExtension;
+        let model = model.trim();
+        if model.is_empty() {
+            return Ok(false);
+        }
+        let conn = self.open(false)?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = ?1",
+                [STORAGE_KEY_APPLICATION_USER],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| schema_error(err, &self.path))?;
+
+        let mut root: serde_json::Value = match raw {
+            Some(s) => serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({})),
+            None => serde_json::json!({}),
+        };
+
+        let ai_settings = root
+            .as_object_mut()
+            .ok_or_else(|| AppError::new(ErrorCode::Database, "applicationUser 不是有效的 JSON 对象"))?
+            .entry("aiSettings")
+            .or_insert_with(|| serde_json::json!({}));
+
+        let _ai_obj = ai_settings
+            .as_object_mut()
+            .ok_or_else(|| AppError::new(ErrorCode::Database, "aiSettings 不是有效的 JSON 对象"))?;
+
+        let mut changed = false;
+
+        // 1. aiSettings: userAddedModels & modelOverrideEnabled
+        if let Some(ai_obj) = root.get_mut("aiSettings").and_then(|v| v.as_object_mut()) {
+            let user_added = ai_obj
+                .entry("userAddedModels")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = user_added.as_array_mut() {
+                if !arr.iter().any(|v| v.as_str() == Some(model)) {
+                    arr.push(serde_json::Value::String(model.to_string()));
+                    changed = true;
+                }
+            }
+
+            let override_enabled = ai_obj
+                .entry("modelOverrideEnabled")
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(arr) = override_enabled.as_array_mut() {
+                if !arr.iter().any(|v| v.as_str() == Some(model)) {
+                    arr.insert(0, serde_json::Value::String(model.to_string()));
+                    changed = true;
+                }
+            }
+        }
+
+        // 2. availableDefaultModels2 (用于 Cursor 3.x+ React ModelPicker 显式渲染)
+        if let Some(models) = root.get_mut("availableDefaultModels2").and_then(|v| v.as_array_mut()) {
+            let already_exists = models.iter().any(|m| {
+                m.get("name").and_then(|n| n.as_str()) == Some(model)
+                    || m.get("clientDisplayName").and_then(|n| n.as_str()) == Some(model)
+            });
+
+            if !already_exists {
+                let bare = model
+                    .trim_end_matches("(Nexus)")
+                    .trim_end_matches("[Nexus]")
+                    .trim();
+                let template = models
+                    .iter()
+                    .find(|m| {
+                        m.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|n| n.eq_ignore_ascii_case(bare))
+                            .unwrap_or(false)
+                    })
+                    .or_else(|| {
+                        models.iter().find(|m| {
+                            m.get("name").and_then(|n| n.as_str()) != Some("default")
+                        })
+                    })
+                    .cloned();
+
+                if let Some(mut new_model) = template {
+                    let display_title = if model.contains('(') || model.contains('[') {
+                        let base_title = bare
+                            .split('-')
+                            .map(|part| {
+                                let mut c = part.chars();
+                                match c.next() {
+                                    None => String::new(),
+                                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!("{base_title} (Nexus)")
+                    } else {
+                        model.to_string()
+                    };
+
+                    if let Some(obj) = new_model.as_object_mut() {
+                        obj.insert("name".to_string(), serde_json::Value::String(model.to_string()));
+                        obj.insert(
+                            "clientDisplayName".to_string(),
+                            serde_json::Value::String(display_title.clone()),
+                        );
+                        obj.insert("defaultOn".to_string(), serde_json::Value::Bool(true));
+                        obj.insert(
+                            "idAliases".to_string(),
+                            serde_json::json!([model.replace(' ', "-").to_ascii_lowercase()]),
+                        );
+
+                        if let Some(variants) = obj.get_mut("variants").and_then(|v| v.as_array_mut()) {
+                            for var in variants {
+                                if let Some(var_obj) = var.as_object_mut() {
+                                    if let Some(d) = var_obj.get("displayName").and_then(|v| v.as_str()) {
+                                        var_obj.insert(
+                                            "displayName".to_string(),
+                                            serde_json::Value::String(format!(
+                                                "{display_title} {}",
+                                                d.split_whitespace().skip(2).collect::<Vec<_>>().join(" ")
+                                            )),
+                                        );
+                                    }
+                                    if let Some(d) = var_obj.get("displayNameOutsidePicker").and_then(|v| v.as_str()) {
+                                        var_obj.insert(
+                                            "displayNameOutsidePicker".to_string(),
+                                            serde_json::Value::String(format!(
+                                                "{display_title} {}",
+                                                d.split_whitespace().skip(2).collect::<Vec<_>>().join(" ")
+                                            )),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if models.len() > 1 {
+                        models.insert(1, new_model);
+                    } else {
+                        models.push(new_model);
+                    }
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            let serialized = serde_json::to_string(&root)
+                .map_err(|e| AppError::new(ErrorCode::Database, format!("JSON 序列化失败: {e}")))?;
+            conn.execute(
+                "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
+                rusqlite::params![STORAGE_KEY_APPLICATION_USER, serialized],
+            )
+            .map_err(|err| schema_error(err, &self.path))?;
+        }
+
+        Ok(changed)
+    }
+
+    /// 读取 Cursor 中已经添加的自定义模型列表。
+    pub fn read_custom_models(&self) -> Result<Vec<String>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.open(true)?;
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = ?1",
+                [STORAGE_KEY_APPLICATION_USER],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| schema_error(err, &self.path))?;
+
+        let Some(raw) = raw else {
+            return Ok(Vec::new());
+        };
+
+        let root: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+        let mut list: Vec<String> = root
+            .get("aiSettings")
+            .and_then(|s| s.get("userAddedModels"))
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if let Some(models) = root.get("availableDefaultModels2").and_then(|v| v.as_array()) {
+            for m in models {
+                if let Some(name) = m.get("name").and_then(|n| n.as_str()) {
+                    if (name.contains("(Nexus)") || name.contains("[Nexus]")) && !list.contains(&name.to_string()) {
+                        list.push(name.to_string());
+                    }
+                }
+            }
+        }
+
+        Ok(list)
+    }
 }
+
+pub const STORAGE_KEY_APPLICATION_USER: &str =
+    "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
 
 /// 已知键表之外的 `cursorAuth/*` 键，以及其中像是「token 被改了名」的子集。
 ///
@@ -1236,5 +1445,22 @@ mod tests {
     fn missing_database_reports_cursor_not_found() {
         let db = StateDb::new("/tmp/definitely-not-here-9f3a/state.vscdb");
         assert_eq!(db.read_auth().unwrap_err().code, ErrorCode::CursorNotFound);
+    }
+
+    #[test]
+    fn add_and_read_custom_models_updates_reactive_storage() {
+        let (_dir, db) = fixture();
+        assert_eq!(db.read_custom_models().unwrap(), Vec::<String>::new());
+
+        let added = db.add_custom_model("gpt-5.6-luna").unwrap();
+        assert!(added, "初次添加应返回 true");
+        assert_eq!(db.read_custom_models().unwrap(), vec!["gpt-5.6-luna"]);
+
+        let added_dup = db.add_custom_model("gpt-5.6-luna").unwrap();
+        assert!(!added_dup, "重复添加应幂等返回 false");
+
+        db.add_custom_model("deepseek-r1").unwrap();
+        let models = db.read_custom_models().unwrap();
+        assert_eq!(models, vec!["gpt-5.6-luna", "deepseek-r1"]);
     }
 }

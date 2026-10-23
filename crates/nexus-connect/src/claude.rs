@@ -36,6 +36,8 @@ pub const ENV_KEYS: &[&str] = &[
     "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+    "API_TIMEOUT_MS",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 ];
 
 /// 一档：写进配置的模型名，和菜单里显示的名字。
@@ -153,6 +155,13 @@ pub fn merge(existing: Option<&str>, t: &Target) -> Result<String> {
             env.insert(name_key, Value::String(slot.display.clone()));
         }
     }
+    // 429 防限频与长会话优化：长上下文提前 75% 自动压缩，防止超长上下文消耗单次巨大 Token 并发
+    env.insert(
+        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE".into(),
+        Value::String("75".into()),
+    );
+    // 移除旧版粗暴的长超时设置，避免网络异常时 Claude Code 无响应冻结
+    env.remove("API_TIMEOUT_MS");
     Ok(pretty(&Value::Object(root)))
 }
 
@@ -318,8 +327,8 @@ mod tests {
     fn merge_from_nothing_builds_a_fresh_file() {
         let out = merge(None, &target()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
-        // 两个认证键只写一个，所以比 ENV_KEYS 少一。
-        assert_eq!(v["env"].as_object().unwrap().len(), ENV_KEYS.len() - 1);
+        // 两个认证键只写一个，且不写已废弃的 API_TIMEOUT_MS，所以比 ENV_KEYS 少二。
+        assert_eq!(v["env"].as_object().unwrap().len(), ENV_KEYS.len() - 2);
         let seen = inspect(Some(&out));
         assert_eq!(seen.base_url.as_deref(), Some("http://127.0.0.1:8787"));
         assert_eq!(seen.model.as_deref(), Some("claude-sonnet-5"));

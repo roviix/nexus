@@ -98,17 +98,31 @@ impl HttpBody {
     }
 }
 
+pub(crate) struct ExchangeRequest<'a> {
+    pub profile: Profile,
+    pub method: &'a str,
+    pub host: &'a str,
+    pub port: u16,
+    pub path: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: Option<&'a [u8]>,
+    pub deadline: Option<Instant>,
+}
+
 pub(crate) async fn exchange(
     mut stream: SslStream<TcpStream>,
-    profile: Profile,
-    method: &str,
-    host: &str,
-    port: u16,
-    path: &str,
-    headers: &[(String, String)],
-    body: Option<&[u8]>,
-    deadline: Option<Instant>,
+    request: ExchangeRequest<'_>,
 ) -> Result<Response, TransportError> {
+    let ExchangeRequest {
+        profile,
+        method,
+        host,
+        port,
+        path,
+        headers,
+        body,
+        deadline,
+    } = request;
     let host_value = if port == 443 {
         host.to_string()
     } else {
@@ -191,7 +205,7 @@ pub(crate) fn encode_request(
     if let Some(body) = body {
         rows.push(("content-length".into(), body.len().to_string()));
     }
-    rows.sort_by(|a, b| rank(&a.0, head, tail).cmp(&rank(&b.0, head, tail)));
+    rows.sort_by_key(|row| rank(&row.0, head, tail));
 
     let mut out = format!("{method} {path} HTTP/1.1\r\n").into_bytes();
     for (name, value) in rows {
@@ -586,7 +600,7 @@ enum Inflate {
     Plain,
     Gzip(flate2::write::GzDecoder<Vec<u8>>),
     Zlib(flate2::write::ZlibDecoder<Vec<u8>>),
-    Brotli(brotli::DecompressorWriter<Vec<u8>>),
+    Brotli(Box<brotli::DecompressorWriter<Vec<u8>>>),
     Zstd(zstd::stream::write::Decoder<'static, Vec<u8>>),
     Done,
 }
@@ -602,10 +616,10 @@ impl Inflate {
             "" | "identity" => Ok(Self::Plain),
             "gzip" | "x-gzip" => Ok(Self::Gzip(flate2::write::GzDecoder::new(Vec::new()))),
             "deflate" => Ok(Self::Zlib(flate2::write::ZlibDecoder::new(Vec::new()))),
-            "br" => Ok(Self::Brotli(brotli::DecompressorWriter::new(
+            "br" => Ok(Self::Brotli(Box::new(brotli::DecompressorWriter::new(
                 Vec::new(),
                 4096,
-            ))),
+            )))),
             "zstd" => zstd::stream::write::Decoder::new(Vec::new())
                 .map(Self::Zstd)
                 .map_err(|err| format!("zstd 解压初始化失败：{err}")),
@@ -656,7 +670,7 @@ impl Inflate {
             }
             Self::Brotli(mut dec) => {
                 dec.flush().map_err(|err| err.to_string())?;
-                match dec.into_inner() {
+                match (*dec).into_inner() {
                     Ok(buf) | Err(buf) => out.extend(buf),
                 }
                 Ok(())

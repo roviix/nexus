@@ -20,6 +20,10 @@ use std::sync::{Arc, RwLock};
 pub type ChannelId = &'static str;
 
 pub const CURSOR: ChannelId = "cursor";
+/// Cursor 的标准对话中转为什么是墓碑通道。保留通道 id 与旧路由，不再拿账号逐个撞一个
+/// 已由上游整体关闭的低层入口；账号管理、切号和 CRSR 是独立链路。
+pub const CURSOR_STREAM_UNAVAILABLE_REASON: &str =
+    "Cursor 标准对话中转当前不可用：普通 Cursor 会话与 User API Key 票据无法调用低层 InferenceService/Stream；Grok Bot 只在官方有状态 harness 内验证可用，不能无损承载外部标准请求。账号管理、切号和 CRSR 不受影响，请把客户端路由改到其他通道。";
 pub const CHATGPT: ChannelId = "chatgpt";
 pub const GROK: ChannelId = "grok";
 pub const KIRO: ChannelId = "kiro";
@@ -27,10 +31,16 @@ pub const ZCODE: ChannelId = "zcode";
 pub const QODER: ChannelId = "qoder";
 /// Claude 订阅（OAuth / setup-token / Console API Key）。
 pub const CLAUDE: ChannelId = "claude";
+/// Google 反重力（Antigravity / AGY）统一网关。Cloud Code + OAuth。
+pub const ANTIGRAVITY: ChannelId = "antigravity";
+/// Gemini 网页协议。浏览器 Cookie 打 gemini.google.com，和反重力不是同一条通道。
+pub const GEMINI_WEB: ChannelId = "gemini-web";
 /// 用户自己的 API Key 供应商（`provider/`）。
 pub const PROVIDER: ChannelId = "provider";
+/// Nexus Mesh 去中心化共享网络（`mesh/`）。
+pub const MESH: ChannelId = "mesh";
 
-/// 规范通道 id。别名（`codex/` `xai/`）只在请求前缀里认，不进这一张表。
+/// 规范通道 id。别名（`codex/` `xai/` `agy/` `google/`）只在请求前缀里认，不进这一张表。
 pub fn parse_id(id: &str) -> Option<ChannelId> {
     match id.trim().to_ascii_lowercase().as_str() {
         "cursor" => Some(CURSOR),
@@ -40,13 +50,16 @@ pub fn parse_id(id: &str) -> Option<ChannelId> {
         "zcode" | "glm" => Some(ZCODE),
         "qoder" | "qoder-cn" => Some(QODER),
         "claude" => Some(CLAUDE),
+        "antigravity" | "agy" | "google" => Some(ANTIGRAVITY),
+        "gemini-web" | "gweb" => Some(GEMINI_WEB),
         "provider" => Some(PROVIDER),
+        "mesh" | "p2p" => Some(MESH),
         _ => None,
     }
 }
 
 /// 设置里能填的通道 id，给报错用。
-pub const KNOWN_IDS: &str = "cursor / chatgpt / grok / kiro / zcode / qoder / claude / provider";
+pub const KNOWN_IDS: &str = "cursor / chatgpt / grok / kiro / zcode / qoder / claude / antigravity / gemini-web / provider / mesh";
 
 /// 目录 / 接入用的主键：`{通道}/{模型}`。已经带了本通道前缀的原样返回，避免叠两层。
 pub fn qualify(channel: &str, model: &str) -> String {
@@ -93,6 +106,10 @@ pub trait ChannelGate: Send + Sync {
     /// 有号也不等于能出图。
     fn media_ready(&self) -> bool {
         self.ready()
+    }
+    /// 平台级不可用与「这一个号出不了」不同：调用方应在取号前直接回这个原因，不能罚号或接力。
+    fn unavailable_reason(&self) -> Option<&'static str> {
+        None
     }
     /// 不带前缀的名字也归我吗。只有供应商通道认：它的模型清单是用户亲手写的名字，
     /// 裸名对上就是指它；别的通道的裸名一律交给默认通道，不按名字猜。
@@ -151,8 +168,47 @@ impl Channel {
     }
 }
 
-/// Cursor 通道：出厂默认，`cursor/` 前缀显式要它，门禁常开。
+/// Cursor 通道：测试与研究探针用的活跃形态。
 pub fn cursor_channel(lane: Arc<dyn Lane>, upstream: Arc<dyn Upstream>) -> Channel {
+    cursor_channel_with_gate(lane, upstream, Arc::new(OpenGate))
+}
+
+/// 生产用的墓碑形态：`cursor/…` 与已有默认/客户端路由仍确定落在 Cursor，不会静默改投
+/// 另一条付费通道；聊天在取号之前稳定返回 503。生图是另一条 AiService RPC，不由这个
+/// Stream 判决代替它下结论，仍保留原目录和执行路径。
+pub fn unavailable_cursor_channel(lane: Arc<dyn Lane>, upstream: Arc<dyn Upstream>) -> Channel {
+    cursor_channel_with_gate(lane, upstream, Arc::new(CursorStreamUnavailableGate))
+}
+
+struct CursorStreamUnavailableGate;
+
+impl ChannelGate for CursorStreamUnavailableGate {
+    fn ready(&self) -> bool {
+        false
+    }
+
+    fn owns(&self, _cap: Capability, _base_model: &str) -> bool {
+        true
+    }
+
+    fn models(&self, _cap: Capability) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn media_ready(&self) -> bool {
+        true
+    }
+
+    fn unavailable_reason(&self) -> Option<&'static str> {
+        Some(CURSOR_STREAM_UNAVAILABLE_REASON)
+    }
+}
+
+fn cursor_channel_with_gate(
+    lane: Arc<dyn Lane>,
+    upstream: Arc<dyn Upstream>,
+    gate: Arc<dyn ChannelGate>,
+) -> Channel {
     Channel {
         id: CURSOR,
         label: "Cursor",
@@ -160,7 +216,7 @@ pub fn cursor_channel(lane: Arc<dyn Lane>, upstream: Arc<dyn Upstream>) -> Chann
         prefixes: &["cursor/"],
         lane,
         upstream,
-        gate: Arc::new(OpenGate),
+        gate,
         passthrough: false,
     }
 }
@@ -254,7 +310,14 @@ impl ChannelRegistry {
                 };
             }
         }
-        if !model.is_empty() && cap == Capability::Chat {
+        let default = self.default_channel();
+        // 用户保留的默认通道若是平台级墓碑，裸模型也必须确定落回它：否则供应商对同名
+        // 模型的兼容认领会先抢占请求，造成静默外送和意外计费。显式 `provider/…` 已在上面
+        // 命中，不受影响；默认通道可用时继续保留旧版裸供应商模型兼容。
+        if !model.is_empty()
+            && cap == Capability::Chat
+            && default.gate.unavailable_reason().is_none()
+        {
             if let Some(ch) = self.channels.iter().find(|ch| ch.gate.claims_bare(model)) {
                 return Resolved {
                     channel: ch,
@@ -263,7 +326,7 @@ impl ChannelRegistry {
                 };
             }
         }
-        let ch = self.default_channel();
+        let ch = default;
         let base = if model.is_empty() {
             fallback_model(ch, cap)
         } else {
@@ -326,6 +389,27 @@ mod tests {
         }
     }
 
+    struct BareClaimGate;
+
+    impl ChannelGate for BareClaimGate {
+        fn ready(&self) -> bool {
+            true
+        }
+        fn owns(&self, cap: Capability, model: &str) -> bool {
+            cap == Capability::Chat && model.eq_ignore_ascii_case("m")
+        }
+        fn models(&self, cap: Capability) -> Vec<String> {
+            if cap == Capability::Chat {
+                vec!["m".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        fn claims_bare(&self, model: &str) -> bool {
+            self.owns(Capability::Chat, model)
+        }
+    }
+
     fn lane() -> Arc<dyn Lane> {
         Arc::new(StaticLane::new(Credential {
             label: "l".into(),
@@ -375,6 +459,30 @@ mod tests {
         assert_eq!(
             r.resolve("cursor/grok-4.5", Capability::Chat).channel.id,
             CURSOR
+        );
+    }
+
+    #[test]
+    fn unavailable_default_precedes_bare_claims_but_not_explicit_prefixes() {
+        let unavailable = ChannelRegistry::new(unavailable_cursor_channel(
+            lane(),
+            Arc::new(CursorUpstream::new(Default::default())),
+        ))
+        .with(channel(PROVIDER, &["provider/"], Arc::new(BareClaimGate)));
+        let bare = unavailable.resolve("m", Capability::Chat);
+        assert_eq!(bare.channel.id, CURSOR);
+        assert_eq!(bare.base_model, "m");
+        assert!(!bare.forced);
+        let explicit = unavailable.resolve("provider/m", Capability::Chat);
+        assert_eq!(explicit.channel.id, PROVIDER);
+        assert_eq!(explicit.base_model, "m");
+        assert!(explicit.forced);
+
+        let available = ChannelRegistry::new(channel(CURSOR, &["cursor/"], Arc::new(OpenGate)))
+            .with(channel(PROVIDER, &["provider/"], Arc::new(BareClaimGate)));
+        assert_eq!(
+            available.resolve("m", Capability::Chat).channel.id,
+            PROVIDER
         );
     }
 

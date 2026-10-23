@@ -1,6 +1,6 @@
 //! `aiserver.v1.Inference*` 的 protobuf 类型。
 //!
-//! **生成文件，不要手改。** 由 `scripts/gen-proto.py` 从 `proto/inference-3.18.9.json` 生成——那份 JSON 是
+//! **生成文件，不要手改。** 由 `scripts/gen-proto.py` 从 `proto/inference-3.21.13.json` 生成——那份 JSON 是
 //! `gateway/scripts/extract-inference-proto.py` 对 Cursor desktop bundle 机器提取的结果，
 //! 字段号一个都没经过人手。Cursor 升级后按 `scripts/gen-proto.py` 头部的步骤重跑，
 //! 拿 git diff 看协议动了什么。
@@ -75,6 +75,12 @@ pub struct InferenceCoreMessage {
     pub cursor_inference_reason: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "12")]
     pub cursor_feature_type: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag = "13")]
+    pub cursor_is_summary: ::core::option::Option<bool>,
+    #[prost(string, optional, tag = "14")]
+    pub cursor_clear_at: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "15")]
+    pub cursor_fallback_insert_before: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof = "inference_core_message::Content", tags = "2, 3, 6")]
     pub content: ::core::option::Option<inference_core_message::Content>,
 }
@@ -390,6 +396,24 @@ pub struct InferenceStreamRequest {
     pub inference_reason: ::core::option::Option<i32>,
     #[prost(string, optional, tag = "12")]
     pub conversation_group_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "13")]
+    pub parent_request_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "14")]
+    pub root_parent_request_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "15")]
+    pub parent_agent_tool_call_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "16")]
+    pub subagent_type: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(int32, optional, tag = "17")]
+    pub compaction_epoch: ::core::option::Option<i32>,
+    #[prost(string, optional, tag = "18")]
+    pub turn_unit_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "19")]
+    pub turn_unit_type: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "20")]
+    pub originating_flow: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "21")]
+    pub routing_reason: ::core::option::Option<::prost::alloc::string::String>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]

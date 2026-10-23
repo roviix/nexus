@@ -91,6 +91,11 @@ impl EnvelopeDecoder {
         self.buf.len()
     }
 
+    /// 取出当前缓冲区中未消费的原始字节
+    pub fn unconsumed(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buf)
+    }
+
     /// 取下一个完整信封；`Ok(None)` 表示还要更多字节。
     pub fn next_envelope(&mut self) -> Result<Option<Envelope>, FramingError> {
         if self.buf.len() < 5 {

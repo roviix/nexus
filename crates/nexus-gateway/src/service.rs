@@ -10,7 +10,7 @@
 use crate::channel::{self, Capability, ChannelId, ChannelRegistry};
 use crate::inference::StreamConfig;
 use crate::lane::{
-    CursorLoginSource, LaneSnapshot, LoginReader, RelayLane, Roster, Source, StoredAccountsSource,
+    CursorLoginSource, Lane, LaneSnapshot, LoginReader, RelayLane, Roster, Source, StoredAccountsSource,
     SubscriptionAccounts,
 };
 use crate::ledger::{Ledger, UsageSummary};
@@ -22,9 +22,11 @@ use crate::server::{self, Gateway};
 use crate::subscriptions;
 use crate::upstream::CursorUpstream;
 use nexus_accounts::AccountsService;
+use nexus_antigravity::AntigravityService;
 use nexus_chatgpt::ChatGptService;
 use nexus_claude::ClaudeService;
 use nexus_core::{AppError, ErrorCode, Result, Secret};
+use nexus_gemini_web::GeminiWebService;
 use nexus_grok::GrokService;
 use nexus_kiro::KiroService;
 use nexus_qoder::QoderService;
@@ -126,6 +128,8 @@ pub struct GatewayStatus {
     /// 改了设置但还没重启网关，界面提示「重启生效」。
     pub restart_needed: bool,
     pub api_key_set: bool,
+    /// Cursor 标准对话中转的平台级停用原因。号池仍原样保留；已有路由不会静默改投别家。
+    pub cursor_inference_unavailable_reason: Option<&'static str>,
     /// Cursor 通道的接力队。
     pub lane: LaneSnapshot,
     /// 订阅通道（ChatGPT / Grok Build / Kiro …）和供应商通道，按选路顺序。
@@ -156,6 +160,9 @@ pub struct SubscriptionServices {
     pub zcode: Arc<ZcodeService>,
     pub qoder: Arc<QoderService>,
     pub claude: Arc<ClaudeService>,
+    pub antigravity: Arc<AntigravityService>,
+    pub gemini_web: Arc<GeminiWebService>,
+    pub mesh: Arc<nexus_mesh::MeshService>,
 }
 
 pub struct GatewayService {
@@ -168,6 +175,10 @@ pub struct GatewayService {
     zcode: Arc<ZcodeService>,
     qoder: Arc<QoderService>,
     claude: Arc<ClaudeService>,
+    antigravity: Arc<AntigravityService>,
+    gemini_web: Arc<GeminiWebService>,
+    mesh: Arc<nexus_mesh::MeshService>,
+    mesh_lane: Arc<dyn crate::lane::Lane>,
     /// 哪些号进接力队。跨启停都是同一份，落库。
     roster: Arc<Roster>,
     /// Cursor 正登着的号。设置页改目录时换读者，接力队还是这一份。
@@ -192,6 +203,102 @@ pub struct GatewayService {
 }
 
 impl GatewayService {
+    fn parse_mesh_fallback_request(parsed: &serde_json::Value, effective_model: &str) -> crate::normalized::ChatRequest {
+        let messages = if let Some(arr) = parsed.get("messages").and_then(|v| v.as_array()) {
+            arr.iter().filter_map(|m| {
+                let role_str = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+                let role = match role_str {
+                    "system" => crate::normalized::Role::System,
+                    "assistant" => crate::normalized::Role::Assistant,
+                    "tool" => crate::normalized::Role::Tool,
+                    _ => crate::normalized::Role::User,
+                };
+                let text = if let Some(s) = m.get("content").and_then(|c| c.as_str()) {
+                    s.to_string()
+                } else if let Some(blocks) = m.get("content").and_then(|c| c.as_array()) {
+                    blocks.iter().filter_map(|b| {
+                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            b.get("text").and_then(|t| t.as_str())
+                        } else {
+                            None
+                        }
+                    }).collect::<Vec<_>>().join("\n")
+                } else {
+                    String::new()
+                };
+
+                let mut tool_calls = Vec::new();
+                if let Some(calls) = m.get("tool_calls").and_then(|v| v.as_array()) {
+                    for tc in calls {
+                        let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("call_0").to_string();
+                        let name = tc.pointer("/function/name").and_then(|v| v.as_str())
+                            .or_else(|| tc.get("name").and_then(|v| v.as_str()))
+                            .unwrap_or("").to_string();
+                        let arguments = tc.pointer("/function/arguments").and_then(|v| v.as_str())
+                            .or_else(|| tc.get("arguments").and_then(|v| v.as_str()))
+                            .unwrap_or("{}").to_string();
+                        if !name.is_empty() {
+                            tool_calls.push(crate::normalized::ToolCall { id, name, arguments });
+                        }
+                    }
+                }
+
+                let mut tool_results = Vec::new();
+                if role == crate::normalized::Role::Tool {
+                    let tool_call_id = m.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let tool_name = m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    tool_results.push(crate::normalized::ToolResult {
+                        tool_call_id,
+                        tool_name,
+                        text: text.clone(),
+                        is_error: false,
+                        images: Vec::new(),
+                    });
+                }
+
+                Some(crate::normalized::Message {
+                    role,
+                    text: if role == crate::normalized::Role::Tool { String::new() } else { text },
+                    images: Vec::new(),
+                    tool_calls,
+                    tool_results,
+                    reasoning: Vec::new(),
+                })
+            }).collect()
+        } else {
+            vec![]
+        };
+
+        let tools = if let Some(arr) = parsed.get("tools").and_then(|v| v.as_array()) {
+            arr.iter().filter_map(|t| {
+                let name = t.pointer("/function/name").and_then(|v| v.as_str())
+                    .or_else(|| t.get("name").and_then(|v| v.as_str()))?;
+                let description = t.pointer("/function/description").and_then(|v| v.as_str())
+                    .or_else(|| t.get("description").and_then(|v| v.as_str()))
+                    .unwrap_or("").to_string();
+                let parameters = t.pointer("/function/parameters").cloned()
+                    .or_else(|| t.get("parameters").cloned())
+                    .unwrap_or(serde_json::json!({}));
+                Some(crate::normalized::ToolDef {
+                    name: name.to_string(),
+                    description,
+                    parameters,
+                    grammar: false,
+                    namespace: None,
+                })
+            }).collect()
+        } else {
+            vec![]
+        };
+
+        crate::normalized::ChatRequest {
+            model: effective_model.to_string(),
+            messages,
+            tools,
+            ..Default::default()
+        }
+    }
+
     pub fn new(
         db: Arc<Db>,
         secrets: Arc<dyn SecretStore>,
@@ -204,6 +311,20 @@ impl GatewayService {
         let zcode = Arc::new(ZcodeService::new(db.clone(), secrets.clone()));
         let qoder = Arc::new(QoderService::new(db.clone(), secrets.clone()));
         let claude = Arc::new(ClaudeService::new(db.clone(), secrets.clone()));
+        let antigravity = Arc::new(AntigravityService::new(db.clone(), secrets.clone()));
+        let gemini_web = Arc::new(GeminiWebService::new(db.clone(), secrets.clone()));
+        let mesh_cfg =
+            nexus_store::settings::get_or(&db, "mesh.config", nexus_mesh::MeshConfig::default());
+        let db_mesh = db.clone();
+        let on_mesh_save: nexus_mesh::MeshSaveHook = Arc::new(move |cfg| {
+            if let Err(e) = nexus_store::settings::set(&db_mesh, "mesh.config", cfg) {
+                tracing::warn!(error = ?e, "Failed to persist mesh config to sqlite");
+            }
+        });
+        let mesh = Arc::new(nexus_mesh::MeshService::with_persistence(
+            mesh_cfg,
+            Some(on_mesh_save),
+        ));
         Self::with_services(
             db,
             secrets,
@@ -216,6 +337,9 @@ impl GatewayService {
                 zcode,
                 qoder,
                 claude,
+                antigravity,
+                gemini_web,
+                mesh,
             },
         )
     }
@@ -235,7 +359,16 @@ impl GatewayService {
             zcode,
             qoder,
             claude,
+            antigravity,
+            gemini_web,
+            mesh,
         } = subs;
+        let mesh_lane: Arc<dyn crate::lane::Lane> =
+            Arc::new(crate::lane::StaticLane::new(crate::lane::Credential {
+                label: "mesh-peer".to_string(),
+                access_token: String::new(),
+                identity: crate::identity::DeviceIdentity::derived("mesh-peer"),
+            }));
         let settings = read_settings(&db);
         let roster = Arc::new(Roster::load(db.clone()));
         let (cursor_login, lane) = build_lane(cursor, accounts.clone(), roster.clone());
@@ -277,6 +410,18 @@ impl GatewayService {
                     claude.clone() as Arc<dyn SubscriptionAccounts>
                 )),
             ),
+            (
+                channel::ANTIGRAVITY,
+                Arc::new(subscriptions::subscription_lane(
+                    antigravity.clone() as Arc<dyn SubscriptionAccounts>
+                )),
+            ),
+            (
+                channel::GEMINI_WEB,
+                Arc::new(subscriptions::subscription_lane(
+                    gemini_web.clone() as Arc<dyn SubscriptionAccounts>
+                )),
+            ),
         ];
         let ledger = Arc::new(Ledger::new(db.clone()));
         if let Err(err) = ledger.prune() {
@@ -291,6 +436,204 @@ impl GatewayService {
         ));
         let provider_lane = Arc::new(ProviderLane::new(db.clone(), secrets.clone()));
         let routes = Arc::new(RwLock::new(read_routes(&db)));
+
+        let channel_lanes_map: std::collections::HashMap<ChannelId, Arc<RelayLane>> =
+            channel_lanes.iter().cloned().collect();
+
+        // 注册 Mesh 真实调用执行钩子 (当外部对等节点通过隧道调用本机 Channel 时触发真实推理)
+        let (claude_srv, chatgpt_srv, antigravity_srv, grok_srv, kiro_srv, zcode_srv, qoder_srv) = (
+            claude.clone(),
+            chatgpt.clone(),
+            antigravity.clone(),
+            grok.clone(),
+            kiro.clone(),
+            zcode.clone(),
+            qoder.clone(),
+        );
+
+        let mesh_for_hook = mesh.clone();
+        let mesh_invoke_hook: nexus_mesh::tunnel::client::MeshInvokeHook = Arc::new(move |channel_id, model, payload_json, outbound_tx, stream_id| {
+            let claude = claude_srv.clone();
+            let chatgpt = chatgpt_srv.clone();
+            let antigravity = antigravity_srv.clone();
+            let grok = grok_srv.clone();
+            let kiro = kiro_srv.clone();
+            let zcode = zcode_srv.clone();
+            let qoder = qoder_srv.clone();
+            let mesh_inst = mesh_for_hook.clone();
+            let lanes_map = channel_lanes_map.clone();
+
+            Box::pin(async move {
+                let run_impl = async {
+                    // 1. 严格检查本地 Host 开放配置与模型共享白名单
+                    mesh_inst
+                        .is_channel_and_model_allowed(&channel_id, &model)
+                        .await
+                        .map_err(|e| format!("Mesh 外部调用鉴权拒绝: {e}"))?;
+
+                    // 2. 清洗模型前缀 (去除 peer_id/ 或 channel_id/ 嵌套前缀)
+                    let effective_model = if let Some((_, stripped)) = model.split_once('/') {
+                        stripped.to_string()
+                    } else {
+                        model.clone()
+                    };
+
+                    let parsed: serde_json::Value = serde_json::from_str(&payload_json)
+                        .map_err(|e| format!("解析请求体失败: {e}"))?;
+
+                    // 优先识别方言并恢复完整的 ChatRequest (包含 messages、tools 等高级调用)
+                    let is_anthropic_flavor = parsed.get("anthropic_version").is_some()
+                        || parsed.pointer("/tools/0/input_schema").is_some()
+                        || parsed.get("system").is_some();
+
+                    let mut chat_req = if is_anthropic_flavor {
+                        if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::AnthropicMessages, &parsed, None) {
+                            pr.request
+                        } else if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::OpenAiChat, &parsed, None) {
+                            pr.request
+                        } else {
+                            Self::parse_mesh_fallback_request(&parsed, &effective_model)
+                        }
+                    } else if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::OpenAiChat, &parsed, None) {
+                        pr.request
+                    } else if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::AnthropicMessages, &parsed, None) {
+                        pr.request
+                    } else {
+                        Self::parse_mesh_fallback_request(&parsed, &effective_model)
+                    };
+                    chat_req.model = effective_model.clone();
+
+                    let lane: Arc<dyn Lane> = lanes_map
+                        .get(channel_id.as_str())
+                        .cloned()
+                        .map(|l| l as Arc<dyn Lane>)
+                        .ok_or_else(|| format!("本地 Provider 未配置该通道: {channel_id}"))?;
+
+                    let upstream: Arc<dyn crate::upstream::Upstream> = match channel_id.as_str() {
+                        channel::CLAUDE => subscriptions::claude_channel(lane.clone(), claude).upstream,
+                        channel::CHATGPT => subscriptions::chatgpt_channel(lane.clone(), chatgpt).upstream,
+                        channel::ANTIGRAVITY => subscriptions::antigravity_channel(lane.clone(), antigravity).upstream,
+                        channel::GROK => subscriptions::grok_channel(lane.clone(), grok).upstream,
+                        channel::KIRO => subscriptions::kiro_channel(lane.clone(), kiro).upstream,
+                        channel::ZCODE => subscriptions::zcode_channel(lane.clone(), zcode).upstream,
+                        channel::QODER => subscriptions::qoder_channel(lane.clone(), qoder).upstream,
+                        other => return Err(format!("本地 Provider 不支持该通道: {other}")),
+                    };
+
+                    let mut last_err: Option<String> = None;
+                    let switch_on_upstream = lane.switch_helps_on_upstream_error();
+
+                    for attempt in 1..=3 {
+                        let cred = match lane.acquire(&effective_model).await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let err_msg = format!("获取本地通道凭据失败: {e}");
+                                return Err(last_err.unwrap_or(err_msg));
+                            }
+                        };
+
+                        let tx = outbound_tx.clone();
+                        let emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let emitted_clone = emitted.clone();
+                        let mut sink = move |d: crate::normalized::Delta| {
+                            if !matches!(d, crate::normalized::Delta::Headers(_) | crate::normalized::Delta::ThinkingSignature(_)) {
+                                emitted_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            match d {
+                                crate::normalized::Delta::Text(t) => {
+                                    let _ = tx.try_send(nexus_mesh::protocol::TunnelFrame::Delta {
+                                        stream_id,
+                                        text: t,
+                                        is_thinking: false,
+                                    });
+                                }
+                                crate::normalized::Delta::Thinking(t) => {
+                                    let _ = tx.try_send(nexus_mesh::protocol::TunnelFrame::Delta {
+                                        stream_id,
+                                        text: t,
+                                        is_thinking: true,
+                                    });
+                                }
+                                _ => {}
+                            }
+                        };
+
+                        let result = upstream.stream(&cred, &chat_req, &mut sink).await;
+                        match &result {
+                            Ok(res) => {
+                                lane.report(&cred, &effective_model, crate::lane::Outcome::Ok(&res.usage));
+                                let tool_calls_wire = if res.tool_calls.is_empty() {
+                                    None
+                                } else {
+                                    Some(
+                                        res.tool_calls
+                                            .iter()
+                                            .map(|tc| nexus_mesh::protocol::ToolCallWire {
+                                                id: tc.id.clone(),
+                                                name: tc.name.clone(),
+                                                arguments: tc.arguments.clone(),
+                                            })
+                                            .collect(),
+                                    )
+                                };
+                                let finish_reason_str = if !res.tool_calls.is_empty() {
+                                    "tool_use".to_string()
+                                } else {
+                                    res.finish_reason.as_str().to_string()
+                                };
+                                let _ = outbound_tx.send(nexus_mesh::protocol::TunnelFrame::Finish {
+                                    stream_id,
+                                    total_tokens: Some(res.usage.output_tokens as u32),
+                                    finish_reason: Some(finish_reason_str),
+                                    tool_calls: tool_calls_wire,
+                                    thinking_signature: res.thinking_signature.clone(),
+                                }).await;
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                lane.report(&cred, &effective_model, crate::lane::Outcome::Err(e));
+                                if !emitted.load(std::sync::atomic::Ordering::Relaxed)
+                                    && attempt < 3
+                                    && (e.kind.blames_account()
+                                        || (switch_on_upstream
+                                            && matches!(
+                                                e.kind,
+                                                crate::error::UpstreamKind::Upstream | crate::error::UpstreamKind::Timeout
+                                            )))
+                                {
+                                    tracing::info!(
+                                        account = %cred.label,
+                                        model = %effective_model,
+                                        status = e.status,
+                                        attempt,
+                                        "Mesh 本地回环调用的通道账号报错，换号重试 (第 {attempt} 次)"
+                                    );
+                                    last_err = Some(format!("本地通道上游执行错误: {}", e.message));
+                                    continue;
+                                }
+                                return Err(format!("本地通道上游执行错误: {}", e.message));
+                            }
+                        }
+                    }
+
+                    Err(last_err.unwrap_or_else(|| "所有账号重试均失败".to_string()))
+                };
+
+                let res: std::result::Result<(), String> = run_impl.await;
+                if let Err(ref err_msg) = res {
+                    tracing::error!(%err_msg, "Mesh 本地调用执行失败");
+                    let _ = outbound_tx.send(nexus_mesh::protocol::TunnelFrame::Error {
+                        stream_id,
+                        code: "500".to_string(),
+                        message: err_msg.clone(),
+                    }).await;
+                }
+                res
+            })
+        });
+
+        mesh.set_invoke_hook(Some(mesh_invoke_hook));
+
         Self {
             db,
             secrets,
@@ -300,6 +643,10 @@ impl GatewayService {
             zcode,
             qoder,
             claude,
+            antigravity,
+            gemini_web,
+            mesh: mesh.clone(),
+            mesh_lane: mesh_lane.clone(),
             roster,
             cursor_login,
             lane: Arc::new(lane),
@@ -314,10 +661,10 @@ impl GatewayService {
         }
     }
 
-    /// 网关的全部通道（默认 Cursor + 五条订阅通道 + 供应商）。每次起服务时装一份；门禁现查，
+    /// 网关的全部通道（默认 Cursor + 六条订阅通道 + 供应商 + Mesh 共享网络）。每次起服务时装一份；门禁现查，
     /// 加号 / 关号 / 拉到新目录 / 加一家供应商都不用重启。
     fn registry(&self, cursor_cfg: StreamConfig) -> ChannelRegistry {
-        let mut reg = ChannelRegistry::new(channel::cursor_channel(
+        let mut reg = ChannelRegistry::new(channel::unavailable_cursor_channel(
             self.lane(),
             Arc::new(CursorUpstream::new(cursor_cfg)),
         ));
@@ -330,6 +677,12 @@ impl GatewayService {
                 channel::ZCODE => subscriptions::zcode_channel(lane, self.zcode.clone()),
                 channel::QODER => subscriptions::qoder_channel(lane, self.qoder.clone()),
                 channel::CLAUDE => subscriptions::claude_channel(lane, self.claude.clone()),
+                channel::ANTIGRAVITY => {
+                    subscriptions::antigravity_channel(lane, self.antigravity.clone())
+                }
+                channel::GEMINI_WEB => {
+                    subscriptions::gemini_web_channel(lane, self.gemini_web.clone())
+                }
                 other => unreachable!("未知通道 {other}"),
             };
             reg = reg.with(ch);
@@ -337,6 +690,10 @@ impl GatewayService {
         reg.with(provider::provider_channel(
             self.provider_lane.clone(),
             self.db.clone(),
+        ))
+        .with(crate::mesh::mesh_channel(
+            self.mesh_lane.clone(),
+            self.mesh.clone(),
         ))
         .share_default(self.default_channel.clone())
     }
@@ -405,46 +762,49 @@ impl GatewayService {
             Some(ch) => crate::models::merged_catalog(Some(&ch.gate.models(Capability::Chat))),
             None => crate::models::merged_catalog(None),
         };
+        // Cursor 的生图是另一条 AiService RPC，保留；只有已经被上游关掉的 Stream 对话目录隐藏。
+        out.retain(|entry| {
+            !(entry.modality == "chat" && entry.id.strip_prefix("cursor/").is_some())
+        });
         for ch in reg.extras().filter(|ch| ch.id != channel::CHATGPT) {
-            let (vendor_label, note): (&'static str, Option<&'static str>) = match ch.id {
-                channel::GROK => (
-                    "xAI",
-                    Some("经 Grok 通道（订阅号走 cli-chat-proxy，API Key 走 api.x.ai）。"),
-                ),
-                channel::KIRO => (
-                    "Amazon",
-                    Some("经 Kiro（Amazon Q / Builder ID）。对外 kiro/kiro-claude-*。"),
-                ),
-                channel::ZCODE => (
-                    "智谱",
-                    Some("经 ZCode（智谱 GLM 编码套餐）。裸 glm-* 也认，zcode/ 前缀可显式指定。"),
-                ),
-                channel::QODER => (
-                    "Qoder",
-                    Some("经 Qoder 网关（COSY 签名的 SSE）。公开名如 qoder/Qwen3.8-Max，国际版和国内版的号各自认自己的目录。"),
-                ),
-                channel::CLAUDE => (
-                    "Anthropic",
-                    Some("经 Claude 订阅（OAuth / setup-token）或 Console API Key，直连 api.anthropic.com。OAuth 出站按 Claude Code 指纹发。公开名如 claude/claude-opus-4-6。"),
-                ),
-                channel::PROVIDER => (
-                    "供应商",
-                    Some("经你自己的 API Key 供应商。provider/ 前缀显式指定；清单里的裸名也认。同一个模型有几家声明时按顺序接力。"),
-                ),
-                _ => (ch.label, None),
+            let vendor_label: &'static str = match ch.id {
+                channel::GROK => "xAI",
+                channel::KIRO => "Amazon",
+                channel::ZCODE => "智谱",
+                channel::QODER => "Qoder",
+                channel::CLAUDE => "Anthropic",
+                channel::ANTIGRAVITY => "Google",
+                channel::GEMINI_WEB => "Google",
+                channel::PROVIDER => "供应商",
+                _ => ch.label,
             };
             let mut push =
                 |id: String, modality: &'static str, media_note: Option<&'static str>| {
-                    let qualified = channel::qualify(ch.id, &id);
+                    let qualified = if ch.id == channel::MESH {
+                        id.clone()
+                    } else {
+                        channel::qualify(ch.id, &id)
+                    };
+                    let (series_id, variant) = if let Some(base) = id.strip_suffix("-thinking") {
+                        (base.to_string(), "thinking".to_string())
+                    } else {
+                        (id.clone(), "standard".to_string())
+                    };
+                    let series = if ch.id == channel::MESH {
+                        series_id
+                    } else {
+                        channel::qualify(ch.id, &series_id)
+                    };
+                    let note = media_note.or_else(|| Self::channel_model_note(ch.id, &id));
                     out.push(crate::models::CatalogEntry {
                         id: qualified.clone(),
                         vendor: ch.vendor,
                         vendor_label,
                         modality,
-                        series: qualified,
-                        variant: "standard".to_string(),
+                        series,
+                        variant,
                         aliases: Vec::new(),
-                        note: media_note.or(note),
+                        note,
                         fixed_size: None,
                     });
                 };
@@ -471,6 +831,61 @@ impl GatewayService {
             }
         }
         out
+    }
+
+    /// 模型广场展示用：根据通道和具体模型生成精炼的说明
+    fn channel_model_note(channel_id: &str, model_id: &str) -> Option<&'static str> {
+        let raw = model_id.to_ascii_lowercase();
+        match channel_id {
+            channel::ANTIGRAVITY => {
+                if raw.contains("gemini-3") || raw.contains("gemini-2.5") {
+                    Some("Google 新一代多模态大模型，超长上下文与深度分析能力")
+                } else if raw.contains("claude-3-7") || raw.contains("claude-3.7") {
+                    Some("Anthropic 旗舰混合推理模型，支持思考与代码生成")
+                } else if raw.contains("claude-3-5") || raw.contains("claude-3.5") {
+                    Some("业界标杆级代码与通用分析模型")
+                } else {
+                    None
+                }
+            }
+            channel::CLAUDE => {
+                if raw.contains("opus") {
+                    Some("Anthropic 旗舰深度推理模型，攻坚复杂架构与数学分析")
+                } else if raw.contains("sonnet") {
+                    Some("主力高智能通用与编码模型，速度与智力俱佳")
+                } else if raw.contains("haiku") {
+                    Some("轻量低延迟模型，快速响应日常任务")
+                } else {
+                    None
+                }
+            }
+            channel::GROK => {
+                if raw.contains("imagine") {
+                    Some("xAI 图像创作模型")
+                } else if raw.contains("grok-3") || raw.contains("grok-4") {
+                    Some("xAI 旗舰前沿模型，知识库丰富且支持深度思考")
+                } else {
+                    None
+                }
+            }
+            channel::KIRO => {
+                if raw.contains("opus") {
+                    Some("Amazon Q 驱动的 Claude Opus 深度推理模型，攻坚复杂架构与系统设计")
+                } else if raw.contains("sonnet") {
+                    Some("Amazon Q 驱动的 Claude Sonnet 主力编程与通用模型")
+                } else if raw.contains("haiku") {
+                    Some("Amazon Q 驱动的 Claude Haiku 极速轻量模型")
+                } else if raw.contains("gpt") {
+                    Some("Amazon Q 驱动的 GPT 系列模型")
+                } else {
+                    Some("Amazon Q 开发者云端编码与分析模型")
+                }
+            }
+            channel::ZCODE => Some("智谱 GLM 编码特化模型，支持代码补全与技术分析"),
+            channel::QODER => Some("通义千问 Qwen 编码特化模型"),
+            channel::MESH => Some("来自 Nexus Mesh 远端节点共享的实时推理算力"),
+            _ => None,
+        }
     }
 
     /// 订阅通道：手动指定当前号（按账号标签）。供应商通道：把这一家排到它所有模型的最前面。
@@ -704,6 +1119,7 @@ impl GatewayService {
             media_jobs: Some(self.media_jobs.clone()),
             routes: self.routes.clone(),
             log: Some(self.log.clone()),
+            mesh: Some(self.mesh.clone()),
         });
 
         // 端口被占就往后找一个空的。找到的那个写回设置：下次开还是它，客户端里抄过的地址
@@ -822,6 +1238,10 @@ impl GatewayService {
             running: info,
             restart_needed,
             api_key_set,
+            cursor_inference_unavailable_reason: self
+                .registry(StreamConfig::default())
+                .get(channel::CURSOR)
+                .and_then(|cursor| cursor.gate.unavailable_reason()),
             settings,
         })
     }
@@ -1191,7 +1611,7 @@ mod tests {
 
         assert!(svc
             .set_route(
-                "cursor",
+                "unknown_client",
                 Some(ClientRoute {
                     model: "cursor/a".into(),
                     ..ClientRoute::default()
@@ -1199,10 +1619,21 @@ mod tests {
                 None
             )
             .is_err());
+        svc.set_route(
+            "cursor",
+            Some(ClientRoute {
+                model: "claude/claude-3-7-sonnet".into(),
+                ..ClientRoute::default()
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(svc.routes()["cursor"].model, "claude/claude-3-7-sonnet");
         assert!(svc
             .set_route("codex", Some(ClientRoute::default()), None)
             .is_err());
         svc.set_route("codex", None, None).unwrap();
+        svc.set_route("cursor", None, None).unwrap();
         assert!(build(&p).routes().is_empty());
     }
 

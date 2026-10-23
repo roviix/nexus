@@ -27,18 +27,14 @@ pub const CLIENT_IDENTIFIER: &str = "grok-shell";
 /// access token 提前这么久续。xAI 的 access 通常一小时级，按 5 分钟提前。
 pub const REFRESH_AHEAD: Duration = Duration::from_secs(5 * 60);
 
+/// 对外目录。精选活跃与前沿旗舰模型：
+/// - 次世代与前沿旗舰: grok-4.7, grok-4.6, grok-4.5
+/// - 轻量高吞吐: grok-4-fast
 pub const GROK_MODELS: &[&str] = &[
+    "grok-4.7",
     "grok-4.6",
     "grok-4.5",
-    "grok-4.3",
-    "grok-4",
     "grok-4-fast",
-    "grok-build-0.1",
-    "grok-composer-2.5-fast",
-    "grok-code",
-    "grok-code-fast-1",
-    "grok-3",
-    "grok-3-mini",
 ];
 
 /// 生图模型。`grok-imagine` 是官方文档里的别名，实际发 `grok-imagine-image`。

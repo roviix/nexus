@@ -315,9 +315,10 @@ pub fn parse_credentials(raw: &str, secret: Option<&str>) -> Result<Vec<Imported
 
     let mut out = Vec::new();
 
-    // coding-plan：每把 key 一个号。个人版和团队版是两条。
+    // coding-plan：每把 key 一个号。个人版和团队版若 API key 相同，只保留第一个。
     let mut names: Vec<&String> = doc.keys().filter(|k| k.contains(":api-key")).collect();
     names.sort(); // 稳定顺序，导入两次的账号顺序才一致
+    let mut seen_keys = std::collections::HashSet::new();
     for name in names {
         let Some((plan, family, uuid)) = parse_api_key_name(name) else {
             continue;
@@ -325,6 +326,10 @@ pub fn parse_credentials(raw: &str, secret: Option<&str>) -> Result<Vec<Imported
         let Some(key) = field(name) else { continue };
         if !looks_like_api_key(&key) {
             tracing::debug!(family, "这把 key 不是 {{id}}.{{secret}} 的形状，跳过");
+            continue;
+        }
+        if !seen_keys.insert(key.clone()) {
+            tracing::debug!(family, "相同 API Key 已存在，跳过重复套餐");
             continue;
         }
         out.push(ImportedAccount {
@@ -339,16 +344,20 @@ pub fn parse_credentials(raw: &str, secret: Option<&str>) -> Result<Vec<Imported
     }
 
     // start-plan：一份 JWT 一个号。
-    if let Some(jwt) = field("zcodejwttoken").filter(|j| j.split('.').count() == 3) {
-        out.push(ImportedAccount {
-            provider: active,
-            plan: ZcodePlan::StartPlan,
-            family: None,
-            account_uuid: user_id.clone(),
-            email: email.clone(),
-            api_key: None,
-            jwt: Some(jwt),
-        });
+    // 如果已经有 active 的 coding-plan API key，则忽略多余的 start-plan 试用 JWT；
+    // 只有在没有 coding-plan 时才导入 start-plan。
+    if out.is_empty() {
+        if let Some(jwt) = field("zcodejwttoken").filter(|j| j.split('.').count() == 3) {
+            out.push(ImportedAccount {
+                provider: active,
+                plan: ZcodePlan::StartPlan,
+                family: None,
+                account_uuid: user_id.clone(),
+                email: email.clone(),
+                api_key: None,
+                jwt: Some(jwt),
+            });
+        }
     }
 
     Ok(out)
@@ -462,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_both_coding_plans_and_the_start_plan_jwt() {
+    fn parses_coding_plans_and_skips_redundant_start_plan_jwt() {
         let uuid = "a0485d81-70b2-4bc7-9ffe-259af76f8dfd";
         let doc = serde_json::json!({
             "oauth:active_provider": seal("zai", SECRET),
@@ -476,7 +485,7 @@ mod tests {
         });
         let got = parse_credentials(&doc.to_string(), Some(SECRET)).unwrap();
 
-        assert_eq!(got.len(), 3, "个人版 + 团队版 + 体验套餐");
+        assert_eq!(got.len(), 2, "已有不同 key 的 coding-plan，跳过多余的 start-plan jwt");
         let coding: Vec<&ImportedAccount> = got
             .iter()
             .filter(|a| a.plan == ZcodePlan::CodingPlan)
@@ -486,10 +495,30 @@ mod tests {
         assert_eq!(coding[0].email.as_deref(), Some("me@example.com"));
         assert_ne!(coding[0].account_ref(), coding[1].account_ref());
         assert!(coding[0].account_ref().contains("individual"));
+    }
 
-        let start = got.iter().find(|a| a.plan == ZcodePlan::StartPlan).unwrap();
-        assert_eq!(start.jwt.as_deref(), Some("aaa.bbb.ccc"));
-        assert!(start.api_key.is_none());
+    #[test]
+    fn skips_duplicate_api_keys_and_imports_start_plan_if_no_coding() {
+        let uuid = "a0485d81-70b2-4bc7-9ffe-259af76f8dfd";
+        // 1. 相同 key 跨套餐只保留一个
+        let doc_dup = serde_json::json!({
+            "oauth:active_provider": seal("zai", SECRET),
+            format!("account-provider:coding-plan:account:zai-individual-coding-plan:account:{uuid}:api-key"):
+                seal("b5aef1abcdefabcdefabcdefabcdef12.0123456789abcdef", SECRET),
+            format!("account-provider:coding-plan:account:zai-team-coding-plan:account:{uuid}:api-key"):
+                seal("b5aef1abcdefabcdefabcdefabcdef12.0123456789abcdef", SECRET),
+        });
+        let got_dup = parse_credentials(&doc_dup.to_string(), Some(SECRET)).unwrap();
+        assert_eq!(got_dup.len(), 1, "相同 API key 只保留一份");
+
+        // 2. 没有 coding-plan 时保留 start-plan
+        let doc_start = serde_json::json!({
+            "oauth:active_provider": seal("zai", SECRET),
+            "zcodejwttoken": seal("aaa.bbb.ccc", SECRET),
+        });
+        let got_start = parse_credentials(&doc_start.to_string(), Some(SECRET)).unwrap();
+        assert_eq!(got_start.len(), 1);
+        assert_eq!(got_start[0].plan, ZcodePlan::StartPlan);
     }
 
     #[test]

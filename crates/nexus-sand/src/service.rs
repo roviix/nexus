@@ -424,7 +424,7 @@ impl SandService {
         let contents = read_targets(&layout)?;
         // 端点 URL / Grok 鉴权形态是规则文本的一部分：卸载要用装的时候那一个才反向得了。
         let grokbot_auth = installed_grokbot_auth(&contents);
-        let rules = rules::catalog_with_installed(
+        let mut rules = rules::catalog_with_installed(
             &InstallOptions {
                 grokbot_auth: if grokbot_auth.is_on() {
                     grokbot_auth
@@ -435,6 +435,9 @@ impl SandService {
             },
             installed_endpoint(&contents).as_deref(),
         )?;
+        // 第一版 originTransport interceptor 不属于当前 catalog，但正式卸载也必须能剥掉它。
+        // 这里只追加 Remove 方向的规则；放进 Apply catalog 会反向装回旧 interceptor。
+        rules.extend(rules::grokbot_legacy_interceptor_strip_rules());
         let before = aggregate(&layout, &contents, &rules);
         if before.foreign > 0 {
             return Err(AppError::new(

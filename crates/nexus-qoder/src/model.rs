@@ -92,6 +92,9 @@ pub struct QoderAccount {
     pub access_expires_at: Option<String>,
     pub last_checked_at: Option<String>,
     pub last_error: Option<String>,
+    /// 套餐和额度快照。没拉过是 null。序列化成 `qoderUsage`，别和别的平台的 `usage` 挤在一起。
+    #[serde(rename = "qoderUsage")]
+    pub usage: Option<crate::usage::QoderUsage>,
     pub created_at: String,
     pub updated_at: String,
 }

@@ -127,7 +127,7 @@ fn outbound(
         },
         upstream_model: nexus_claude::upstream_model(&request.model),
         extra_headers,
-        claude_oauth: oauth.then(|| ClaudeOauthTune {
+        claude_oauth: oauth.then_some(ClaudeOauthTune {
             account_ref,
             native,
             requested_betas,

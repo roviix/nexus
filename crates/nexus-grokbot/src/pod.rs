@@ -106,6 +106,10 @@ pub struct EnsureSandBoxResponse {
     pub exec_daemon_auth_token: String,
     #[prost(string, tag = "6")]
     pub exec_daemon_url: String,
+    #[prost(string, tag = "10")]
+    pub gateway_url: String,
+    #[prost(string, tag = "11")]
+    pub gateway_token: String,
 }
 
 /// exec daemon 的连接参数。

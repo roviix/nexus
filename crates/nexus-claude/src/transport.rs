@@ -78,7 +78,17 @@ pub async fn request(
     };
     let stream = connect(profile, &host, port, deadline).await?;
     http1::exchange(
-        stream, profile, method, &host, port, &path, headers, body, deadline,
+        stream,
+        http1::ExchangeRequest {
+            profile,
+            method,
+            host: &host,
+            port,
+            path: &path,
+            headers,
+            body,
+            deadline,
+        },
     )
     .await
 }

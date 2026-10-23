@@ -148,7 +148,10 @@ async fn main() {
         }
         Delta::Thinking(t) => eprint!("\x1b[2m{t}\x1b[0m"),
         // Cursor 后端不发这两种（只有 ChatGPT 透传会）。
-        Delta::Raw { .. } | Delta::Headers(_) => {}
+        Delta::Raw { .. }
+        | Delta::Headers(_)
+        | Delta::ThinkingSignature(_)
+        | Delta::RedactedThinking(_) => {}
     };
 
     match inference::stream(&client, &cfg, &access, &identity, &request, &mut on_delta).await {

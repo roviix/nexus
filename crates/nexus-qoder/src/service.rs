@@ -7,6 +7,7 @@ use crate::auth;
 use crate::model::{QoderAccount, QoderBackend, QoderIdentity, QoderStatus};
 use crate::protocol;
 use crate::repo::{QoderAccounts, StoredPat, Upserted};
+use crate::usage;
 use nexus_core::{AppError, ErrorCode, QoderAccountId, Result, Secret};
 use nexus_store::{Db, QoderSecret, SecretStore};
 use std::sync::Arc;
@@ -103,6 +104,13 @@ impl QoderService {
                     } else {
                         report.updated += 1;
                     }
+                    let account = match self.refresh_usage(&account.id).await {
+                        Ok(fresh) => fresh,
+                        Err(err) => {
+                            tracing::warn!(%err, "导入后没问到 Qoder 用量");
+                            account
+                        }
+                    };
                     report.accounts.push(account);
                 }
                 Err(err) => report.skipped.push(err.message),
@@ -154,6 +162,28 @@ impl QoderService {
             },
             note,
         )
+    }
+
+    /// 问一次套餐和额度，写进账号快照。登录态坏了由 `credential` 标成需要重贴；
+    /// 额度接口自己拒绝时只记错误，号还能继续出流量。
+    pub async fn refresh_usage(&self, id: &QoderAccountId) -> Result<QoderAccount> {
+        let token = self.credential(id).await?;
+        let account = self.repo.get(id)?;
+        match usage::fetch(&self.http, account.backend, token.expose()).await {
+            Ok(snapshot) => {
+                self.repo.save_usage(id, &snapshot)?;
+                self.repo.get(id)
+            }
+            Err(err) if err.auth => {
+                let _ = self.repo.record_failure(id, &err.message, None);
+                Err(AppError::unauthorized(err.message)
+                    .with_hint("重新贴一次 Personal Access Token。"))
+            }
+            Err(err) => {
+                let _ = self.repo.record_failure(id, &err.message, None);
+                Err(AppError::upstream(err.message).with_hint("过一会儿再刷新。"))
+            }
+        }
     }
 
     /// 网关要的短票。快过期就用 PAT 再换一把。

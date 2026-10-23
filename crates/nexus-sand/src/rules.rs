@@ -2008,18 +2008,22 @@ fn legacy_origin_transport_grokbot_patched() -> String {
     format!("{inner}{LEGACY_SAND_GROKBOT_STREAM_AUTH_MARKER}")
 }
 
-/// 某一形态的 Grok Bot 鉴权规则（两处 `applyAuthorization`）。另一形态作 `legacy`：盘上装着
-/// Box Relay、界面改选 Direct（或反过来），install 原地换块，不必先卸。`Off` 没有规则——
-/// 剥掉盘上的块走 `service` 的 strip 前置步骤（Apply 语义下 Literal 不会删）。
+/// 某一形态的 Grok Bot 鉴权规则（两处 `applyAuthorization`）。所有已知 Box/Direct
+/// 完整块都作 `legacy`：既支持形态切换，也支持 0.44 → 当前版本原位升级和卸载。
+/// `Off` 没有规则——剥掉盘上的块走 `service` 的 strip 前置步骤（Apply 语义下 Literal 不会删）。
 pub fn grokbot_auth_rules(mode: GrokBotAuthMode) -> Vec<PatchRule> {
     let Some(block) = grokbot_block(mode) else {
         return Vec::new();
     };
-    let other = match mode {
-        GrokBotAuthMode::BoxRelay => GrokBotAuthMode::Direct,
-        _ => GrokBotAuthMode::BoxRelay,
-    };
-    let other_block = grokbot_block(other).expect("non-off");
+    let legacy_blocks: Vec<&str> = [
+        crate::grokbot::grok_box_relay_auth_block(),
+        crate::grokbot::grokbot_direct_auth_block(),
+        crate::grokbot::legacy_grok_box_relay_auth_block_044(),
+        crate::grokbot::legacy_grokbot_direct_auth_block_044(),
+    ]
+    .into_iter()
+    .filter(|known| *known != block)
+    .collect();
     GROK_RUNTIME_AUTH_VAR_DECLS
         .iter()
         .map(|vars| {
@@ -2027,7 +2031,10 @@ pub fn grokbot_auth_rules(mode: GrokBotAuthMode) -> Vec<PatchRule> {
                 RuleId::GrokBotStreamAuth,
                 grok_runtime_auth_original(vars),
                 grok_runtime_auth_patched(vars, block),
-                vec![grok_runtime_auth_patched(vars, other_block)],
+                legacy_blocks
+                    .iter()
+                    .map(|legacy| grok_runtime_auth_patched(vars, legacy))
+                    .collect(),
             )
         })
         .collect()
@@ -2505,6 +2512,8 @@ mod tests {
 
         let (back_again, rep2) = crate::engine::apply(&direct, &relay_rules);
         assert_eq!(rep2.migrated.grokbot_stream_auth, 2);
+        assert_eq!(rep2.hits.grokbot_stream_auth, 0);
+        assert_eq!(back_again, relay);
         assert_eq!(
             installed_grokbot_auth(&back_again),
             GrokBotAuthMode::BoxRelay
@@ -2514,8 +2523,39 @@ mod tests {
         let (stock, removed) = crate::engine::remove(&direct, &relay_rules);
         assert_eq!(stock, src);
         assert_eq!(removed.grokbot_stream_auth, 2);
-        let (stock2, _) = crate::engine::remove(&relay, &direct_rules);
+        let (stock2, removed2) = crate::engine::remove(&relay, &direct_rules);
         assert_eq!(stock2, src);
+        assert_eq!(removed2.grokbot_stream_auth, 2);
+
+        // 0.44 的 Box/Direct 完整字节都能迁往任一当前形态，也能被任一规则表卸载。
+        for old_block in [
+            crate::grokbot::legacy_grok_box_relay_auth_block_044(),
+            crate::grokbot::legacy_grokbot_direct_auth_block_044(),
+        ] {
+            let mut old_on_disk = src.clone();
+            for vars in GROK_RUNTIME_AUTH_VAR_DECLS {
+                old_on_disk = old_on_disk.replace(
+                    &grok_runtime_auth_original(vars),
+                    &grok_runtime_auth_patched(vars, old_block),
+                );
+            }
+            assert_ne!(old_on_disk, src);
+
+            for (target_rules, target, mode) in [
+                (&relay_rules, &relay, GrokBotAuthMode::BoxRelay),
+                (&direct_rules, &direct, GrokBotAuthMode::Direct),
+            ] {
+                let (upgraded, report) = crate::engine::apply(&old_on_disk, target_rules);
+                assert_eq!(report.migrated.grokbot_stream_auth, 2);
+                assert_eq!(report.hits.grokbot_stream_auth, 0);
+                assert_eq!(&upgraded, target);
+                assert_eq!(installed_grokbot_auth(&upgraded), mode);
+
+                let (uninstalled, removed) = crate::engine::remove(&old_on_disk, target_rules);
+                assert_eq!(uninstalled, src);
+                assert_eq!(removed.grokbot_stream_auth, 2);
+            }
+        }
     }
 
     /// 第一版直连 interceptor（挂 originTransport，从未生效）：install 表里的迁移规则把它还成 stock

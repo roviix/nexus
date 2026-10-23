@@ -130,10 +130,7 @@ fn claude_cli_ua(ua: &str) -> bool {
     let Some(rest) = lower.strip_prefix("claude-cli/") else {
         return false;
     };
-    let ver = rest
-        .split(|c: char| c == ' ' || c == '(')
-        .next()
-        .unwrap_or("");
+    let ver = rest.split([' ', '(']).next().unwrap_or("");
     let mut parts = ver.split('.');
     parts.next().and_then(|s| s.parse::<u32>().ok()).is_some()
         && parts.next().and_then(|s| s.parse::<u32>().ok()).is_some()
@@ -459,7 +456,6 @@ pub fn assemble_betas(body: &Value, requested: &[String], wants_1m: bool) -> Str
     }
     let bind = asked(BETA_THINKING_BIND)
         || body.pointer("/thinking/block_binding").is_some()
-        || (per_turn && thinking == "adaptive")
         || thinking == "enabled"
         || thinking == "adaptive";
     if bind {

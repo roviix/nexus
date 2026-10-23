@@ -695,6 +695,8 @@ async fn read_sse(
         ttft_ms: c.ttft,
         turn_ms: started.elapsed().as_millis() as u64,
         raw_response: None,
+        thinking_signature: None,
+        redacted_thinking: None,
     })
 }
 
@@ -772,6 +774,7 @@ mod tests {
             tool_name: "read_file".into(),
             text: "fn main(){}".into(),
             is_error: false,
+            ..Default::default()
         });
         let body = build_body(
             &req(vec![Message::text(Role::User, "read a.rs"), asst, tool]),

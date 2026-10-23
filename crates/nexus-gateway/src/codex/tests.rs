@@ -188,6 +188,8 @@ impl Upstream for CursorFake {
                 ttft_ms: None,
                 turn_ms: 1,
                 raw_response: None,
+                thinking_signature: None,
+                redacted_thinking: None,
             })
         })
     }
@@ -318,6 +320,7 @@ async fn spawn_with_models(ready: bool, extra_models: Vec<String>) -> Harness {
         media_jobs: None,
         routes: Arc::default(),
         log: None,
+        mesh: None,
     });
     let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = listener.local_addr().unwrap();

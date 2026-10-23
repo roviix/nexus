@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// 会写配置的几个客户端。地址里的名字就是这几个。
-pub const CLIENTS: &[&str] = &["claude", "codex", "opencode", "grok"];
+pub const CLIENTS: &[&str] = &["claude", "codex", "opencode", "grok", "cursor"];
 
 /// 地址里认不认这个客户端名（大小写不敏感）。
 pub fn parse_client(raw: &str) -> Option<&'static str> {
@@ -339,7 +339,8 @@ mod tests {
         assert_eq!(detect_role("Claude-Opus-4-8[1M]"), Some(ClaudeRole::Opus));
         assert_eq!(detect_role("gpt-5.4"), None);
         assert_eq!(parse_client("Claude"), Some("claude"));
-        assert_eq!(parse_client("cursor"), None);
+        assert_eq!(parse_client("cursor"), Some("cursor"));
+        assert_eq!(parse_client("unknown_client"), None);
     }
 
     #[test]

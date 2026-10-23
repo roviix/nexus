@@ -4,9 +4,14 @@
 //! **目录**（[`ChannelGate`]：这个名字归不归你、你此刻能不能接）。lane、选路、账本、状态快照
 //! 都不再认识具体平台——加第五个平台就是在这个文件里再写一对 impl 加一个 `*_channel()`。
 
-use crate::channel::{Capability, Channel, ChannelGate, CHATGPT, CLAUDE, GROK, KIRO, QODER, ZCODE};
+use crate::antigravity::AntigravityUpstream;
+use crate::channel::{
+    Capability, Channel, ChannelGate, ANTIGRAVITY, CHATGPT, CLAUDE, GEMINI_WEB, GROK, KIRO, QODER,
+    ZCODE,
+};
 use crate::claude::{ClaudeRouting, ClaudeUpstream};
 use crate::codex::{CodexConfig, CodexUpstream};
+use crate::gemini_web::GeminiWebUpstream;
 use crate::grok::GrokUpstream;
 use crate::kiro::KiroUpstream;
 use crate::lane::{
@@ -15,8 +20,10 @@ use crate::lane::{
 };
 use crate::qoder::{QoderRouting, QoderUpstream};
 use crate::zcode::{ZcodeRoute, ZcodeRouting, ZcodeUpstream};
+use nexus_antigravity::AntigravityService;
 use nexus_chatgpt::ChatGptService;
 use nexus_claude::ClaudeService;
+use nexus_gemini_web::GeminiWebService;
 use nexus_grok::GrokService;
 use nexus_kiro::KiroService;
 use nexus_qoder::QoderService;
@@ -613,6 +620,155 @@ pub fn claude_channel(lane: Arc<dyn Lane>, accounts: Arc<ClaudeService>) -> Chan
         lane,
         upstream: Arc::new(ClaudeUpstream::new(accounts.clone())),
         gate: Arc::new(ClaudeGate { accounts }),
+        passthrough: false,
+    }
+}
+
+// ---------- Antigravity ----------
+
+impl SubscriptionAccounts for AntigravityService {
+    fn channel(&self) -> &'static str {
+        ANTIGRAVITY
+    }
+
+    fn candidates(&self) -> Vec<SubscriptionCandidate> {
+        let list = match self.list() {
+            Ok(l) => l,
+            Err(err) => {
+                tracing::warn!(%err, "读 Antigravity 账号列表失败");
+                return Vec::new();
+            }
+        };
+        list.into_iter()
+            .filter(|a| a.enabled && a.status == nexus_antigravity::AntigravityStatus::Active)
+            .map(|a| {
+                let (percent_used, exhausted) = nexus_antigravity::quota_hint(a.usage.as_ref());
+                SubscriptionCandidate {
+                    label: a.label(),
+                    quota: QuotaHint {
+                        percent_used,
+                        exhausted,
+                    },
+                    id: a.id.as_str().to_string(),
+                }
+            })
+            .collect()
+    }
+
+    fn access_token<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> BoxFuture<'a, nexus_core::Result<nexus_core::Secret>> {
+        Box::pin(async move { self.access_token(id).await })
+    }
+
+    fn token_expiry(&self, _access_token: &str) -> Option<SystemTime> {
+        None
+    }
+}
+
+pub struct AntigravityGate {
+    pub accounts: Arc<AntigravityService>,
+}
+
+impl ChannelGate for AntigravityGate {
+    fn ready(&self) -> bool {
+        channel_ready(self.accounts.as_ref())
+    }
+
+    fn owns(&self, cap: Capability, base_model: &str) -> bool {
+        cap == Capability::Chat && nexus_antigravity::owns_model(base_model)
+    }
+
+    fn models(&self, cap: Capability) -> Vec<String> {
+        match cap {
+            Capability::Chat => nexus_antigravity::ANTIGRAVITY_MODELS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl SubscriptionAccounts for GeminiWebService {
+    fn channel(&self) -> &'static str {
+        GEMINI_WEB
+    }
+
+    fn candidates(&self) -> Vec<SubscriptionCandidate> {
+        let list = match self.list() {
+            Ok(l) => l,
+            Err(err) => {
+                tracing::warn!(%err, "读 Gemini 网页账号失败");
+                return Vec::new();
+            }
+        };
+        list.into_iter()
+            .filter(|a| a.enabled && a.status == nexus_gemini_web::GeminiWebStatus::Active)
+            .map(|a| SubscriptionCandidate {
+                label: a.label,
+                quota: QuotaHint::default(),
+                id: a.id.as_str().to_string(),
+            })
+            .collect()
+    }
+
+    fn access_token<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> BoxFuture<'a, nexus_core::Result<nexus_core::Secret>> {
+        Box::pin(async move { self.cookie(id) })
+    }
+
+    fn token_expiry(&self, _access_token: &str) -> Option<SystemTime> {
+        None
+    }
+}
+
+pub struct GeminiWebGate {
+    pub accounts: Arc<GeminiWebService>,
+}
+
+impl ChannelGate for GeminiWebGate {
+    fn ready(&self) -> bool {
+        channel_ready(self.accounts.as_ref())
+    }
+
+    fn owns(&self, cap: Capability, base_model: &str) -> bool {
+        cap == Capability::Chat && nexus_gemini_web::owns_model(base_model)
+    }
+
+    fn models(&self, cap: Capability) -> Vec<String> {
+        match cap {
+            Capability::Chat => nexus_gemini_web::catalog_ids(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+pub fn gemini_web_channel(lane: Arc<dyn Lane>, accounts: Arc<GeminiWebService>) -> Channel {
+    Channel {
+        id: GEMINI_WEB,
+        label: "Gemini Web",
+        vendor: "google",
+        prefixes: nexus_gemini_web::ROUTE_PREFIXES,
+        lane,
+        upstream: Arc::new(GeminiWebUpstream::new(accounts.clone())),
+        gate: Arc::new(GeminiWebGate { accounts }),
+        passthrough: false,
+    }
+}
+
+pub fn antigravity_channel(lane: Arc<dyn Lane>, accounts: Arc<AntigravityService>) -> Channel {
+    Channel {
+        id: ANTIGRAVITY,
+        label: "Antigravity",
+        vendor: "google",
+        prefixes: nexus_antigravity::ROUTE_PREFIXES,
+        lane,
+        upstream: Arc::new(AntigravityUpstream::new(accounts.clone())),
+        gate: Arc::new(AntigravityGate { accounts }),
         passthrough: false,
     }
 }

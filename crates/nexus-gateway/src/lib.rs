@@ -53,11 +53,14 @@
 //! 都在代码注释里说明了理由：上游 OUTPUT_TOKEN_LIMIT 在已有输出时算 `finish=length` 而不是报错；
 //! Anthropic user 消息里的 tool_result 在解析层拆成独立 tool 消息（JS 那边会把它们丢掉）。
 
+pub mod antigravity;
 pub mod channel;
 pub mod claude;
 pub mod codex;
 pub mod connect;
+pub mod cursor;
 pub mod error;
+pub mod gemini_web;
 pub mod grok;
 pub mod headers;
 pub mod identity;
@@ -68,6 +71,7 @@ pub mod kiro;
 pub mod lane;
 pub mod ledger;
 pub mod media;
+pub mod mesh;
 pub mod models;
 pub mod normalized;
 pub mod playground;
@@ -87,6 +91,7 @@ pub mod subscriptions;
 pub mod upstream;
 pub mod zcode;
 
+pub use antigravity::AntigravityUpstream;
 pub use channel::{Capability, Channel, ChannelGate, ChannelId, ChannelRegistry, OpenGate};
 pub use codex::{CodexConfig, CodexUpstream};
 pub use error::{UpstreamError, UpstreamKind};
@@ -103,8 +108,8 @@ pub use lane::{
 pub use ledger::{Ledger, NamedUsage, RequestRecord, UsageSummary};
 pub use media::{MediaJob, MediaJobs, VideoJob, VideoRequest, VideoStatus};
 pub use normalized::{
-    ChatRequest, Completion, Delta, FinishReason, ImageInput, Message, Role, Sampling, ToolCall,
-    ToolChoice, ToolDef, ToolResult, Usage,
+    ChatRequest, Completion, Delta, FinishReason, ImageInput, InputBasis, Message, Reasoning, Role,
+    Sampling, ToolCall, ToolChoice, ToolDef, ToolResult, Usage,
 };
 pub use server::Gateway;
 pub use service::{

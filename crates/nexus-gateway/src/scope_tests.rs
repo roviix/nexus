@@ -41,6 +41,8 @@ impl Upstream for Echo {
                 ttft_ms: None,
                 turn_ms: 1,
                 raw_response: None,
+                thinking_signature: None,
+                redacted_thinking: None,
             })
         })
     }
@@ -182,6 +184,7 @@ async fn gateway(
         media_jobs: None,
         routes: Arc::new(RwLock::new(routes)),
         log: Some(log.clone()),
+        mesh: None,
     });
     let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = listener.local_addr().unwrap();

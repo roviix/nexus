@@ -20,7 +20,11 @@ nexus-kiro.workspace = true
 nexus-zcode.workspace = true
 nexus-qoder.workspace = true
 nexus-claude.workspace = true
+nexus-antigravity.workspace = true
+nexus-gemini-web.workspace = true
+nexus-mesh.workspace = true
 
+bytes.workspace = true
 sha2.workspace = true
 base64.workspace = true
 serde.workspace = true
@@ -36,14 +40,17 @@ tracing.workspace = true
 uuid = { workspace = true, features = ["v5"] }
 # http2：ConnectRPC 流走 HTTP/2（和官方客户端一致）；workspace 默认关了 default-features，
 # 所以要显式点亮。
-reqwest = { workspace = true, features = ["http2"] }
+reqwest = { workspace = true, features = ["http2", "stream"] }
 # protobuf 编解码（derive 形式，不依赖 protoc）；prost-types 提供 google.protobuf.Struct / Value。
 prost = "0.14.3"
 prost-types = "0.14.3"
 # multipart：OpenAI 的 `/v1/images/edits` 是 multipart/form-data（图片文件 + 字段）。
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "multipart"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "tokio", "multipart"] }
+flate2 = "1.0"
 tokio-stream = { version = "0.1", default-features = false }
 futures-util = { version = "0.3", default-features = false }
+# 入站截图按长边和字节上限缩小后再发给 Amazon Q，否则单字段超限会 400。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 # 注意：**不依赖 nexus-switcher**。网关改的是流量走向，切号改的是 Cursor 的登录态，
 # 两者互不认识（ARCHITECTURE R1 的同一精神）。

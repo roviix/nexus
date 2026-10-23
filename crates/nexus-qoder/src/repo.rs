@@ -3,6 +3,7 @@
 use crate::model::{
     compute_label, hint_of, QoderAccount, QoderBackend, QoderIdentity, QoderStatus,
 };
+use crate::usage::QoderUsage;
 use nexus_core::{now_iso, AppError, ErrorCode, QoderAccountId, Result, Secret};
 use nexus_store::keys::{qoder_secret, QoderSecret};
 use nexus_store::{Db, SecretStore};
@@ -250,6 +251,28 @@ impl QoderAccounts {
         Ok(())
     }
 
+    /// 存套餐和额度快照。失败信息清掉：这一次问到了。
+    pub fn save_usage(&self, id: &QoderAccountId, usage: &QoderUsage) -> Result<()> {
+        let json = serde_json::to_string(usage)
+            .map_err(|e| AppError::internal(format!("用量快照无法保存：{e}")))?;
+        let now = now_iso();
+        let n = self.db.with(|c| {
+            c.execute(
+                "UPDATE qoder_accounts SET
+                   usage_json = ?2,
+                   last_checked_at = ?3,
+                   last_error = NULL,
+                   updated_at = ?3
+                 WHERE id = ?1",
+                rusqlite::params![id.as_str(), json, now],
+            )
+        })?;
+        if n == 0 {
+            return Err(not_found(id.as_str()));
+        }
+        Ok(())
+    }
+
     /// 让下一轮 `credential` 重新交换 PAT。job token 先留着，交换成功再盖掉。
     pub fn expire_token(&self, id: &QoderAccountId) -> Result<()> {
         self.db.with(|c| {
@@ -304,7 +327,7 @@ fn blank_to_none(value: &str) -> Option<&str> {
 
 const SELECT: &str = "SELECT id, account_ref, backend, user_id, email, display_name, machine_id,
         status, enabled, note, key_hint, has_pat, access_expires_at, last_checked_at, last_error,
-        created_at, updated_at
+        created_at, updated_at, usage_json
  FROM qoder_accounts";
 
 fn row_to_account(row: &Row<'_>) -> rusqlite::Result<QoderAccount> {
@@ -335,6 +358,10 @@ fn row_to_account(row: &Row<'_>) -> rusqlite::Result<QoderAccount> {
         access_expires_at: row.get(12)?,
         last_checked_at: row.get(13)?,
         last_error: row.get(14)?,
+        usage: row
+            .get::<_, Option<String>>(17)?
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<QoderUsage>(s).ok()),
         created_at: row.get(15)?,
         updated_at: row.get(16)?,
     })
@@ -428,6 +455,32 @@ mod tests {
         cn.user_id = "u-1".into();
         assert!(r.upsert(&global, None).unwrap().created);
         assert_eq!(r.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn usage_roundtrips_and_clears_the_last_error() {
+        let r = repo();
+        let account = r
+            .upsert(&imported("u-1", "pt-aaaaaaaaaaaa"), None)
+            .unwrap()
+            .account;
+        r.record_failure(&account.id, "刚才没问到", None).unwrap();
+        let usage = QoderUsage {
+            plan: "Pro".into(),
+            user_type: Some("personal".into()),
+            percent: Some(42.0),
+            exceeded: false,
+            unlimited: false,
+            reset_at: Some("2026-11-01T00:00:00Z".into()),
+            unit: Some("Credits".into()),
+            buckets: vec![],
+            checked_at: "2026-10-11T00:00:00Z".into(),
+        };
+        r.save_usage(&account.id, &usage).unwrap();
+        let stored = r.get(&account.id).unwrap();
+        assert_eq!(stored.usage.as_ref().map(|u| u.plan.as_str()), Some("Pro"));
+        assert!(stored.last_error.is_none());
+        assert!(stored.last_checked_at.is_some());
     }
 
     #[test]

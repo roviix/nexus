@@ -39,7 +39,50 @@ impl ZcodeService {
         protocol::catalog()
     }
 
+    pub fn cleanup_duplicates(&self) -> Result<usize> {
+        let accounts = self.repo.list()?;
+        let mut seen_keys = std::collections::HashSet::new();
+        let mut to_remove = Vec::new();
+        let mut has_coding_plan = false;
+
+        for acct in &accounts {
+            if acct.plan == ZcodePlan::CodingPlan {
+                has_coding_plan = true;
+                if let Ok(Some(secret)) = self.repo.secret(&acct.id, ZcodeSecret::ApiKey) {
+                    let key = secret.expose().to_string();
+                    if !seen_keys.insert(key) {
+                        // 相同 API Key 的重复账号，修剪掉
+                        to_remove.push(acct.id.clone());
+                    }
+                }
+            }
+        }
+
+        // 若已有 coding-plan 账号，修剪掉冗余的同一邮箱 start-plan 账号
+        if has_coding_plan {
+            for acct in &accounts {
+                if acct.plan == ZcodePlan::StartPlan {
+                    let same_email_coding = accounts.iter().any(|other| {
+                        other.id != acct.id
+                            && other.plan == ZcodePlan::CodingPlan
+                            && (other.email == acct.email || acct.email.is_none())
+                    });
+                    if same_email_coding {
+                        to_remove.push(acct.id.clone());
+                    }
+                }
+            }
+        }
+
+        let count = to_remove.len();
+        for id in to_remove {
+            let _ = self.repo.remove(&id);
+        }
+        Ok(count)
+    }
+
     pub fn list(&self) -> Result<Vec<ZcodeAccount>> {
+        let _ = self.cleanup_duplicates();
         self.repo.list()
     }
 
@@ -72,7 +115,9 @@ impl ZcodeService {
     pub fn import_from_client(&self, note: Option<&str>) -> Result<ImportReport> {
         let path = self.client_credentials_path();
         let found = import::read_local(&path)?;
-        self.absorb(found, note.or(Some("来自本机 ZCode 客户端")))
+        let report = self.absorb(found, note.or(Some("来自本机 ZCode 客户端")))?;
+        let _ = self.cleanup_duplicates();
+        Ok(report)
     }
 
     /// 粘贴导入：一行 `{apiKeyId}.{apiKeySecret}`、一个 JWT，或一整份 credentials.json。

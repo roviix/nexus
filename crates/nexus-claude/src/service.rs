@@ -160,7 +160,7 @@ impl ClaudeService {
             Ok(account) => {
                 on_state(LoginState::Succeeded {
                     session_id: sid,
-                    account: account.clone(),
+                    account: Box::new(account.clone()),
                     created: true,
                 });
                 Ok(account)
@@ -185,7 +185,7 @@ impl ClaudeService {
         let account = match piece {
             ImportPiece::Code(code) => self.finish_code(code, note).await?,
             ImportPiece::Credentials(creds) => {
-                let expires_at = creds.expires_at_ms.and_then(|ms| rfc3339_ms(ms));
+                let expires_at = creds.expires_at_ms.and_then(rfc3339_ms);
                 self.accounts.save_oauth(SavedOauth {
                     account_ref: creds
                         .account_uuid
@@ -353,12 +353,12 @@ impl ClaudeService {
 
     async fn refresh_oauth(&self, id: &ClaudeAccountId) -> Result<()> {
         let _guard = self.refresh.lock().await;
-        let account = self.accounts.get(id)?;
+        let _account = self.accounts.get(id)?;
         let expires = self.expiry_of(id)?;
-        if !ClaudeAccounts::expires_soon(expires.as_deref(), unix_now()) {
-            if self.accounts.access(id)?.is_some() {
-                return Ok(());
-            }
+        if !ClaudeAccounts::expires_soon(expires.as_deref(), unix_now())
+            && self.accounts.access(id)?.is_some()
+        {
+            return Ok(());
         }
         let refresh = self.accounts.refresh_token(id)?.ok_or_else(|| {
             AppError::unauthorized("这个号没有 refresh token，续不上。").with_hint("重新授权一次。")
@@ -372,7 +372,6 @@ impl ClaudeService {
                 let _ = self
                     .accounts
                     .set_error(id, ClaudeStatus::NeedsLogin, &err.message);
-                let _ = account;
                 Err(err)
             }
         }
@@ -525,7 +524,7 @@ fn read_keychain() -> Option<String> {
                 return Some(text);
             }
         }
-        return security_password(&[]);
+        security_password(&[])
     }
     #[cfg(not(target_os = "macos"))]
     {

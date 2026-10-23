@@ -33,8 +33,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// 限流：这个号对这个模型歇多久。
-pub const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+/// 限流：这个号对这个模型歇多久（默认 60 秒，避免轻微频控锁死 5 分钟）。
+pub const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
 /// 出不了这个模型：多半是套餐差异，歇长一点。
 pub const MODEL_UNSUPPORTED_COOLDOWN: Duration = Duration::from_secs(6 * 60 * 60);
 /// 耗尽 / 鉴权失败：多久之后再试一次。

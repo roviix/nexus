@@ -51,6 +51,8 @@ pub struct Gateway {
     pub routes: Arc<RwLock<ClientRoutes>>,
     /// 最近请求的明细。`None` = 不记（测试、examples）。
     pub log: Option<Arc<RequestLog>>,
+    /// Mesh 服务实例（用于在本地所有者发起推理时自动触发抢占与避让保护）。
+    pub mesh: Option<Arc<nexus_mesh::MeshService>>,
 }
 
 impl Gateway {
@@ -63,15 +65,22 @@ impl Gateway {
             media_jobs: None,
             routes: Arc::default(),
             log: None,
+            mesh: None,
         }
     }
 
-    fn route(&self, model: &str, cap: Capability) -> Resolved<'_> {
-        self.channels.resolve(model, cap)
+    pub fn route(&self, model: &str, cap: Capability) -> Resolved<'_> {
+        let res = self.channels.resolve(model, cap);
+        if res.channel.id != crate::channel::MESH {
+            if let Some(ref m) = self.mesh {
+                m.record_local_activity();
+            }
+        }
+        res
     }
 
     /// 这个客户端的这次请求实际要的模型。不在客户端作用域里、或这个客户端没配路由，原样返回。
-    fn scoped_model(&self, client: Option<&str>, model: &str) -> String {
+    pub fn scoped_model(&self, client: Option<&str>, model: &str) -> String {
         let Some(client) = client else {
             return model.to_string();
         };
@@ -114,6 +123,7 @@ type Shared = Arc<Gateway>;
 struct Scope(Option<&'static str>);
 
 /// 一次方言口请求的来龙去脉：记账、记明细、回报 lane 都要用。
+#[derive(Clone)]
 struct Ctx {
     client: Option<&'static str>,
     dialect: Dialect,
@@ -325,8 +335,10 @@ fn v1_routes(gw: Shared, scope: Scope) -> Router {
 
 pub fn router(gw: Shared) -> Router {
     let v1 = v1_routes(gw.clone(), Scope(None));
+    let cursor = crate::cursor::cursor_routes(gw.clone());
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .nest("/cursor", cursor)
         .nest("/v1", v1.clone())
         .nest("/openai/v1", v1.clone())
         .nest("/anthropic/v1", v1);
@@ -575,6 +587,8 @@ async fn handle(
             let frames = match d {
                 Delta::Text(t) => ser.text(&t),
                 Delta::Thinking(t) => ser.thinking(&t),
+                Delta::ThinkingSignature(sig) => ser.note_thinking_signature(&sig),
+                Delta::RedactedThinking(data) => ser.redacted_thinking(&data),
                 Delta::Raw { event, data } => {
                     raw_mode = true;
                     // OpenAI Chat 的帧没有 event 行，原样就是只有 data。
@@ -655,6 +669,11 @@ async fn relay(
     let mut last: Option<UpstreamError> = None;
     let mut tried: Vec<String> = Vec::new();
     let route = gw.route(model, Capability::Chat).channel;
+    if let Some(reason) = route.gate.unavailable_reason() {
+        let error = UpstreamError::new(UpstreamKind::Upstream, 503, reason);
+        log_unserved(gw, ctx, route.id, &error);
+        return Err(error);
+    }
     let switch_on_upstream = route.lane.switch_helps_on_upstream_error();
     for attempt in 1..=MAX_ACCOUNT_ATTEMPTS {
         let credential = match route.lane.acquire(model).await {
@@ -674,7 +693,7 @@ async fn relay(
         let mut emitted = false;
         let mut sink = |d: Delta| {
             // 响应头不是给客户端的字节：还没吐过内容就能换号。
-            if !matches!(d, Delta::Headers(_)) {
+            if !matches!(d, Delta::Headers(_) | Delta::ThinkingSignature(_)) {
                 emitted = true;
             }
             on_delta(d);
@@ -1009,6 +1028,10 @@ async fn models(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let mut data: Vec<Value> = Vec::new();
+    let cursor_chat_ready = gw
+        .channels
+        .get(crate::channel::CURSOR)
+        .is_some_and(|channel| channel.gate.ready());
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut push_id = |id: String, vendor: &str| {
         if !seen.insert(id.to_ascii_lowercase()) {
@@ -1035,7 +1058,11 @@ async fn models(
         if let Some(home) = home.filter(|m| !m.trim().is_empty()) {
             let ch = gw.channels.resolve(&home, Capability::Chat).channel;
             let ids: Vec<String> = if ch.id == crate::channel::CURSOR {
-                STATIC_MODELS.iter().map(|s| s.to_string()).collect()
+                if cursor_chat_ready {
+                    STATIC_MODELS.iter().map(|s| s.to_string()).collect()
+                } else {
+                    Vec::new()
+                }
             } else {
                 ch.gate.models(Capability::Chat)
             };
@@ -1044,9 +1071,12 @@ async fn models(
             }
         }
     }
-    for id in STATIC_MODELS {
-        push_id(qualify(crate::channel::CURSOR, id), "cursor");
+    if cursor_chat_ready {
+        for id in STATIC_MODELS {
+            push_id(qualify(crate::channel::CURSOR, id), "cursor");
+        }
     }
+    // 生图走 AiService/RunGenerateImage，不是已停用的 InferenceService/Stream；保留目录。
     for (id, _) in crate::models::IMAGE_MODELS {
         push_id(qualify(crate::channel::CURSOR, id), "cursor");
     }
@@ -1523,6 +1553,7 @@ mod tests {
             media_jobs: Some(jobs.clone()),
             routes: Arc::default(),
             log: None,
+            mesh: None,
         });
         let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1659,6 +1690,8 @@ mod tests {
             ttft_ms: Some(1),
             turn_ms: 2,
             raw_response: None,
+            thinking_signature: None,
+            redacted_thinking: None,
         }
     }
 
@@ -2447,6 +2480,27 @@ mod tests {
     // ---------- 请求内换号 ----------
 
     /// 按顺序发号的假 lane，记下每次回报。发完了就说没号。
+    struct BareModelGate;
+
+    impl crate::channel::ChannelGate for BareModelGate {
+        fn ready(&self) -> bool {
+            true
+        }
+        fn owns(&self, cap: Capability, model: &str) -> bool {
+            cap == Capability::Chat && model.eq_ignore_ascii_case("m")
+        }
+        fn models(&self, cap: Capability) -> Vec<String> {
+            if cap == Capability::Chat {
+                vec!["m".to_string()]
+            } else {
+                Vec::new()
+            }
+        }
+        fn claims_bare(&self, model: &str) -> bool {
+            self.owns(Capability::Chat, model)
+        }
+    }
+
     struct ScriptedLane {
         queue: Mutex<Vec<&'static str>>,
         reports: Mutex<Vec<(String, &'static str)>>,
@@ -2544,6 +2598,108 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(serve(listener, router(gw), std::future::pending()));
         (format!("http://{addr}"), lane, upstream)
+    }
+
+    #[tokio::test]
+    async fn unavailable_default_blocks_bare_provider_claim_before_any_side_effect() {
+        let cursor_lane = Arc::new(ScriptedLane::new(&["cursor@x"]));
+        let cursor_upstream = Arc::new(PerAccountUpstream {
+            scripts: [(
+                "cursor@x",
+                (
+                    vec![Delta::Text("cursor".into())],
+                    Ok(completion("cursor", vec![])),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+            seen: Mutex::new(vec![]),
+        });
+        let provider_lane = Arc::new(ScriptedLane::new(&["provider@x"]));
+        let provider_upstream = Arc::new(PerAccountUpstream {
+            scripts: [(
+                "provider@x",
+                (
+                    vec![Delta::Text("PONG".into())],
+                    Ok(completion("PONG", vec![])),
+                ),
+            )]
+            .into_iter()
+            .collect(),
+            seen: Mutex::new(vec![]),
+        });
+        let provider = Channel {
+            id: crate::channel::PROVIDER,
+            label: "供应商",
+            vendor: "provider",
+            prefixes: &["provider/"],
+            lane: provider_lane.clone(),
+            upstream: provider_upstream.clone(),
+            gate: Arc::new(BareModelGate),
+            passthrough: false,
+        };
+        let gw = Arc::new(Gateway {
+            channels: ChannelRegistry::new(crate::channel::unavailable_cursor_channel(
+                cursor_lane.clone(),
+                cursor_upstream.clone(),
+            ))
+            .with(provider),
+            api_key: None,
+            ledger: None,
+            media_jobs: None,
+            routes: Arc::default(),
+            log: None,
+            mesh: None,
+        });
+        let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(serve(listener, router(gw), std::future::pending()));
+        let base = format!("http://{addr}");
+
+        let response = http()
+            .post(format!("{base}/v1/chat/completions"))
+            .json(&json!({ "model": "m", "messages": [{ "role": "user", "content": "x" }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 503);
+
+        let response = http()
+            .post(format!("{base}/v1/messages"))
+            .json(&json!({ "model": "m", "stream": true, "max_tokens": 5,
+                           "messages": [{ "role": "user", "content": "x" }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "SSE 先建流，再在协议内回 503");
+        let stream = response.text().await.unwrap();
+        assert!(stream.contains(r#""code":503"#), "{stream}");
+        assert!(stream.contains("message_stop"), "{stream}");
+
+        assert_eq!(*cursor_lane.queue.lock().unwrap(), ["cursor@x"]);
+        assert!(cursor_lane.reports.lock().unwrap().is_empty());
+        assert!(cursor_upstream.seen.lock().unwrap().is_empty());
+        assert_eq!(*provider_lane.queue.lock().unwrap(), ["provider@x"]);
+        assert!(provider_lane.reports.lock().unwrap().is_empty());
+        assert!(provider_upstream.seen.lock().unwrap().is_empty());
+
+        let response = http()
+            .post(format!("{base}/v1/chat/completions"))
+            .json(
+                &json!({ "model": "provider/m", "messages": [{ "role": "user", "content": "x" }] }),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "显式 provider 前缀仍应放行");
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["choices"][0]["message"]["content"], "PONG");
+        assert!(provider_lane.queue.lock().unwrap().is_empty());
+        assert_eq!(provider_lane.reports.lock().unwrap().len(), 1);
+        assert_eq!(*provider_upstream.seen.lock().unwrap(), ["provider@x"]);
+        assert_eq!(*cursor_lane.queue.lock().unwrap(), ["cursor@x"]);
+        assert!(cursor_lane.reports.lock().unwrap().is_empty());
+        assert!(cursor_upstream.seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

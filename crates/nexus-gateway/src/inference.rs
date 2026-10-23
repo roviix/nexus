@@ -7,26 +7,34 @@
 //! 会话状态，换号也不会失忆。
 //!
 //! 三处不是 Stream 的缺陷、而是 Cursor 后端行为的妥协，照搬不改：① system 只能折进首条 user
-//! （实测发 role=SYSTEM 被 `ERROR_PROVIDER_ERROR` 拒）；② tool_choice 没有字段，`none` 硬保证
+//! （实测发 role=SYSTEM 被 `ERROR_PROVIDER_ERROR` 拒；官方 3.21.13 的本地 loop 发的是 role=SYSTEM，
+//! 要放开得先拿 `examples/probe` 复测）；② tool_choice 没有字段，`none` 硬保证
 //! （不声明工具），`required` / 指定只能软引导；③ stop 序列与输出上限本地兜底执行。
+//!
+//! 其余形状对齐官方客户端——Cursor 3.21.13 agent-host 的本地 loop 打的就是这个端点，消息在
+//! 它的 bundle 里组装成 `InferenceCoreMessage`：工具结果里的图走 `experimental_content`；
+//! 思考的签名 / 密文从 `ThinkingPart.signature` 与收尾 `ResponseInfo.messages[].reasoning_parts`
+//! 取，客户端带回来时按 `reasoning_parts` 回放（只回放当前这一轮、只回放带凭据的）；
+//! `extended_usage.input_tokens` 含缓存读写，按 [`InputBasis::IncludesCache`] 交出去。
 
 use crate::connect::{self, ConnectError, ConnectFailure, StreamItem};
 use crate::error::{UpstreamError, UpstreamKind};
 use crate::headers::{ai_headers, RequestNonce};
 use crate::identity::DeviceIdentity;
 use crate::normalized::{
-    estimate_tokens, ChatRequest, Completion, Delta, FinishReason, ImageInput, Message, Role,
-    Sampling, ToolCall, ToolChoice, ToolDef, Usage,
+    estimate_tokens, is_placeholder_signature, ChatRequest, Completion, Delta, FinishReason,
+    ImageInput, InputBasis, Message, Reasoning, Role, Sampling, ToolCall, ToolChoice, ToolDef,
+    Usage,
 };
 use crate::proto::inference_content_part::Part;
 use crate::proto::inference_core_message::Content;
 use crate::proto::inference_stream_response::Response;
 use crate::proto::{
     InferenceAgentTool, InferenceContentPart, InferenceContentParts, InferenceCoreMessage,
-    InferenceImagePart, InferenceMessageRole, InferenceModelConfig, InferenceRequestedModel,
-    InferenceResponseInfo, InferenceStreamError, InferenceStreamErrorType, InferenceStreamRequest,
-    InferenceStreamResponse, InferenceTextPart, InferenceToolCall, InferenceToolResultContent,
-    InferenceToolResultPart,
+    InferenceImagePart, InferenceMessageRole, InferenceModelConfig, InferenceReasoningPart,
+    InferenceRequestedModel, InferenceResponseInfo, InferenceStreamError, InferenceStreamErrorType,
+    InferenceStreamRequest, InferenceStreamResponse, InferenceTextPart, InferenceToolCall,
+    InferenceToolResultContent, InferenceToolResultPart,
 };
 use prost::Message as _;
 use prost_types::value::Kind;
@@ -163,12 +171,104 @@ fn string_value(s: &str) -> prost_types::Value {
     }
 }
 
+fn text_part(text: &str) -> InferenceContentPart {
+    InferenceContentPart {
+        part: Some(Part::Text(InferenceTextPart {
+            text: text.to_string(),
+            provider_options: None,
+        })),
+    }
+}
+
+fn image_part(im: &ImageInput) -> InferenceContentPart {
+    InferenceContentPart {
+        part: Some(Part::Image(InferenceImagePart {
+            data: im.data.clone(),
+            mime_type: Some(if im.mime_type.is_empty() {
+                "image/png".into()
+            } else {
+                im.mime_type.clone()
+            }),
+            provider_options: None,
+        })),
+    }
+}
+
+/// 一条工具结果。带图的（截图、读图）图放 `experimental_content`，和官方客户端一样：那里是
+/// 结果的**完整**内容，上游有它就不看 `result`，所以正文也得在里面打头，不能只放图。
+/// `result` 照旧给正文，留给认不了多段内容的供应商。
+fn tool_result_part(r: &crate::normalized::ToolResult) -> InferenceToolResultPart {
+    let images: Vec<&ImageInput> = r.images.iter().filter(|i| !i.data.is_empty()).collect();
+    let experimental_content = if images.is_empty() {
+        Vec::new()
+    } else {
+        let mut parts = Vec::with_capacity(images.len() + 1);
+        if !r.text.is_empty() {
+            parts.push(text_part(&r.text));
+        }
+        parts.extend(images.into_iter().map(image_part));
+        parts
+    };
+    InferenceToolResultPart {
+        tool_call_id: r.tool_call_id.clone(),
+        tool_name: r.tool_name.clone(),
+        result: Some(string_value(&r.text)),
+        is_error: r.is_error,
+        experimental_content,
+        ..Default::default()
+    }
+}
+
+/// 客户端带回来的思考块 → `reasoning_parts`。只回放带凭据的：签名或密文是上游接上自己推理
+/// 的依据（官方客户端每轮都这样带回去）；没有签名的正文对上游没有用，Anthropic 那一腿还会
+/// 因为缺签名拒掉整轮。我们自己造的占位签名（上游没给签名时补的）认出来扔掉——它过不了验签。
+fn reasoning_parts(reasoning: &[Reasoning]) -> Vec<InferenceReasoningPart> {
+    reasoning
+        .iter()
+        .filter_map(|r| {
+            if let Some(data) = r.redacted.as_deref().filter(|d| !d.is_empty()) {
+                return Some(InferenceReasoningPart {
+                    is_redacted: true,
+                    redacted_data: Some(data.to_string()),
+                    ..Default::default()
+                });
+            }
+            let signature = r.signature.as_deref().filter(|s| !s.is_empty())?;
+            if is_placeholder_signature(&r.text, signature) {
+                return None;
+            }
+            Some(InferenceReasoningPart {
+                is_redacted: false,
+                text: r.text.clone(),
+                signature: Some(signature.to_string()),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// 当前这一轮从哪条消息之后开始：最后一条**另起一轮**的 user 消息的下标。
+///
+/// 紧跟在工具结果后面的 user 不算另起一轮——Anthropic 把 tool_result 和同一条里的正文
+/// （Claude Code 常塞一段 `<system-reminder>`）放在一起，解析时拆成了 tool + user 两条，
+/// 它们仍是同一个工具循环。
+fn current_turn_start(messages: &[Message]) -> Option<usize> {
+    (0..messages.len())
+        .rev()
+        .find(|&i| messages[i].role == Role::User && (i == 0 || messages[i - 1].role != Role::Tool))
+}
+
 /// 统一消息表 → `InferenceCoreMessage[]`。
 ///
 /// user / assistant / tool 一一映射；图片走 `parts`；assistant 的 tool_calls 带结构化 args 和
-/// 原文；tool 结果走 `tool_content` 按 id 配对。**system 折进首条 user**（没有 user 时单独补一条
-/// user 承载）；`extra_system` 是我们自己追加的指令（tool_choice 软引导），跟在调用方的 system
-/// 之后。既无正文 / 图片也无工具调用的空消息不发——上游会拒空 turn。
+/// 原文；tool 结果走 `tool_content` 按 id 配对，带图的图放 `experimental_content`。**system 折进
+/// 首条 user**（没有 user 时单独补一条 user 承载）；`extra_system` 是我们自己追加的指令
+/// （tool_choice 软引导），跟在调用方的 system 之后。既无正文 / 图片也无工具调用的空消息不发——
+/// 上游会拒空 turn。
+///
+/// assistant 的思考块只回放**当前这一轮**的（最后一条另起一轮的 user 之后）：工具循环里的
+/// 推理连续性靠它，而更早的轮次 Anthropic 本来就不看。收窄到这一轮还有一层用处——客户端
+/// 中途换了模型或通道，旧签名到了新模型那里验不过；新的一轮开始，它们就不再发出去。
 pub fn to_inference_messages(
     messages: &[Message],
     extra_system: Option<&str>,
@@ -183,24 +283,16 @@ pub fn to_inference_messages(
         system_parts.push(extra);
     }
     let system_text = system_parts.join("\n\n");
+    let turn_start = current_turn_start(messages);
 
     let mut out = Vec::new();
     let mut system_injected = false;
-    for msg in messages {
+    for (index, msg) in messages.iter().enumerate() {
         match msg.role {
             Role::System => continue,
             Role::Tool => {
-                let parts: Vec<InferenceToolResultPart> = msg
-                    .tool_results
-                    .iter()
-                    .map(|r| InferenceToolResultPart {
-                        tool_call_id: r.tool_call_id.clone(),
-                        tool_name: r.tool_name.clone(),
-                        result: Some(string_value(&r.text)),
-                        is_error: r.is_error,
-                        ..Default::default()
-                    })
-                    .collect();
+                let parts: Vec<InferenceToolResultPart> =
+                    msg.tool_results.iter().map(tool_result_part).collect();
                 if !parts.is_empty() {
                     out.push(InferenceCoreMessage {
                         role: role_of(Role::Tool),
@@ -240,39 +332,29 @@ pub fn to_inference_messages(
                 };
                 // content 是 oneof（text | parts | tool_content）：带图走 parts，否则纯 text。
                 let content = if !images.is_empty() {
-                    let mut parts = Vec::new();
+                    let mut parts = Vec::with_capacity(images.len() + 1);
                     if !text.is_empty() {
-                        parts.push(InferenceContentPart {
-                            part: Some(Part::Text(InferenceTextPart {
-                                text: text.clone(),
-                                provider_options: None,
-                            })),
-                        });
+                        parts.push(text_part(&text));
                     }
-                    for im in images {
-                        parts.push(InferenceContentPart {
-                            part: Some(Part::Image(InferenceImagePart {
-                                data: im.data.clone(),
-                                mime_type: Some(if im.mime_type.is_empty() {
-                                    "image/png".into()
-                                } else {
-                                    im.mime_type.clone()
-                                }),
-                                provider_options: None,
-                            })),
-                        });
-                    }
+                    parts.extend(images.into_iter().map(image_part));
                     Some(Content::Parts(InferenceContentParts { parts }))
                 } else if !text.is_empty() {
                     Some(Content::Text(text))
                 } else {
                     None
                 };
+                let in_current_turn = turn_start.is_none_or(|start| index > start);
+                let reasoning_parts = if msg.role == Role::Assistant && in_current_turn {
+                    reasoning_parts(&msg.reasoning)
+                } else {
+                    Vec::new()
+                };
                 if content.is_some() || !tool_calls.is_empty() {
                     out.push(InferenceCoreMessage {
                         role: role_of(msg.role),
                         content,
                         tool_calls,
+                        reasoning_parts,
                         ..Default::default()
                     });
                 }
@@ -419,7 +501,8 @@ pub fn build_request_with(
         messages,
         tools,
         model_config: any.then_some(mc),
-        model_id: Some(model.clone()),
+        // 0.65 / Cursor 3.21.13 官方 builder 只写 requested_model；旧 field 5 model_id 不再重复编码。
+        model_id: None,
         requested_model: Some(InferenceRequestedModel {
             model_id: model,
             max_mode: false,
@@ -715,6 +798,13 @@ struct Collector {
     stream_err: Option<InferenceStreamError>,
     /// 保持到达顺序而不是按 index 排序，与 protocol.js 的 Map 语义一致。
     tool_acc: Vec<(ToolSlot, ToolAcc)>,
+    /// 最近一段思考的上游签名（Claude 的 `signature_delta` 经 Cursor 转成 `ThinkingPart.signature`）。
+    thinking_signature: Option<String>,
+    /// 上一个签名之后又来过思考正文。签名只认给它前面那段正文——没有正文就到的签名
+    /// 交出去会被序列化层留着，错盖到下一段思考上。
+    thinking_unsigned: bool,
+    /// 已经交出去的加密思考（`ResponseInfo` 里 `is_redacted` 的那些），按到达顺序、去重。
+    redacted: Vec<String>,
 }
 
 impl Collector {
@@ -732,7 +822,31 @@ impl Collector {
             ttft_ms: None,
             stream_err: None,
             tool_acc: Vec::new(),
+            thinking_signature: None,
+            thinking_unsigned: false,
+            redacted: Vec::new(),
         }
+    }
+
+    fn push_thinking(&mut self, text: String, on_delta: &mut dyn FnMut(Delta)) {
+        if text.is_empty() {
+            return;
+        }
+        if self.ttft_ms.is_none() {
+            self.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
+        }
+        self.thinking.push_str(&text);
+        self.thinking_unsigned = true;
+        on_delta(Delta::Thinking(text));
+    }
+
+    fn sign_thinking(&mut self, signature: String, on_delta: &mut dyn FnMut(Delta)) {
+        if signature.is_empty() || !self.thinking_unsigned {
+            return;
+        }
+        self.thinking_unsigned = false;
+        self.thinking_signature = Some(signature.clone());
+        on_delta(Delta::ThinkingSignature(signature));
     }
 
     fn has_output(&self) -> bool {
@@ -758,12 +872,10 @@ impl Collector {
                 }
             }
             Response::ThinkingPart(p) => {
-                if !p.text.is_empty() {
-                    if self.ttft_ms.is_none() {
-                        self.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
-                    }
-                    self.thinking.push_str(&p.text);
-                    on_delta(Delta::Thinking(p.text));
+                // 和官方客户端一样：正文是 reasoning 增量，签名是这段思考的 reasoning-signature。
+                self.push_thinking(p.text, on_delta);
+                if let Some(signature) = p.signature {
+                    self.sign_thinking(signature, on_delta);
                 }
             }
             Response::Usage(u) => {
@@ -868,31 +980,42 @@ impl Collector {
         Flow::Continue
     }
 
+    /// 收尾的 `ResponseInfo.messages` 里是这一轮完整的 assistant 消息，思考连同凭据都在
+    /// `reasoning_parts` 里。流里已经给过的不重复给，这里只补流里缺的三样：
+    /// 正文（4.7 / CUA 常常不推 ThinkingPart）、签名、加密思考。
     fn absorb_response_reasoning(
         &mut self,
         info: &InferenceResponseInfo,
         on_delta: &mut dyn FnMut(Delta),
     ) {
-        if !self.thinking.is_empty() {
-            return;
-        }
-        let mut buf = String::new();
-        for msg in &info.messages {
-            for part in &msg.reasoning_parts {
-                if part.is_redacted || part.text.is_empty() {
-                    continue;
+        let mut text = String::new();
+        let mut signature = None;
+        let mut redacted = Vec::new();
+        for part in info.messages.iter().flat_map(|m| &m.reasoning_parts) {
+            if part.is_redacted {
+                if let Some(data) = part.redacted_data.as_deref().filter(|d| !d.is_empty()) {
+                    redacted.push(data.to_string());
                 }
-                buf.push_str(&part.text);
+                continue;
+            }
+            text.push_str(&part.text);
+            if signature.is_none() {
+                signature = part.signature.clone().filter(|s| !s.is_empty());
             }
         }
-        if buf.is_empty() {
-            return;
+        if self.thinking.is_empty() {
+            self.push_thinking(text, on_delta);
         }
-        if self.ttft_ms.is_none() {
-            self.ttft_ms = Some(self.started.elapsed().as_millis() as u64);
+        // 流里一个签名都没给过才用这里的：给过的话这一段段思考各自已经签好了。
+        if let (None, Some(sig)) = (&self.thinking_signature, signature) {
+            self.sign_thinking(sig, on_delta);
         }
-        self.thinking.push_str(&buf);
-        on_delta(Delta::Thinking(buf));
+        for data in redacted {
+            if !self.redacted.contains(&data) {
+                self.redacted.push(data.clone());
+                on_delta(Delta::RedactedThinking(data));
+            }
+        }
     }
 
     /// 收尾：流内错误优先；空流报错；用量兜底估算；攒齐的工具调用整理成形。
@@ -919,6 +1042,10 @@ impl Collector {
         }
 
         let mut usage = self.usage;
+        // `extended_usage.input_tokens` 是含缓存读写的总输入（账本里每行都是
+        // input = 未命中 + cache_read + cache_write），`usage.prompt_tokens` 本来就是 OpenAI 口径。
+        // 序列化成 Anthropic 时据此减掉缓存，否则 Claude Code 会把缓存算两遍。
+        usage.input_basis = InputBasis::IncludesCache;
         if usage.input_tokens == 0 {
             let joined = request
                 .messages
@@ -967,6 +1094,9 @@ impl Collector {
             ttft_ms: self.ttft_ms,
             turn_ms: self.started.elapsed().as_millis() as u64,
             raw_response: None,
+            thinking_signature: self.thinking_signature,
+            // 非流式的响应体只装得下一块加密思考；流式那条每块各自成块，不受这个限制。
+            redacted_thinking: self.redacted.into_iter().next(),
         })
     }
 }
@@ -1286,6 +1416,7 @@ mod tests {
                     tool_name: "get_weather".into(),
                     text: "sunny".into(),
                     is_error: false,
+                    images: vec![],
                 }],
                 ..Message::text(Role::Tool, "")
             },
@@ -1362,6 +1493,173 @@ mod tests {
             tc.args,
             Some(prost_types::Struct::default()),
             "解不开就空 Struct，不打挂整轮"
+        );
+    }
+
+    #[test]
+    fn tool_result_images_ride_in_experimental_content_with_the_text_first() {
+        let tool = Message {
+            tool_results: vec![
+                ToolResult {
+                    tool_call_id: "a".into(),
+                    tool_name: "shot".into(),
+                    text: "screen".into(),
+                    images: vec![ImageInput {
+                        data: "AAAA".into(),
+                        mime_type: String::new(),
+                    }],
+                    ..Default::default()
+                },
+                ToolResult {
+                    tool_call_id: "b".into(),
+                    text: "plain".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Message::text(Role::Tool, "")
+        };
+        let out = to_inference_messages(&[Message::text(Role::User, "x"), tool], None);
+        let Some(Content::ToolContent(c)) = &out[1].content else {
+            panic!("工具结果走 tool_content");
+        };
+        let shot = &c.parts[0];
+        assert_eq!(
+            shot.result,
+            Some(string_value("screen")),
+            "result 照旧给正文"
+        );
+        assert_eq!(shot.experimental_content.len(), 2);
+        assert_eq!(
+            shot.experimental_content[0],
+            text_part("screen"),
+            "正文打头：上游有 experimental_content 就不看 result"
+        );
+        let Some(Part::Image(img)) = &shot.experimental_content[1].part else {
+            panic!("第二段是图");
+        };
+        assert_eq!(
+            (img.data.as_str(), img.mime_type.as_deref()),
+            ("AAAA", Some("image/png"))
+        );
+        assert!(
+            c.parts[1].experimental_content.is_empty(),
+            "没图的结果不带 experimental_content"
+        );
+    }
+
+    fn signed(text: &str, signature: &str) -> Reasoning {
+        Reasoning {
+            text: text.into(),
+            signature: Some(signature.into()),
+            redacted: None,
+        }
+    }
+
+    fn calling(reasoning: Vec<Reasoning>, call_id: &str) -> Message {
+        Message {
+            tool_calls: vec![ToolCall {
+                id: call_id.into(),
+                name: "f".into(),
+                arguments: "{}".into(),
+            }],
+            reasoning,
+            ..Message::text(Role::Assistant, "")
+        }
+    }
+
+    fn result_of(call_id: &str) -> Message {
+        Message {
+            tool_results: vec![ToolResult {
+                tool_call_id: call_id.into(),
+                text: "ok".into(),
+                ..Default::default()
+            }],
+            ..Message::text(Role::Tool, "")
+        }
+    }
+
+    #[test]
+    fn signed_reasoning_is_replayed_for_the_current_turn_only() {
+        let messages = vec![
+            Message::text(Role::User, "first task"),
+            calling(vec![signed("old", "SIG_OLD")], "c0"),
+            result_of("c0"),
+            Message::text(Role::Assistant, "done"),
+            Message::text(Role::User, "second task"),
+            calling(
+                vec![
+                    signed("plan", "SIG_1"),
+                    Reasoning {
+                        redacted: Some("ENC".into()),
+                        ..Default::default()
+                    },
+                ],
+                "c1",
+            ),
+            result_of("c1"),
+            // Claude Code 常在工具结果那条 user 里带一段 system-reminder：解析成 tool + user
+            // 两条，仍是同一个工具循环，不能把这一轮的思考截掉。
+            Message::text(Role::User, "<system-reminder>todo</system-reminder>"),
+            calling(vec![signed("next", "SIG_2")], "c2"),
+            result_of("c2"),
+        ];
+        let out = to_inference_messages(&messages, None);
+        assert_eq!(out.len(), messages.len());
+        assert!(
+            out[1].reasoning_parts.is_empty(),
+            "上一轮的思考不再发：换过模型的话旧签名验不过"
+        );
+        assert_eq!(
+            out[5].reasoning_parts,
+            vec![
+                InferenceReasoningPart {
+                    text: "plan".into(),
+                    signature: Some("SIG_1".into()),
+                    ..Default::default()
+                },
+                InferenceReasoningPart {
+                    is_redacted: true,
+                    redacted_data: Some("ENC".into()),
+                    ..Default::default()
+                },
+            ]
+        );
+        assert_eq!(
+            out[8].reasoning_parts[0].signature.as_deref(),
+            Some("SIG_2")
+        );
+
+        // 没有 user（极少见）：整段都是当前这一轮。
+        let out = to_inference_messages(&[calling(vec![signed("t", "S")], "c")], None);
+        assert_eq!(out[0].reasoning_parts.len(), 1);
+    }
+
+    #[test]
+    fn unsigned_and_placeholder_reasoning_is_not_replayed() {
+        let placeholder = crate::normalized::placeholder_thinking_signature("hmm");
+        let messages = vec![
+            Message::text(Role::User, "x"),
+            calling(
+                vec![
+                    Reasoning {
+                        text: "plain".into(),
+                        ..Default::default()
+                    },
+                    signed("hmm", &placeholder),
+                    signed("real", "SIG"),
+                ],
+                "c",
+            ),
+        ];
+        let out = to_inference_messages(&messages, None);
+        assert_eq!(
+            out[1].reasoning_parts,
+            vec![InferenceReasoningPart {
+                text: "real".into(),
+                signature: Some("SIG".into()),
+                ..Default::default()
+            }],
+            "没签名的、我们自己造的占位签名都过不了上游验签，不发"
         );
     }
 
@@ -1476,8 +1774,12 @@ mod tests {
             ..Default::default()
         };
         let r = build_request(&req, "conv");
-        assert_eq!(r.model_id.as_deref(), Some("default"), "auto → default");
-        assert_eq!(r.requested_model.as_ref().unwrap().model_id, "default");
+        assert!(r.model_id.is_none(), "0.65 官方不再重复写旧 field 5");
+        assert_eq!(
+            r.requested_model.as_ref().unwrap().model_id,
+            "default",
+            "auto → default"
+        );
         assert_eq!(r.conversation_id.as_deref(), Some("conv"));
         assert_eq!(r.tools.len(), 1);
         // 外面这层 `jsonSchema` 不是我们的风格选择，是上游要的形状：发裸 schema 时
@@ -1515,7 +1817,27 @@ mod tests {
             r.tools.is_empty(),
             "tool_choice=none 是硬保证：一个工具都不声明"
         );
-        assert_eq!(r.model_id.as_deref(), Some("claude-sonnet-5"));
+        assert!(r.model_id.is_none());
+        assert_eq!(
+            r.requested_model.as_ref().unwrap().model_id,
+            "claude-sonnet-5"
+        );
+
+        // 0.65 本地 host 的模型选择能带 max/high/fast，但标准请求没有表达这些
+        // Agent 专属选项；当前成功 agent 又全走云端 Temporal，不能只凭模型名替调用方
+        // 发明更贵、更慢且未证实能进入本地 Stream 的 profile。
+        let grok = build_request(
+            &ChatRequest {
+                model: "grok-4.7".into(),
+                messages: vec![Message::text(Role::User, "hi")],
+                ..Default::default()
+            },
+            "c",
+        );
+        let requested = grok.requested_model.unwrap();
+        assert_eq!(requested.model_id, "grok-4.7");
+        assert!(!requested.max_mode);
+        assert!(requested.parameters.is_empty());
     }
 
     #[test]
@@ -1710,16 +2032,21 @@ mod tests {
         };
         // 不强制：按别名映射走。
         let normal = build_request_with(&req, "c", None);
-        assert_eq!(normal.model_id.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(
+            normal.requested_model.as_ref().unwrap().model_id,
+            "claude-sonnet-5"
+        );
         // 强制 auto（账号只跑得了这一档）：客户端仍报它认识的名字，上游收到的是 default。
         let forced = build_request_with(&req, "c", Some("auto"));
-        assert_eq!(forced.model_id.as_deref(), Some("default"));
+        assert_eq!(forced.requested_model.as_ref().unwrap().model_id, "default");
         // 空串当没设。
         assert_eq!(
             build_request_with(&req, "c", Some("  "))
-                .model_id
-                .as_deref(),
-            Some("claude-sonnet-5")
+                .requested_model
+                .as_ref()
+                .unwrap()
+                .model_id,
+            "claude-sonnet-5"
         );
     }
 
@@ -1739,8 +2066,14 @@ mod tests {
             "default",
             "认不出就交给上游自选"
         );
-        assert_eq!(requested_model("grok-4.7"), "sand-cua");
-        assert_eq!(requested_model("grok-4-7-0910-xhigh"), "sand-cua");
+        // 0.65 本地 Sand host 的结构化模型选择直接使用 grok-4.7，4.7 族不再被改名成
+        // sand-cua；这只证明模型 id 的 wire 形状，不代表本地 Stream 已获准入。
+        // `sand-cua` 自己还是原样过，留着当历史别名探针。
+        assert_eq!(requested_model("grok-4.7"), "grok-4.7");
+        assert_eq!(
+            requested_model("grok-4-7-0910-xhigh"),
+            "grok-4-7-0910-xhigh"
+        );
         assert_eq!(requested_model("sand-cua"), "sand-cua");
     }
 
@@ -2090,6 +2423,126 @@ mod tests {
             vec![Delta::Thinking("hmm".into()), Delta::Text("ok".into())]
         );
         assert_eq!(done.unwrap().thinking, "hmm");
+    }
+
+    fn think(text: &str, signature: Option<&str>) -> Response {
+        Response::ThinkingPart(InferenceThinkingStreamPart {
+            text: text.into(),
+            signature: signature.map(str::to_string),
+            is_final: false,
+        })
+    }
+
+    #[test]
+    fn a_streamed_signature_reaches_the_client_and_the_completion() {
+        let req = req_with(None, &[]);
+        let (deltas, done) = run(
+            &req,
+            vec![think("hm", None), think("m", Some("SIG")), text("ok")],
+            true,
+        );
+        assert_eq!(
+            deltas,
+            vec![
+                Delta::Thinking("hm".into()),
+                Delta::Thinking("m".into()),
+                Delta::ThinkingSignature("SIG".into()),
+                Delta::Text("ok".into()),
+            ],
+            "签名在正文之前到，序列化层关思考块时才用得上"
+        );
+        assert_eq!(done.unwrap().thinking_signature.as_deref(), Some("SIG"));
+    }
+
+    #[test]
+    fn a_signature_with_no_thinking_before_it_is_not_forwarded() {
+        let req = req_with(None, &[]);
+        let (deltas, done) = run(
+            &req,
+            vec![think("", Some("ORPHAN")), think("later", None), text("ok")],
+            true,
+        );
+        assert_eq!(
+            deltas,
+            vec![Delta::Thinking("later".into()), Delta::Text("ok".into())],
+            "孤零零的签名交出去会被盖到后面那段思考上"
+        );
+        assert_eq!(done.unwrap().thinking_signature, None);
+    }
+
+    #[test]
+    fn response_info_supplies_a_missing_signature_and_redacted_reasoning_once() {
+        let req = req_with(None, &[]);
+        let info = || {
+            Response::ResponseInfo(InferenceResponseInfo {
+                messages: vec![InferenceResponseMessage {
+                    reasoning_parts: vec![
+                        InferenceReasoningPart {
+                            text: "hmm".into(),
+                            signature: Some("SIG".into()),
+                            ..Default::default()
+                        },
+                        InferenceReasoningPart {
+                            is_redacted: true,
+                            redacted_data: Some("ENC".into()),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })
+        };
+        let (deltas, done) = run(
+            &req,
+            vec![think("hmm", None), text("ok"), info(), info()],
+            true,
+        );
+        assert_eq!(
+            deltas,
+            vec![
+                Delta::Thinking("hmm".into()),
+                Delta::Text("ok".into()),
+                Delta::ThinkingSignature("SIG".into()),
+                Delta::RedactedThinking("ENC".into()),
+            ],
+            "流里给过的正文不重复；重复的 ResponseInfo 不重复给"
+        );
+        let c = done.unwrap();
+        assert_eq!(c.thinking, "hmm");
+        assert_eq!(c.thinking_signature.as_deref(), Some("SIG"));
+        assert_eq!(c.redacted_thinking.as_deref(), Some("ENC"));
+
+        // 流里已经签过：ResponseInfo 里的签名不覆盖。
+        let (deltas, done) = run(&req, vec![think("hmm", Some("STREAMED")), info()], true);
+        assert_eq!(
+            deltas
+                .iter()
+                .filter(|d| matches!(d, Delta::ThinkingSignature(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            done.unwrap().thinking_signature.as_deref(),
+            Some("STREAMED")
+        );
+    }
+
+    #[test]
+    fn cursor_usage_is_marked_cache_inclusive() {
+        // 账本里的一行真实数据：67385 = 2 + 67194 + 189。
+        let req = req_with(None, &[]);
+        let extended = Response::ExtendedUsage(InferenceExtendedUsageInfo {
+            input_tokens: 67_385,
+            output_tokens: 31,
+            cache_read_tokens: 67_194,
+            cache_write_tokens: 189,
+            max_tokens: 0,
+        });
+        let c = run(&req, vec![text("a"), extended], true).1.unwrap();
+        assert_eq!(c.usage.input_basis, InputBasis::IncludesCache);
+        assert_eq!(c.usage.input_tokens, 67_385, "账本记的仍是总输入");
+        assert_eq!(c.usage.uncached_input(), 2);
     }
 
     #[test]

@@ -7,20 +7,12 @@
 //! 写出去。
 
 use super::{random_id, Dialect, SseFrame};
-use crate::normalized::{Completion, FinishReason, ToolCall, ToolDef, Usage};
+use crate::normalized::{
+    placeholder_thinking_signature as thinking_signature, Completion, FinishReason, ToolCall,
+    ToolDef, Usage,
+};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-
-/// Kiro 不签发 Anthropic 的思考签名。用正文的 sha256 占位，Claude Code 才肯收下这块。
-fn thinking_signature(text: &str) -> String {
-    use base64::Engine;
-    use sha2::Digest;
-    if text.is_empty() {
-        return String::new();
-    }
-    let digest = sha2::Sha256::digest(text.as_bytes());
-    base64::engine::general_purpose::STANDARD.encode(digest)
-}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -30,18 +22,21 @@ fn now_secs() -> u64 {
 }
 
 fn openai_usage(u: &Usage) -> Value {
+    let input = u.total_input();
     json!({
-        "prompt_tokens": u.input_tokens,
+        "prompt_tokens": input,
         "completion_tokens": u.output_tokens,
-        "total_tokens": u.input_tokens + u.output_tokens,
+        "total_tokens": input + u.output_tokens,
         "prompt_tokens_details": { "cached_tokens": u.cache_read_tokens },
         "completion_tokens_details": { "reasoning_tokens": u.reasoning_tokens },
     })
 }
 
+/// Anthropic 口径：`input_tokens` 只算没命中缓存的部分。Claude Code 把三项相加当上下文占用，
+/// 上游报的若是含缓存的总数（Cursor），原样写进来就是把缓存算了两遍。
 fn anthropic_usage(u: &Usage) -> Value {
     json!({
-        "input_tokens": u.input_tokens,
+        "input_tokens": u.uncached_input(),
         "output_tokens": u.output_tokens,
         "cache_read_input_tokens": u.cache_read_tokens,
         "cache_creation_input_tokens": u.cache_write_tokens,
@@ -53,10 +48,11 @@ fn anthropic_usage(u: &Usage) -> Value {
 /// 不是 `Option`，天然没有「缺省键」这个状态，但仍然把它单独摘出来写清楚：这是
 /// Codex 的 serde 会直接判死连接、反复重连的一个字段，不能靠隐含的类型系统巧合过关。
 fn responses_usage(u: &Usage) -> Value {
+    let input = u.total_input();
     json!({
-        "input_tokens": u.input_tokens,
+        "input_tokens": input,
         "output_tokens": u.output_tokens,
-        "total_tokens": u.input_tokens + u.output_tokens,
+        "total_tokens": input + u.output_tokens,
         "input_tokens_details": { "cached_tokens": u.cache_read_tokens },
         "output_tokens_details": { "reasoning_tokens": u.reasoning_tokens },
     })
@@ -144,6 +140,8 @@ pub struct Serializer {
     thinking_block_open: bool,
     /// 这一段思考的正文，用来在关上块之前补 `signature_delta`。
     thinking_buf: String,
+    /// 上游如果给了签名，关上思考块时用它，不再拿正文哈希占位。
+    upstream_thinking_signature: Option<String>,
     sent_text: String,
     /// 客户端声明过的工具（名字 → 语法 / 命名空间元数据）。不在这里的调用不能回给它——
     /// 它既执行不了，也没法带回结果。
@@ -184,6 +182,7 @@ impl Serializer {
             text_block_open: false,
             thinking_block_open: false,
             thinking_buf: String::new(),
+            upstream_thinking_signature: None,
             sent_text: String::new(),
             client_tools: client_tools
                 .iter()
@@ -346,7 +345,11 @@ impl Serializer {
     fn close_thinking(&mut self, out: &mut Vec<SseFrame>) {
         if self.thinking_block_open {
             if !self.thinking_buf.is_empty() {
-                let signature = thinking_signature(&self.thinking_buf);
+                let signature = self
+                    .upstream_thinking_signature
+                    .take()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| thinking_signature(&self.thinking_buf));
                 self.thinking_buf.clear();
                 out.push(SseFrame::json(
                     Some("content_block_delta"),
@@ -656,6 +659,37 @@ impl Serializer {
         out
     }
 
+    /// 记住上游给的思考签名，关上这块时用。本身不产生帧。
+    pub fn note_thinking_signature(&mut self, signature: &str) -> Vec<SseFrame> {
+        if !signature.is_empty() {
+            self.upstream_thinking_signature = Some(signature.to_string());
+        }
+        Vec::new()
+    }
+
+    /// 加密思考单独成块。OpenAI 两种方言没有这个类型，丢掉密文，不塞进正文。
+    pub fn redacted_thinking(&mut self, data: &str) -> Vec<SseFrame> {
+        if data.is_empty() {
+            return Vec::new();
+        }
+        let mut out = self.open();
+        if self.dialect == Dialect::AnthropicMessages {
+            self.close_thinking(&mut out);
+            self.close_text(&mut out);
+            out.push(SseFrame::json(
+                Some("content_block_start"),
+                &json!({ "type": "content_block_start", "index": self.block_index,
+                         "content_block": { "type": "redacted_thinking", "data": data } }),
+            ));
+            out.push(SseFrame::json(
+                Some("content_block_stop"),
+                &json!({ "type": "content_block_stop", "index": self.block_index }),
+            ));
+            self.block_index += 1;
+        }
+        out
+    }
+
     /// 思考增量。上游「想一段、说一句、再想一段」时 Anthropic 要另开新块而不是丢弃；
     /// OpenAI Chat 没有官方字段，`reasoning_content` 是社区事实标准。
     pub fn thinking(&mut self, delta: &str) -> Vec<SseFrame> {
@@ -881,9 +915,17 @@ impl Serializer {
             Dialect::AnthropicMessages => {
                 let mut content = Vec::new();
                 if !c.thinking.is_empty() {
+                    let signature = c
+                        .thinking_signature
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| thinking_signature(&c.thinking));
                     content.push(
-                        json!({ "type": "thinking", "thinking": c.thinking, "signature": thinking_signature(&c.thinking) }),
+                        json!({ "type": "thinking", "thinking": c.thinking, "signature": signature }),
                     );
+                }
+                if let Some(data) = c.redacted_thinking.as_deref().filter(|s| !s.is_empty()) {
+                    content.push(json!({ "type": "redacted_thinking", "data": data }));
                 }
                 if !c.text.is_empty() {
                     content.push(json!({ "type": "text", "text": c.text }));
@@ -985,12 +1027,15 @@ mod tests {
                 cache_read_tokens: 3,
                 cache_write_tokens: 0,
                 reasoning_tokens: 0,
+                ..Default::default()
             },
             usage_measured: true,
             routed_model: None,
             ttft_ms: None,
             turn_ms: 0,
             raw_response: None,
+            thinking_signature: None,
+            redacted_thinking: None,
         }
     }
 
@@ -1733,5 +1778,74 @@ mod tests {
         assert_eq!(body["output"][0]["type"], "custom_tool_call");
         assert_eq!(body["output"][0]["name"], "exec");
         assert_eq!(body["output"][0]["input"], "1+1");
+    }
+
+    /// Cursor 报的是含缓存的总输入。Anthropic 方言只能报未命中的那部分，否则 Claude Code
+    /// 三项一加，上下文占用凭空翻倍；OpenAI 两种方言本来就是总数，原样报。
+    #[test]
+    fn cache_inclusive_input_is_split_out_for_anthropic_and_kept_whole_for_openai() {
+        let mut c = completion("ok", vec![], FinishReason::Stop);
+        c.usage = Usage {
+            input_tokens: 67_385,
+            output_tokens: 31,
+            cache_read_tokens: 67_194,
+            cache_write_tokens: 189,
+            input_basis: crate::normalized::InputBasis::IncludesCache,
+            ..Default::default()
+        };
+
+        let mut s = Serializer::new(Dialect::AnthropicMessages, "m", &[]);
+        let all = s.finish(&c);
+        let delta = all
+            .iter()
+            .find(|f| f.event.as_deref() == Some("message_delta"))
+            .unwrap();
+        let usage = &parse(delta)["usage"];
+        assert_eq!(usage["input_tokens"], 2);
+        assert_eq!(usage["cache_read_input_tokens"], 67_194);
+        assert_eq!(usage["cache_creation_input_tokens"], 189);
+        let body = Serializer::new(Dialect::AnthropicMessages, "m", &[]).final_json(&c);
+        assert_eq!(body["usage"]["input_tokens"], 2, "非流式同一口径");
+
+        let chat = Serializer::new(Dialect::OpenAiChat, "m", &[]).final_json(&c);
+        assert_eq!(chat["usage"]["prompt_tokens"], 67_385);
+        assert_eq!(
+            chat["usage"]["prompt_tokens_details"]["cached_tokens"],
+            67_194
+        );
+        assert_eq!(chat["usage"]["total_tokens"], 67_385 + 31);
+        let resp = Serializer::new(Dialect::OpenAiResponses, "m", &[]).final_json(&c);
+        assert_eq!(resp["usage"]["input_tokens"], 67_385);
+    }
+
+    #[test]
+    fn cache_exclusive_input_is_summed_for_openai_and_kept_for_anthropic() {
+        let mut c = completion("ok", vec![], FinishReason::Stop);
+        c.usage = Usage {
+            input_tokens: 2,
+            output_tokens: 31,
+            cache_read_tokens: 67_194,
+            cache_write_tokens: 189,
+            input_basis: crate::normalized::InputBasis::ExcludesCache,
+            ..Default::default()
+        };
+        let body = Serializer::new(Dialect::AnthropicMessages, "m", &[]).final_json(&c);
+        assert_eq!(body["usage"]["input_tokens"], 2);
+        let chat = Serializer::new(Dialect::OpenAiChat, "m", &[]).final_json(&c);
+        assert_eq!(chat["usage"]["prompt_tokens"], 67_385);
+    }
+
+    #[test]
+    fn an_upstream_signature_replaces_the_placeholder_when_the_block_closes() {
+        let mut s = Serializer::new(Dialect::AnthropicMessages, "m", &[]);
+        let mut all = s.thinking("hmm");
+        all.extend(s.note_thinking_signature("EqQBCkYIBxgCKkDreal"));
+        all.extend(s.text("ok"));
+        let sig = all
+            .iter()
+            .map(parse)
+            .find(|v| v["delta"]["type"] == "signature_delta")
+            .unwrap();
+        assert_eq!(sig["delta"]["signature"], "EqQBCkYIBxgCKkDreal");
     }
 }
