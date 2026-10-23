@@ -81,6 +81,14 @@ id_type!(
     ClaudeAccountId,
     "一个 Claude 订阅账号的 id。OAuth、setup-token 和 Console API Key 是三种凭证，分表存放。"
 );
+id_type!(
+    AntigravityAccountId,
+    "一个 Google 反重力 (Antigravity) 账号的 id。支持 OAuth 凭证与项目配额，分表存放。"
+);
+id_type!(
+    GeminiWebAccountId,
+    "一个 Gemini 网页账号的 id。凭证是浏览器 Cookie，和反重力的 OAuth 不是同一套。"
+);
 
 #[cfg(test)]
 mod tests {

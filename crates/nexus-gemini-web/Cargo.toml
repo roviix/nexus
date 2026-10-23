@@ -1,0 +1,19 @@
+[package]
+name = "nexus-gemini-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexus-core.workspace = true
+nexus-store.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
+sha1 = "0.10"
+uuid.workspace = true
+tracing.workspace = true

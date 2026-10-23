@@ -4,8 +4,8 @@
 //! 而且 grep 不出来谁在读谁在写。
 
 use nexus_core::{
-    AccountId, BackupId, ChatGptAccountId, ClaudeAccountId, GrokAccountId, KiroAccountId, ProfileId,
-    QoderAccountId, ZcodeAccountId,
+    AccountId, AntigravityAccountId, BackupId, ChatGptAccountId, ClaudeAccountId,
+    GeminiWebAccountId, GrokAccountId, KiroAccountId, ProfileId, QoderAccountId, ZcodeAccountId,
 };
 
 /// 一条秘密的引用。SQLite 里存的就是它的字符串形式。
@@ -260,6 +260,47 @@ pub fn claude_secret(id: &ClaudeAccountId, kind: ClaudeSecret) -> SecretRef {
     SecretRef(format!("claude/{}/{}", id.as_str(), kind.slug()))
 }
 
+/// Google 反重力 (Antigravity) 账号的凭证。OAuth 用 access + refresh。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AntigravitySecret {
+    Access,
+    Refresh,
+}
+
+impl AntigravitySecret {
+    fn slug(self) -> &'static str {
+        match self {
+            AntigravitySecret::Access => "access",
+            AntigravitySecret::Refresh => "refresh",
+        }
+    }
+
+    pub const ALL: [AntigravitySecret; 2] = [
+        AntigravitySecret::Access,
+        AntigravitySecret::Refresh,
+    ];
+}
+
+pub fn antigravity_secret(id: &AntigravityAccountId, kind: AntigravitySecret) -> SecretRef {
+    SecretRef(format!("antigravity/{}/{}", id.as_str(), kind.slug()))
+}
+
+/// Gemini 网页账号的浏览器 Cookie。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GeminiWebSecret {
+    Cookie,
+}
+
+impl GeminiWebSecret {
+    fn slug(self) -> &'static str {
+        "cookie"
+    }
+}
+
+pub fn gemini_web_secret(id: &GeminiWebAccountId, kind: GeminiWebSecret) -> SecretRef {
+    SecretRef(format!("gemini-web/{}/{}", id.as_str(), kind.slug()))
+}
+
 /// 一个切号档的整套 `cursorAuth/*`（JSON）。
 pub fn profile_auth(id: &ProfileId) -> SecretRef {
     SecretRef(format!("switch/{}/auth", id.as_str()))
@@ -351,6 +392,11 @@ mod tests {
             "claude/X1/refresh"
         );
         assert_eq!(ClaudeSecret::ALL.len(), 3);
+        assert_eq!(
+            antigravity_secret(&AntigravityAccountId::from_raw(same), AntigravitySecret::Refresh).as_str(),
+            "antigravity/X1/refresh"
+        );
+        assert_eq!(AntigravitySecret::ALL.len(), 2);
     }
 
     #[test]

@@ -22,7 +22,7 @@ pub mod settings;
 pub use backup::{BackupFile, Backups, RestoreOutcome};
 pub use db::{sql_error, Db, SqlExt};
 pub use keys::{
-    AccountSecret, ChatGptSecret, ClaudeSecret, GrokSecret, KiroSecret, QoderSecret, SecretRef,
-    ZcodeSecret,
+    antigravity_secret, gemini_web_secret, AccountSecret, AntigravitySecret, ChatGptSecret,
+    ClaudeSecret, GeminiWebSecret, GrokSecret, KiroSecret, QoderSecret, SecretRef, ZcodeSecret,
 };
 pub use secrets::{MemorySecrets, SecretStore, SqliteSecrets};

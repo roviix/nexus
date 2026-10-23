@@ -14,8 +14,8 @@ pub use clock::{file_stamp, iso_from_system_time, now_iso, Clock, SystemClock};
 pub use email::Email;
 pub use error::{AppError, ErrorCode, Result};
 pub use ids::{
-    AccountId, BackupId, ChatGptAccountId, ClaudeAccountId, GrokAccountId, KiroAccountId, ProfileId,
-    QoderAccountId, ZcodeAccountId,
+    AccountId, AntigravityAccountId, BackupId, ChatGptAccountId, ClaudeAccountId,
+    GeminiWebAccountId, GrokAccountId, KiroAccountId, ProfileId, QoderAccountId, ZcodeAccountId,
 };
 pub use machine::{MachineProfile, TELEMETRY_KEYS};
 pub use secret::Secret;

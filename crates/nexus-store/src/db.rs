@@ -458,6 +458,49 @@ CREATE TABLE claude_accounts (
         ),
         // v21：社交登录的 Kiro 请求体要带 profileArn。Builder ID 不用它。
         M::up("ALTER TABLE kiro_accounts ADD COLUMN profile_arn TEXT;"),
+        // v22：Kiro 卡片上的套餐和额度快照。凭证仍不进这一列。
+        M::up("ALTER TABLE kiro_accounts ADD COLUMN usage_json TEXT;"),
+        // v23：Google 反重力 (Antigravity) 账号。分表存储（ARCHITECTURE §5.3），凭证在 secrets。
+        M::up(
+            r#"
+CREATE TABLE antigravity_accounts (
+  id                TEXT PRIMARY KEY,
+  account_ref       TEXT UNIQUE NOT NULL,        -- Google email
+  email             TEXT,
+  project_id        TEXT,                        -- GCP project id (来自 loadCodeAssist)
+  status            TEXT NOT NULL,               -- active | needs_login | dead
+  enabled           INTEGER NOT NULL DEFAULT 1,  -- 进不进网关接力队
+  note              TEXT,
+  tier              TEXT,                        -- free | preview | enterprise
+  usage_json        TEXT,                        -- 额度快照
+  last_checked_at   TEXT,
+  last_error        TEXT,
+  has_refresh       INTEGER NOT NULL DEFAULT 0,
+  access_expires_at TEXT,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+"#,
+        ),
+        // v24：Qoder 卡片上的套餐和额度快照。凭证仍不进这一列。
+        M::up("ALTER TABLE qoder_accounts ADD COLUMN usage_json TEXT;"),
+        // v25：Gemini 网页协议账号。和反重力分表，凭证是 Cookie，放在 secrets。
+        M::up(
+            r#"
+CREATE TABLE gemini_web_accounts (
+  id              TEXT PRIMARY KEY,
+  account_ref     TEXT UNIQUE NOT NULL,
+  email           TEXT,
+  status          TEXT NOT NULL,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  note            TEXT,
+  last_error      TEXT,
+  last_checked_at TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+"#,
+        ),
     ])
 }
 
