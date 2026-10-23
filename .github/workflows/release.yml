@@ -1,8 +1,8 @@
 name: release
 
 # 推一个 `v*` 标签就发一版：两平台构建、签名（有证书时）、生成清单，全部上传到 GitHub Release。
-# 应用内更新器读的 `latest.json` 也在同一个 Release 里，通过
-# `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` 拿到最新一版。
+# 两平台代码签名齐全才是 stable，并生成应用内更新器读取的 `latest.json`；缺任一证书时发布为
+# GitHub prerelease，只有手工安装包，没有 `latest.json`，不会污染 `/releases/latest`。
 on:
   push:
     tags: ["v*"]
@@ -243,9 +243,11 @@ jobs:
           req="$(codesign -d -r- "$app" 2>&1 | sed -n 's/.*designated => //p')"
           echo "designated requirement: $req"
           test -n "$req"
-          if [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
+          if [[ -n "${APPLE_CERTIFICATE:-}" && -n "${APPLE_ID:-}" ]]; then
             spctl --assess --type execute --verbose=2 "$app"
             xcrun stapler validate "$app"
+          elif [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
+            echo "::warning::有 Apple 代码签名证书但公证凭据不全：保留为 Preview，不声明 notarized。"
           else
             echo "::warning::没有 Apple 证书：ad-hoc 签名。Gatekeeper 首次要右键打开；App 管理允许一次即可跨重启。"
             [[ "$req" == *cdhash* || "$req" == *identifier* ]]
@@ -282,7 +284,8 @@ jobs:
       RELEASE_VERSION: ${{ needs.validate.outputs.version }}
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       INPUT_RELEASE_NOTES: ${{ inputs.release_notes }}
-      SIGNED: ${{ secrets.APPLE_SIGNING_IDENTITY != '' && secrets.WINDOWS_CERTIFICATE_BASE64 != '' }}
+      # 只有两端代码签名、以及 macOS 公证所需凭据全部齐全，清单才敢声明 stable / notarized。
+      SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGNING_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && secrets.WINDOWS_CERTIFICATE_BASE64 != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -324,10 +327,23 @@ jobs:
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" release-output/* --clobber
+            if [[ "$SIGNED" == "true" ]]; then
+              gh release edit "$RELEASE_TAG" --prerelease=false --latest
+            else
+              gh release edit "$RELEASE_TAG" --prerelease --latest=false
+            fi
+          elif [[ "$SIGNED" == "true" ]]; then
+            gh release create "$RELEASE_TAG" \
+              release-output/* \
+              --target "$GITHUB_SHA" \
+              --title "Nexus v${RELEASE_VERSION}" \
+              --notes-file release-notes.md \
+              --latest
           else
             gh release create "$RELEASE_TAG" \
               release-output/* \
               --target "$GITHUB_SHA" \
               --title "Nexus v${RELEASE_VERSION}" \
-              --notes-file release-notes.md
+              --notes-file release-notes.md \
+              --prerelease
           fi

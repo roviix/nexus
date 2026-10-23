@@ -1,0 +1,21 @@
+# Caddy 自动申请与管理 Let's Encrypt HTTPS 证书
+# 支持将子域名 (如 nexus.roviix.com) 安全反代到本地 nexus-broker 服务
+
+nexus.roviix.com {
+    # 启用 Gzip / Zstandard 压缩
+    encode gzip zstd
+
+    # HTTP API / 市场接口 / 配对服务反代
+    reverse_proxy 127.0.0.1:8790 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # 日志输出
+    log {
+        output file /var/log/caddy/nexus.log
+        format json
+    }
+}

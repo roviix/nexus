@@ -106,12 +106,12 @@ const windowsInstaller = requireUnique(
   (file) => file.toLowerCase().endsWith(".exe"),
   "Windows NSIS EXE",
 );
-// updater 产物：正式发布必须齐全；预览包有就带上（未签名的构建照样能走应用内更新，
-// 更新器验的是 Tauri 自己那对密钥的签名，不是操作系统的代码签名），没有就只出安装包。
+// updater 产物：正式发布必须齐全；预览包有就随安装包归档，但不生成 `latest.json`，
+// 避免未签名 Preview 被 `/releases/latest/download/latest.json` 当成自动更新。
 const hasUpdaterArtifacts = inputFiles.some((file) => file.toLowerCase().endsWith(".app.tar.gz"));
 const withUpdater = !preview || hasUpdaterArtifacts;
-if (withUpdater && !baseUrl) {
-  throw new Error("带 updater 产物的包必须给 --base-url，否则 latest.json 里是相对地址。");
+if (!preview && withUpdater && !baseUrl) {
+  throw new Error("正式发布的 updater 产物必须给 --base-url，否则 latest.json 里是相对地址。");
 }
 const macUpdater = withUpdater
   ? requireUnique(
@@ -275,7 +275,7 @@ const outputWrites = [
   fs.writeFile(path.join(outputDirectory, "SHA256SUMS"), `${sha256Sums}\n`),
   fs.writeFile(path.join(outputDirectory, "MD5SUMS"), `${md5Sums}\n`),
 ];
-if (updaterManifest) {
+if (!preview && updaterManifest) {
   outputWrites.push(
     fs.writeFile(
       path.join(outputDirectory, "latest.json"),

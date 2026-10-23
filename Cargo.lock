@@ -544,6 +544,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "byteorder-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -740,6 +746,12 @@ checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
  "cc",
 ]
+
+[[package]]
+name = "color_quant"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
 
 [[package]]
 name = "combine"
@@ -1169,7 +1181,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.7.4",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1774,6 +1786,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gif"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
+dependencies = [
+ "color_quant",
+ "weezl",
+]
+
+[[package]]
 name = "gio"
 version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2127,7 +2149,7 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
- "windows-registry 0.6.1",
+ "windows-registry",
 ]
 
 [[package]]
@@ -2272,6 +2294,34 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "image"
+version = "0.25.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
+dependencies = [
+ "bytemuck",
+ "byteorder-lite",
+ "color_quant",
+ "gif",
+ "image-webp",
+ "moxcms",
+ "num-traits",
+ "png 0.18.1",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error",
 ]
 
 [[package]]
@@ -2803,6 +2853,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "moxcms"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
+dependencies = [
+ "num-traits",
+ "pxfm",
+]
+
+[[package]]
 name = "muda"
 version = "0.19.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2872,7 +2932,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexus-accounts"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "nexus-core",
@@ -2890,8 +2950,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-antigravity"
+version = "0.9.0"
+dependencies = [
+ "base64 0.23.1",
+ "nexus-core",
+ "nexus-store",
+ "rand 0.10.2",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nexus-chatgpt"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -2912,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-claude"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "boring2",
@@ -2936,7 +3016,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-connect"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nexus-core",
  "serde",
@@ -2949,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "rand 0.10.2",
  "serde",
@@ -2962,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-crsr"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "nexus-accounts",
@@ -2970,6 +3050,7 @@ dependencies = [
  "nexus-cursor",
  "nexus-sand",
  "nexus-store",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2981,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-cursor"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nexus-core",
  "rusqlite",
@@ -2993,10 +3074,12 @@ dependencies = [
 
 [[package]]
 name = "nexus-desktop"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
+ "core-foundation 0.10.1",
  "log",
  "nexus-accounts",
+ "nexus-antigravity",
  "nexus-chatgpt",
  "nexus-claude",
  "nexus-connect",
@@ -3004,9 +3087,11 @@ dependencies = [
  "nexus-crsr",
  "nexus-cursor",
  "nexus-gateway",
+ "nexus-gemini-web",
  "nexus-grok",
  "nexus-grokbot",
  "nexus-kiro",
+ "nexus-mesh",
  "nexus-playground",
  "nexus-qoder",
  "nexus-sand",
@@ -3031,18 +3116,24 @@ dependencies = [
 
 [[package]]
 name = "nexus-gateway"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "bytes",
+ "flate2",
  "futures-util",
+ "image",
  "nexus-accounts",
+ "nexus-antigravity",
  "nexus-chatgpt",
  "nexus-claude",
  "nexus-core",
  "nexus-cursor",
+ "nexus-gemini-web",
  "nexus-grok",
  "nexus-kiro",
+ "nexus-mesh",
  "nexus-qoder",
  "nexus-store",
  "nexus-zcode",
@@ -3064,8 +3155,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-gemini-web"
+version = "0.9.0"
+dependencies = [
+ "nexus-core",
+ "nexus-store",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "nexus-grok"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3085,7 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-grokbot"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -3106,11 +3213,12 @@ dependencies = [
 
 [[package]]
 name = "nexus-kiro"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "nexus-core",
  "nexus-store",
+ "rand 0.10.2",
  "reqwest 0.12.28",
  "rusqlite",
  "serde",
@@ -3124,8 +3232,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-mesh"
+version = "0.9.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "futures-util",
+ "nexus-core",
+ "rand 0.10.2",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "nexus-playground"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "nexus-core",
@@ -3143,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-qoder"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "aes",
  "base64 0.23.1",
@@ -3166,7 +3296,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-sand"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "nexus-core",
@@ -3184,7 +3314,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-store"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nexus-core",
  "rusqlite",
@@ -3199,7 +3329,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-switcher"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "nexus-core",
  "nexus-cursor",
@@ -3213,7 +3343,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-zcode"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.23.1",
  "iana-time-zone",
@@ -4007,6 +4137,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pxfm"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4262,6 +4404,7 @@ dependencies = [
  "cookie",
  "cookie_store",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",
@@ -4283,12 +4426,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams 0.4.2",
  "web-sys",
 ]
 
@@ -4327,7 +4472,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
+ "wasm-streams 0.5.0",
  "web-sys",
 ]
 
@@ -4741,6 +4886,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap 2.14.1",
  "itoa",
  "memchr",
  "serde",
@@ -5412,7 +5558,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "url",
- "windows-registry 0.5.3",
+ "windows-registry",
  "windows-result 0.3.4",
 ]
 
@@ -6339,6 +6485,19 @@ dependencies = [
 
 [[package]]
 name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "wasm-streams"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
@@ -6532,6 +6691,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "weezl"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6689,17 +6854,6 @@ dependencies = [
  "windows-link 0.1.3",
  "windows-result 0.3.4",
  "windows-strings 0.4.2",
-]
-
-[[package]]
-name = "windows-registry"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
-dependencies = [
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
 ]
 
 [[package]]
@@ -7345,6 +7499,21 @@ checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
 dependencies = [
  "cc",
  "pkg-config",
+]
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d56377fd46368984a170bc5aac5567e52ca5da874caa60bea39fcbca78fb658b"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
+dependencies = [
+ "zune-core",
 ]
 
 [[package]]

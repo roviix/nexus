@@ -1,0 +1,33 @@
+services:
+  nexus-broker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: nexus-broker
+    restart: unless-stopped
+    ports:
+      - "8790:8790"
+      - "8791:8791"
+    environment:
+      - NEXUS_PORT_HTTP=8790
+      - NEXUS_PORT_TUNNEL=8791
+      - NEXUS_BIND_ADDR=0.0.0.0
+      - RUST_LOG=info
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nexus-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - nexus-broker
+
+volumes:
+  caddy_data:
+  caddy_config:

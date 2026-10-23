@@ -101,7 +101,8 @@ try {
     new RegExp(`${macArtifact.sha256}  ${macArtifact.filename}`),
   );
 
-  // 未签名但带 updater 产物的预览包：照样出 latest.json，只是 codeSigned 为 false。
+  // 未签名但带 updater 归档的预览包：保留文件供手工排障，但绝不生成 latest.json，
+  // 否则 GitHub `/releases/latest` 可能把 Preview 喂给稳定版更新器。
   const previewResult = spawnSync(
     process.execPath,
     [
@@ -130,10 +131,11 @@ try {
   assert.equal(previewRelease.notes, "Preview changes\n\n- First public build");
   assert.equal(previewRelease.artifacts.length, 2);
   assert.ok(previewRelease.artifacts.every((artifact) => !artifact.codeSigned));
-  const previewLatest = JSON.parse(
-    await fs.readFile(path.join(previewOutputDirectory, "latest.json"), "utf8"),
+  await assert.rejects(fs.access(path.join(previewOutputDirectory, "latest.json")));
+  assert.ok(
+    (await fs.readdir(previewOutputDirectory)).some((name) => name.endsWith(".app.tar.gz")),
+    "预览包仍保留 updater 归档供手工下载/排障",
   );
-  assert.equal(previewLatest.version, "0.1.0-preview.1");
 
   // 只有安装包、没有 updater 产物的预览：不给 --base-url 也行，清单只写文件名，没有 latest.json。
   const installersOnly = path.join(temporaryRoot, "installers-only");

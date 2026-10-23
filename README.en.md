@@ -1,318 +1,170 @@
 <div align="center">
 
-<img src="apps/desktop/src-tauri/icons/128x128@2x.png" width="96" alt="Nexus" />
+<img src="apps/desktop/src-tauri/icons/128x128@2x.png" width="96" alt="Nexus Logo" />
 
 # Nexus
 
-**Turn the AI subscriptions you already pay for into a local OpenAI / Anthropic compatible endpoint.**
+**The All-in-One Local AI Gateway & Decentralized Mesh Pool**
 
-[![ci](https://github.com/roviix/nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/roviix/nexus/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/roviix/nexus?include_prereleases&sort=semver)](https://github.com/roviix/nexus/releases)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
+Turn your existing AI subscriptions and API providers into standard, unified OpenAI & Anthropic endpoints on your local machine.
 
-[中文](./README.md) · English
+[![Release](https://img.shields.io/github/v/release/roviix/nexus?include_prereleases&sort=semver&style=flat-square)](https://github.com/roviix/nexus/releases)
+[![CI](https://github.com/roviix/nexus/actions/workflows/ci.yml/badge.svg?style=flat-square)](https://github.com/roviix/nexus/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?style=flat-square)
+
+[**📥 Download Latest Release**](https://github.com/roviix/nexus/releases/latest) · [中文](./README.md) · **English**
+
+<br/>
+
+<a href="https://github.com/roviix/nexus/releases/latest">
+  <img src="docs/images/channels.png" width="850" alt="Nexus Channels & Mesh Dashboard" style="border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.25);" />
+</a>
 
 </div>
 
-Nexus is a Rust + Tauri v2 desktop app for macOS and Windows. It runs a gateway on `127.0.0.1`
-that uses **your own** Cursor / ChatGPT / Grok / Kiro / ZCode / Qoder accounts as upstreams and speaks the standard
-`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, `/v1/models` and `/v1/images/generations`.
-Anything that talks the OpenAI or Anthropic dialect — Claude Code, Codex CLI, OpenCode, the official
-SDKs, plain `curl` — can point at it directly. No API key to apply for.
+---
 
-Everything stays on your machine: accounts, tokens, the request ledger, backups. No cloud, no
-account system, no telemetry.
+## 💡 Why Nexus?
 
-![Overview](docs/images/overview.png)
+If you use **Claude Code**, **Cursor**, **Codex CLI**, or other AI coding agents in your daily development, you have likely run into these frustrations:
 
-> **The app's interface is currently Chinese only.** The screenshots below reflect that.
-> Localisation is not implemented yet; if you want to work on it, please open an issue first.
+- 💸 **Expensive API Keys**: You already pay for web subscriptions like ChatGPT Plus, Claude Pro, or Kiro, yet you can't use them directly inside your favorite terminal agents without paying twice;
+- 🛑 **Painful Rate Limits (429 / Quota Exhaustion)**: Hitting a rate limit right in the middle of writing code breaks your workflow, forcing you to manually log out, switch accounts, and restart;
+- ⚙️ **Tedious Configuration**: Every CLI tool requires its own configuration file format (JSON, TOML, or environment variables) in different paths, and a single syntax error breaks your workflow;
+- 🌐 **Difficult Device & Team Sharing**: Wanting to share idle quota with your home desktop or a teammate usually requires complex proxy setups or public IP routing.
 
-> Architecture, key mechanisms and the deliberate trade-offs are documented in
-> [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (Chinese). Decision records for the two Cursor
-> patch channels are in [`docs/SAND.md`](./docs/SAND.md) and [`docs/CRSR.md`](./docs/CRSR.md)
-> (Chinese).
+👉 **Nexus solves all of this**. Running locally on your machine, Nexus translates your existing accounts into a unified, high-availability pipeline with automatic account relaying and decentralized P2P sharing (Mesh).
 
-## What it does
+---
 
-### The local gateway (the main feature)
+## ✨ Key Features
 
-- **One port, four dialects.** OpenAI Chat Completions, Anthropic Messages (including
-  `count_tokens`), OpenAI Responses, OpenAI Images. Inbound requests are parsed into a single
-  intermediate representation and then bridged to the upstream; streaming SSE passes through as-is.
-- **Multiple upstreams.** Cursor (`aiserver.v1.InferenceService/Stream`), ChatGPT subscriptions
-  (`chatgpt.com/backend-api/codex`), Grok, Kiro, ZCode (Zhipu GLM coding plan) and Qoder.
-  `/v1/models` aggregates the catalogue according to what each upstream can actually do.
-- **API key providers, too.** DeepSeek, Kimi, Zhipu, OpenRouter, SiliconFlow or any OpenAI /
-  Anthropic-compatible endpoint form one more channel, `provider/`. When several providers list the
-  same model they relay in order: a rejected key, an empty balance, a rate limit or a dead endpoint
-  moves the next request to the next provider. When the client and the provider speak the same
-  dialect the request is passed through untouched, so `cache_control` and `thinking` survive.
-- **The channel is part of the model name.** Catalogue entries are keyed as `{channel}/{model}`
-  (`cursor/claude-opus-5`, `chatgpt/gpt-5`). A prefixed name is forced onto that channel; a bare name
-  goes to **the default channel you picked**. Which pool a request lands on is visible and editable
-  rather than something the gateway infers. Clients set up with one click get routes of their own
-  (see below).
-- **Quota relay, not load balancing.** One user, one machine — one account is enough at any moment.
-  Nexus keeps using the current account and only moves to the next when the quota runs out.
-  Session stickiness therefore comes for free and accounts rotate very rarely.
-- **Model name mapping.** Claude Code sends `claude-sonnet-4-5`, Codex sends `gpt-5`; the gateway
-  maps those to names the upstream recognises. You can also force every request onto one model.
-- **A request ledger.** Every request records account, model, tokens and latency. The overview page
-  reads from it. The gateway page also lists recent requests: which channel and account each attempt
-  landed on and, on failure, what the upstream said — including requests turned away before they
-  reached a pool (wrong token, empty pool).
+### 1. 🔀 Dual-Dialect Unified Gateway
+A single local port (`8787`) simultaneously translates **OpenAI** (`/v1/chat/completions`) and **Anthropic** (`/v1/messages`) formats. Full support for streaming SSE, Thinking Tokens, Prompt Caching (`cache_control`), and Tool Calls.
 
-![Local gateway](docs/images/gateway.png)
+### 2. 🔄 Smart Account Pools & Quota Auto-Relay
+Manage multiple accounts across different platforms. When an account runs out of quota or hits rate limits, Nexus automatically relays traffic to the next available account in the pool, maintaining session stickiness to prevent broken conversations.
 
-The default port is `8787` and the gateway is off by default. Once enabled:
+<div align="center">
+  <img src="docs/images/accounts.png" width="800" alt="Nexus Accounts" style="border-radius: 8px;" />
+</div>
+
+### 3. 🌐 Nexus Mesh (Decentralized P2P Sharing)
+Lend your idle channels to other computers or team members using secure, end-to-end encrypted reverse tunnels.
+- **Zero Configuration**: Pair in seconds using a 6-character dynamic code without public IPs or port forwarding;
+- **Local Owner Protection**: If you make a request locally, Nexus automatically prioritizes local traffic so external sharing never lags your own experience.
+
+### 4. ⚡ One-Click Client Onboarding
+Stop manually editing config files. Nexus seamlessly hooks into developer tools, creating automatic backups before making any modifications:
+- **Claude Code**: Configures `~/.claude/settings.json`, skips login onboarding, and supports Sonnet / Opus / Haiku / Fable routes;
+- **Codex CLI**: Injects config into `~/.codex/config.toml`;
+- **OpenCode** / **Grok CLI** / **Cursor IDE** ready out-of-the-box.
+
+<div align="center">
+  <img src="docs/images/connect.png" width="800" alt="Nexus Connect" style="border-radius: 8px;" />
+</div>
+
+### 5. 🔒 100% Local-First & Private
+All tokens, credentials, and request logs are stored strictly inside your local machine's SQLite database. **No central servers, no cloud tracking, zero telemetry**. Your sensitive code never passes through third-party servers.
+
+---
+
+## 🧩 Supported Ecosystem
+
+| Supported Upstream | Authentication | Highlights |
+| :--- | :--- | :--- |
+| **ChatGPT** | Browser OAuth / Session Import | Native Codex CLI backend, supports o1 / o3 / gpt-5 models |
+| **Claude** | Web OAuth / Credential Import | Full Anthropic Messages protocol with Thinking stream support |
+| **Kiro** | AWS SSO / CLI Token Import | Aggregates all top coding models with rock-solid concurrency |
+| **Grok** | xAI Auth / Refresh Token | Large context window and deep analytical reasoning |
+| **ZCode** | Auto-detects local credentials / API Key | Zhipu GLM coding models with direct, low-latency connection |
+| **Qoder** | Personal Access Token (PAT) | Dedicated routes for both international and domestic regions |
+| **Google Antigravity** | Auth Token Import | Google Antigravity developer model suite |
+| **Custom Providers** | Custom Base URL + API Key | DeepSeek, Kimi, OpenRouter, SiliconFlow, and OpenAI/Anthropic proxies |
+
+**Supported Downstream Clients**: Claude Code CLI, Codex CLI, OpenCode, Cursor, Chatbox, NextChat, official Python/Node.js SDKs, and any client supporting custom base URLs.
+
+---
+
+## 🚀 3-Step Quick Start
+
+### Step 1: Download & Install
+Download the binary for your operating system from [GitHub Releases](https://github.com/roviix/nexus/releases/latest):
+- **macOS**: Download `.dmg` and drag to Applications (Universal binary for Apple Silicon & Intel)
+- **Windows**: Download `.exe` installer and run
+
+### Step 2: Add Your Accounts
+Launch Nexus, head to **Accounts**, and click on any provider card to log in via browser OAuth or paste credentials.
+
+### Step 3: Connect Your Client
+Go to **Connect**, locate your favorite tool (such as Claude Code), and click **Connect**. Open your terminal and start coding!
+
+You can also send standard OpenAI-compatible requests directly:
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer $NEXUS_GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}'
+  -d '{
+    "model": "kiro/claude-sonnet-4.5",
+    "messages": [{"role": "user", "content": "Hello Nexus!"}]
+  }'
 ```
 
-### One-click client setup
+---
 
-The "connect" page edits your client config files directly — Claude Code
-(`~/.claude/settings.json`), Codex CLI (`~/.codex/config.toml`), OpenCode, Grok CLI — pointing them at
-the local gateway. It backs the file up first and every change is revertible. Only our keys are
-touched; if the file isn't valid JSON/TOML to begin with, Nexus refuses to edit it rather than guess.
+<details>
+<summary>🛠️ Developer Guide: Building from Source & Architecture (Click to expand)</summary>
 
-- **One route per client.** Claude Code on Cursor and Codex on ChatGPT can both be true at once. The
-  config points at a per-client address (`/client/claude`); change the channel or model in the app
-  afterwards and the next request follows it — no config rewrite, no client restart.
-- **Claude Code's four tiers, separately.** Sonnet / Opus / Haiku / Fable can each point at a model,
-  across channels; the `/model` menu shows the real model names.
-- **Works as soon as it's written.** If the gateway is off it is started and set to launch with Nexus;
-  Claude Code skips its first-run login flow. "Test" sends a real request down the client's own path
-  and reports which channel and account served it.
-- **Tells you what's wrong.** A token or port in the config that no longer matches the gateway, or a
-  shell variable such as `ANTHROPIC_BASE_URL` that overrides the config file, is called out on the
-  page.
+### Prerequisites
+- **Node.js** >= 20
+- **Rust** stable (via `rustup`)
+- **Tauri v2** prerequisites (see [Tauri Prerequisites](https://v2.tauri.app/start/prerequisites/))
 
-![Connect](docs/images/connect.png)
-
-### Account pool
-
-- Add Cursor / ChatGPT / Grok / Kiro accounts. OAuth opens your system browser and the app collects
-  the token in the background; you can also bulk-import by pasting refresh tokens, `crsr_` API keys
-  or Codex session JSON — several at once, format detected automatically.
-- ZCode has no authorisation flow of its own: sign in once in the official ZCode client and Nexus
-  reads the credentials it leaves behind (`~/.zcode/v2/credentials.json`, AES-256-GCM). Individual
-  and team plans under one credential file become separate accounts — their quotas are separate.
-  You can also paste a `{apiKeyId}.{apiKeySecret}` pair yourself.
-- Qoder accounts are imported by pasting PATs, one per line; the international and China editions
-  each use their own gateway.
-- See plan, quota and reset times. Expired, banned and exhausted accounts are flagged automatically.
-- Quota and billing are two separate cards: one for what's left and when it resets, one for list
-  price, discounts, next charge and past invoices. They are different units and are never merged
-  into a single number.
-- Credentials live in a local SQLite database — `0700` / `0600` on macOS, the default `%APPDATA%`
-  ACL on Windows. They do not go into the OS keychain and they are never uploaded anywhere — see
-  [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1 for why, including what that costs you.
-
-![Accounts](docs/images/accounts.png)
-
-### Cursor account switching
-
-No reverse engineering, no patching, and it doesn't break when Cursor updates: Nexus writes
-Cursor's own login state database (`state.vscdb`) directly. Each account gets its own machine ID,
-and the current state is backed up before every switch.
-
-![Switcher](docs/images/switcher.png)
-
-### Playground
-
-An in-app multi-turn chat workbench that talks to the local gateway over exactly the same address,
-key and path your clients use. It is there to verify that an account still works and to compare
-model output — not to be yet another chat UI.
-
-![Playground](docs/images/playground.png)
-
-### Cursor panel: who pays (optional, advanced)
-
-The Agent panel built into the Cursor IDE talks `agent.v1` to api5; the client has no knob that
-points at 127.0.0.1, so it **never goes through the local gateway**. The only way to make the panel
-bill someone else is a patch, and the "Cursor panel" page turns that into a three-way choice:
-
-- **Native**: Cursor untouched. The panel uses whatever account is signed in and spends that
-  account's quota; use the switcher to change accounts.
-- **CRSR** ([`docs/CRSR.md`](./docs/CRSR.md)) changes no routing at all. It only swaps the
-  authorization header on panel requests for a short-lived token minted from one account's `crsr_`
-  User API Key — the panel still speaks native `agent.v1.AgentService/Run`, someone else is just
-  paying. The patch renews the token itself, so closing Nexus won't hand you a 401 mid-keystroke.
-- **Sand** ([`docs/SAND.md`](./docs/SAND.md)) reroutes the panel onto Cursor's internal sand channel
-  and pays with Grok Bot quota. Many more edits, pinned to an exact Cursor version; can be installed
-  on a remote dev box over SSH.
-
-Both patches **modify Cursor's application files**. They occupy the same hook, so only one can be
-installed at a time. Read the corresponding document and the disclaimer below before you enable either.
-
-## Install
-
-Download the installer for your platform from
-[Releases](https://github.com/roviix/nexus/releases) (macOS `.dmg`, Windows `.exe`). Signed releases
-support in-app auto-update. Unsigned Preview builds must be downloaded manually, and on macOS you
-will need to allow the first launch under System Settings → Privacy & Security.
-
-## Building from source
-
-Requirements: Rust stable, Node.js 20+, and the Tauri v2
-[platform prerequisites](https://v2.tauri.app/start/prerequisites/).
-
+### Build & Development
 ```bash
-git clone git@github.com:roviix/nexus.git
+# Clone repository
+git clone https://github.com/roviix/nexus.git
 cd nexus/apps/desktop
+
+# Install dependencies and start development server
 npm ci
-npm run dev            # Vite + Tauri with hot reload
-npm run tauri build    # unsigned installer for the current platform
+npm run dev
+
+# Build production installer
+npm run tauri build
 ```
 
-If you only want to look at the UI without installing a Rust toolchain, `ui-preview` swaps the Tauri
-layer for mocks and runs in a plain browser:
-
-```bash
-cd apps/desktop && npm run preview:ui   # http://127.0.0.1:1500/?route=overview
+### Architecture Overview
 ```
-
-There are also scripts that build only what makes sense on the current platform:
-
-```bash
-scripts/build-dmg.sh                                              # macOS, produces a dmg (signed with a local certificate)
-scripts/build-dmg.sh --install                                    # macOS, install into /Applications when done
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 # Windows, produces an nsis installer
-```
-
-The macOS script **signs the build** (`scripts/macos-signing-identity.sh` picks a certificate from
-your keychain, or generates a self-signed one). This matters: an unsigned bundle cannot obtain the
-system "App Management" permission, which means the Sand patch cannot be installed. Signing is not
-notarisation — such a build only works on your own machine.
-
-The checks CI runs (all of them must pass on macOS/Linux **and** Windows):
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cd apps/desktop && npm run typecheck && npm test
-node scripts/test-package-release.mjs
-```
-
-Platform-specific branches (`tasklist` / `taskkill`, `%APPDATA%` paths, read-only attributes) never
-get compiled on Linux, so CI has a separate `check-windows` job running the same clippy and tests.
-Without it, "CI is green" would only mean "it works on macOS".
-
-### Environment variables for troubleshooting
-
-| Variable | Effect |
-|---|---|
-| `CURSOR_USER_DIR` | Override the Cursor data directory (also settable in the app) |
-| `CURSOR_STATE_DB` | Point at a specific `state.vscdb` — aim it at a copy to test switching safely |
-| `CURSOR_APP_PATH` | Override where the Cursor application itself lives (also settable in the app) |
-| `NEXUS_CRSR_CREDENTIAL_FILE` | Point the CRSR credential file elsewhere. Nexus and the patched Cursor are separate processes, so it has to be set where both can see it (see [`docs/CRSR.md`](./docs/CRSR.md) §7) |
-
-### Where the data lives
-
-| | Data and logs | Cursor data directory |
-|---|---|---|
-| macOS | `~/Library/Application Support/com.roviix.nexus/`, `~/Library/Logs/com.roviix.nexus/` | `~/Library/Application Support/Cursor` |
-| Windows | `%APPDATA%\com.roviix.nexus\` and its `logs\` | `%APPDATA%\Cursor` |
-
-All credentials sit in `nexus.db` under the app data directory, in plaintext, not in the OS
-keychain. On macOS the directory is `0700` and the file is `0600`; on Windows no permissions are
-changed and protection relies on the default ACL of `%APPDATA%`. This is a deliberate trade-off,
-not an oversight — the reasoning is in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1.
-
-Whole-database moves go through `~/.roviix/backups`. To move accounts only, export from the accounts
-page into `~/.roviix/exports` and import on the other machine. **Export files contain plaintext
-credentials — delete them when you're done.**
-
-## Repository layout
-
-```
-.
-├── Cargo.toml                      # workspace
+nexus/
+├── Cargo.toml                  # Workspace configuration
 ├── crates/
-│   ├── nexus-core/                 # domain types / errors / ids / time (no IO)
-│   ├── nexus-store/                # SQLite (data + secrets) + migrations + activity log + settings
-│   ├── nexus-cursor/               # locating Cursor, reading/writing state.vscdb and machine IDs, process control
-│   ├── nexus-switcher/             # switch book, backups, switch orchestration
-│   ├── nexus-accounts/             # account pool, OAuth, token refresh, usage
-│   ├── nexus-chatgpt/              # ChatGPT subscriptions: login, refresh, Codex backend
-│   ├── nexus-grok/ nexus-grokbot/  # Grok accounts and Grok Bot quota
-│   ├── nexus-kiro/                 # Kiro accounts
-│   ├── nexus-zcode/                # ZCode (Zhipu GLM): credentials imported from the official client
-│   ├── nexus-qoder/                # Qoder accounts and chat protocol
-│   ├── nexus-gateway/              # the local gateway: dialect port, quota relay, providers, per-client routes, ledger
-│   ├── nexus-connect/              # one-click setup for Claude Code / Codex / OpenCode / Grok CLI
-│   ├── nexus-playground/           # playground thread and message storage
-│   ├── nexus-sand/                 # Sand patch engine (local + remote over SSH)
-│   └── nexus-crsr/                 # CRSR patch: native Agent panel on a crsr_ API key
-├── apps/desktop/
-│   ├── src-tauri/                  # Tauri commands, events, capabilities
-│   ├── src/                        # React frontend
-│   └── ui-preview/                 # browser-only UI preview with a mocked core
-├── packages/design-tokens/         # CSS variables
-├── scripts/                        # packaging, signing, release manifests
-└── docs/                           # ARCHITECTURE.md / SAND.md / CRSR.md
+│   ├── nexus-core/             # Core entities, error types, and utilities
+│   ├── nexus-store/            # Local SQLite storage, secret encryption, and migrations
+│   ├── nexus-gateway/          # Local HTTP gateway, dual-dialect translation & dispatching
+│   ├── nexus-mesh/             # Decentralized P2P reverse tunneling and pairing
+│   ├── nexus-connect/          # Client configuration injection, backup, and restore
+│   ├── nexus-accounts/         # Account pool lifecycle, quota tracking, and auto-relay
+│   └── nexus-*/                # Platform adapters (chatgpt, claude, kiro, grok, zcode, qoder...)
+├── apps/desktop/               # Tauri v2 + React desktop app source
+└── docs/                       # Technical architecture specs (ARCHITECTURE.md, MESH.md)
 ```
 
-**Dependencies only point downwards**, and `nexus-switcher` and `nexus-accounts` **do not depend on
-each other** — the switch book and the account pool are two independent modules, and the Cargo
-dependency graph enforces it. The only data path between them is one explicit copy inside the
-`accounts_add_to_switch_book` command.
+</details>
 
-## Releasing
+---
 
-Push a `v*` tag (for example `v0.5.0`, which must match the version in `Cargo.toml`,
-`package.json` and `tauri.conf.json`). [`release.yml`](./.github/workflows/release.yml) builds on
-macOS and Windows, produces SHA-256 / MD5 sums and the `latest.json` the updater reads, and publishes
-a GitHub Release. The update endpoint is
-`https://github.com/roviix/nexus/releases/latest/download/latest.json`.
+## ⚠️ Disclaimer
 
-Required GitHub configuration:
+- Nexus is intended solely for personal study, research, and legitimate multi-device workflow management.
+- This software connects to authorized user sessions or public client endpoints provided by third-party platforms. Users are responsible for complying with the relevant Terms of Service.
+- This project is not affiliated with, endorsed by, or sponsored by OpenAI, Anthropic, Cursor, xAI, AWS, or any related entity.
+- The software is provided "AS IS" under the MIT license, without warranty of any kind.
 
-| Name | Type | Notes |
-|---|---|---|
-| `TAURI_UPDATER_PUBLIC_KEY` | Variable | Updater public key (written into `tauri.conf.json`) |
-| `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Secret | Updater private key — **required** |
-| `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | Secret | Optional; without them macOS ships an ad-hoc-signed Preview (App Management survives restart) |
-| `WINDOWS_CERTIFICATE_BASE64` / `WINDOWS_CERTIFICATE_PASSWORD` | Secret | Optional; without them Windows ships an unsigned Preview |
-| `TAURI_UPDATER_ENDPOINT` | Variable | Optional; defaults to this repository's GitHub Releases |
+---
 
-With certificates for both platforms you get a **signed stable release** (eligible for auto-update);
-otherwise you get a **Preview** that can only be downloaded manually.
+## 📄 License
 
-See [CHANGELOG.md](./CHANGELOG.md) for what changed between versions.
-
-## Risks and disclaimer
-
-- Nexus calls each platform's **non-public client APIs** using your own subscription accounts. This
-  may violate the terms of service of those platforms, and your accounts may be rate-limited,
-  warned or banned. Assess that risk yourself, and **do not** use accounts you cannot afford to lose.
-- The Sand and CRSR patches modify Cursor's application files. They are idempotent, reversible and
-  guarded by a version check, but they are still modifications of third-party software, and you have
-  to reinstall after Cursor updates. Both occupy the same hook, so only one can be installed.
-- The CRSR channel bills against Cursor's **API key** pricing, which is a different ledger from your
-  subscription quota. Make sure you know what you are spending before enabling it.
-- This project is not affiliated with or endorsed by Cursor, OpenAI, xAI or Amazon.
-- The software is provided "as is", without warranty of any kind. See [LICENSE](./LICENSE).
-
-Other **deliberate** trade-offs (plaintext credentials, the gateway being reachable by other
-processes on the same machine) are listed in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §11.
-Please read it before filing an issue.
-
-## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) and the [Code of Conduct](./CODE_OF_CONDUCT.md).
-The existing code and documentation are predominantly in Chinese; contributions in either language
-are welcome, just don't mix the two within one paragraph. Report security issues privately as
-described in [SECURITY.md](./SECURITY.md).
-
-## License
-
-[MIT](./LICENSE) © 2026 Roviix
+Licensed under the [MIT License](./LICENSE). Stars and feedback are always welcome!

@@ -1,273 +1,170 @@
 <div align="center">
 
-<img src="apps/desktop/src-tauri/icons/128x128@2x.png" width="96" alt="Nexus" />
+<img src="apps/desktop/src-tauri/icons/128x128@2x.png" width="96" alt="Nexus Logo" />
 
 # Nexus
 
-**把你手里的 AI 订阅变成一个本机 OpenAI / Anthropic 兼容接口。**
+**一站式本地 AI 聚合网关与去中心化号池调度中枢**
 
-[![ci](https://github.com/roviix/nexus/actions/workflows/ci.yml/badge.svg)](https://github.com/roviix/nexus/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/roviix/nexus?include_prereleases&sort=semver)](https://github.com/roviix/nexus/releases)
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
+将你拥有的各类 AI 订阅号与 API 供应商，聚合为本机标准的 OpenAI 与 Anthropic 兼容端点。
 
-中文 · [English](./README.en.md)
+[![Release](https://img.shields.io/github/v/release/roviix/nexus?include_prereleases&sort=semver&style=flat-square)](https://github.com/roviix/nexus/releases)
+[![CI](https://github.com/roviix/nexus/actions/workflows/ci.yml/badge.svg?style=flat-square)](https://github.com/roviix/nexus/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](./LICENSE)
+![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows-lightgrey?style=flat-square)
+
+[**📥 立即下载最新版**](https://github.com/roviix/nexus/releases/latest) · **中文** · [English](./README.en.md)
+
+<br/>
+
+<a href="https://github.com/roviix/nexus/releases/latest">
+  <img src="docs/images/channels.png" width="850" alt="Nexus Channels & Mesh Dashboard" style="border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.25);" />
+</a>
 
 </div>
 
-Nexus 是一个 Rust + Tauri v2 桌面应用（macOS / Windows）。它在 `127.0.0.1` 上起一个本地网关，
-用你自己的 Cursor / ChatGPT / Grok / Kiro / ZCode / Qoder 账号做上游，对外暴露标准的
-`/v1/chat/completions`、`/v1/messages`、`/v1/responses`、`/v1/models`、`/v1/images/generations`。
-任何讲 OpenAI 或 Anthropic 方言的客户端——Claude Code、Codex CLI、OpenCode、官方 SDK、`curl`——
-都可以直接指到它上面，不需要再申请一把 API key。
+---
 
-所有数据都在你自己的机器上：账号、token、请求账本、备份。没有云端，没有账户体系，没有遥测。
+## 💡 为什么你需要 Nexus？
 
-![概览](docs/images/overview.png)
+如果你在日常开发中使用 **Claude Code**、**Cursor**、**Codex CLI** 或各类 AI 客户端，你一定遇到过这些痛点：
 
-> 架构、关键机制与那些有意为之的取舍，见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)；
-> 两条 Cursor 补丁通道的决策记录见 [`docs/SAND.md`](./docs/SAND.md) 与
-> [`docs/CRSR.md`](./docs/CRSR.md)。
+- 💸 **API Key 昂贵且容易风控**：明明手头有 ChatGPT Plus、Claude Pro、Kiro 等网页端/官方订阅，却无法直接在本地 CLI 工具中使用；
+- 🛑 **单账号额度频繁受限 (Rate Limit / 429)**：写代码到关键时刻遇到额度耗尽，不得不停下工作手动换号，极大打断心流；
+- ⚙️ **客户端配置极其繁琐**：每个 CLI 工具的配置文件位置、格式（JSON / TOML / 环境变量）各不相同，修改稍有不慎就导致报错；
+- 🌐 **跨设备与好友共享困难**：想把公司电脑或空闲的账号额度借给家里电脑或团队伙伴，却受限于局域网和繁琐的代理设置。
 
-## 能做什么
+👉 **Nexus 为解决这些问题而生**。它在你本地启动一个标准 OpenAI / Anthropic 兼容网关，把多个账号聚合为一个超级管道，自动接力轮转，还支持端端加密的去中心化 P2P 共享（Mesh）。
 
-### 本地网关（主功能）
+---
 
-- **一个端口，四种方言。** OpenAI Chat Completions、Anthropic Messages（含 `count_tokens`）、
-  OpenAI Responses、OpenAI Images。入站统一解析成一份中间表示再桥接到上游，流式 SSE 原样支持。
-- **多平台上游。** Cursor（`aiserver.v1.InferenceService/Stream`）、ChatGPT 订阅号
-  （`chatgpt.com/backend-api/codex`）、Grok、Kiro、ZCode（智谱 GLM 编码套餐）、Qoder。
-  模型目录（`/v1/models`）按上游能力自动汇总。
-- **也能接 API Key 供应商。** DeepSeek、Kimi、智谱、OpenRouter、硅基流动或任意 OpenAI / Anthropic
-  兼容地址，是网关里的一条通道 `provider/`。同一个模型几家都有时按顺序接力：钥匙被拒、余额不足、
-  限流、连不上就换下一家。客户端和供应商协议一致时原样透传，`cache_control`、`thinking` 不丢。
-- **通道写在模型名里。** 目录主键是 `{通道}/{模型}`（`cursor/claude-opus-5`、`chatgpt/gpt-5`），
-  带前缀就强制走那条通道；不带前缀的走**你自己设的默认通道**。请求落到哪条号池是看得见、
-  改得动的，不靠网关猜。一键接入的客户端另有自己的路由（见下）。
-- **额度接力，不是负载均衡。** 一直用当前号，额度到线自动切到下一个；会话粘性天然成立，
-  换号频率极低。
-- **模型名映射。** Claude Code 发 `claude-sonnet-4-5`、Codex 发 `gpt-5`，网关把它们对到上游认识的
-  名字；也可以强制所有请求走某个模型。
-- **请求账本。** 每次请求记账号 / 模型 / token / 耗时，概览页看本地用量。网关页另有「最近请求」：
-  每次尝试落到哪条通道哪个号、失败时上游的原话，连口令不对、号池空这种没进号池的也在。
+## ✨ 核心特性
 
-![本地网关](docs/images/gateway.png)
+### 1. 🔀 统一双协议网关 (Unified Gateway)
+一个本地端口（默认 `8787`），同时转译 **OpenAI**（`/v1/chat/completions`）与 **Anthropic**（`/v1/messages`）两种协议标准。支持流式打字机 SSE 输出、Thinking 深度思考 Tokens、Prompt 缓存与 Tool Calls。
 
-默认端口 `8787`，默认关闭；开启后：
+### 2. 🔄 智能号池与额度无感接力 (Quota Auto-Relay)
+支持多平台多账号统一调度。当某个账号额度耗尽或遭遇限流时，Nexus 自动切入同一渠道的下一个可用账号，告别手动换号；长会话自动保持账号粘性，保障上下文连贯。
+
+<div align="center">
+  <img src="docs/images/accounts.png" width="800" alt="Nexus Accounts" style="border-radius: 8px;" />
+</div>
+
+### 3. 🌐 Nexus Mesh 去中心化对等共享 (P2P Mesh Network)
+通过端端加密反向隧道，一键将本地多余通道“出借”给自己的多台设备（如家庭台式机）或团队好友。
+- **零网络门槛**：6 位动态配对码建立安全直连，无需公网 IP，无需配置内网穿透与路由器端口映射；
+- **本地所有者保护**：本地发起请求时自动启动抢占保护机制，永远优先保障本机使用体验，外部分享绝不卡顿。
+
+### 4. ⚡ 客户端一键无损接入 (One-Click Client Injection)
+告别繁琐的手动编辑配置文件。Nexus 深度适配主流开发工具，改动前自动创建完整快照备份，随时一键还原：
+- **Claude Code**：自动配置 `~/.claude/settings.json`，跳过登录引导，支持 Sonnet / Opus / Haiku / Fable 四档分流；
+- **Codex CLI**：自动写入 `~/.codex/config.toml`；
+- **OpenCode** / **Grok CLI** / **Cursor IDE** 等开箱即用。
+
+<div align="center">
+  <img src="docs/images/connect.png" width="800" alt="Nexus Connect" style="border-radius: 8px;" />
+</div>
+
+### 5. 🔒 100% 本地优先与隐私安全 (Local-First)
+所有账号凭据、Token、请求日志与配置均严格保存在你本地的 SQLite 数据库中。**没有中心服务器、没有云端账户、零数据遥测**，你的任何敏感代码与会话记录绝不经过第三方服务器。
+
+---
+
+## 🧩 支持渠道与客户端生态
+
+| 支持的上游账号 / 平台 | 接入方式 | 适用场景与能力 |
+| :--- | :--- | :--- |
+| **ChatGPT** | OAuth 浏览器授权 / Session 导入 | 原生 Codex CLI 接入，支持 o1 / o3 / gpt-5 等全系模型 |
+| **Claude** | 网页 OAuth 授权 / 凭据导入 | 完整 Anthropic Messages 协议，支持 Thinking 思考流式输出 |
+| **Kiro** | AWS SSO 授权 / CLI Token 导入 | 聚合全系主流顶级编程模型，极高稳定性与并发能力 |
+| **Grok** | xAI 账号授权 / Refresh Token | 原生支持超长上下文窗口与深度推理分析 |
+| **智谱 ZCode** | 自动提取官方客户端凭证 / API Key | 智谱 GLM 编程专项模型，国内直连低延迟 |
+| **Qoder** | PAT 个人访问令牌导入 | 区分国际版与国内版独立高速专线 |
+| **Google Antigravity** | 授权凭证对接 | Google 反重力开发系列模型调度 |
+| **API 供应商 (Provider)** | 填入 Base URL + API Key | 支持 DeepSeek、Kimi、OpenRouter、硅基流动等任意兼容地址 |
+
+**支持连接的下游**：Claude Code CLI、Codex CLI、OpenCode、Cursor、Chatbox、NextChat、官方 Python/Node.js SDK 及任意支持自定义 Base URL 的应用。
+
+---
+
+## 🚀 3 步快速上手
+
+### 第 1 步：下载并安装
+前往 [GitHub Releases](https://github.com/roviix/nexus/releases/latest) 下载适合你系统的安装包：
+- **macOS**：下载 `.dmg` 并拖入 Applications（原生支持 Apple Silicon 与 Intel 芯片）
+- **Windows**：下载 `.exe` 安装程序一键安装
+
+### 第 2 步：绑定账号
+启动 Nexus，在 **「账号」** 页面点击对应平台卡片，通过浏览器一键登录或粘贴 Token 导入。
+
+### 第 3 步：一键连接客户端
+在 **「接入」** 页面找到你正在使用的客户端（如 Claude Code），点击 **「一键接入」**。打开你的终端，直接尽情写代码！
+
+你也可以通过任何标准 HTTP 客户端直接调用本机网关：
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer $NEXUS_GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}'
+  -d '{
+    "model": "kiro/claude-sonnet-4.5",
+    "messages": [{"role": "user", "content": "你好，Nexus！"}]
+  }'
 ```
 
-### 一键接入
+---
 
-「接入」页直接改客户端的配置文件，把 Claude Code（`~/.claude/settings.json`）、
-Codex CLI（`~/.codex/config.toml`）、OpenCode、Grok CLI 指到本地网关上；改之前先备份，一键可还原。
+<details>
+<summary>🛠️ 开发者指南：源码构建与架构文档（点击展开）</summary>
 
-- **每个客户端一条自己的路由。** Claude Code 走 Cursor、Codex 走 ChatGPT 可以同时成立。配置里写的是
-  这个客户端专属的地址（`/client/claude`），之后在接入页换通道、换模型，下一条请求就生效，
-  不用重写配置、不用重启客户端。
-- **Claude Code 四档分开配。** Sonnet / Opus / Haiku / Fable 各指一个模型，可以跨通道；`/model`
-  菜单里显示真实模型名。
-- **写完就能用。** 网关没开会顺手开起来并设成随 Nexus 启动；Claude Code 跳过首次登录引导。
-  「测一下」按客户端自己的路径发一条真请求，回报落到哪条通道、哪个号。
-- **看得出哪里不对。** 配置里的口令或端口和网关对不上、shell 里有 `ANTHROPIC_BASE_URL` 这类会盖过
-  配置文件的环境变量，页上直接说出来。
+### 环境要求
+- **Node.js** >= 20
+- **Rust** stable (推荐通过 `rustup` 安装)
+- **Tauri v2** 开发环境要求（详见 [Tauri Prerequisites](https://v2.tauri.app/start/prerequisites/)）
 
-![接入](docs/images/connect.png)
-
-### 账号池
-
-- 添加 Cursor / ChatGPT / Grok / Kiro 账号：OAuth 走系统浏览器登录，应用后台收 token；也可以粘
-  refresh token、`crsr_` API Key、Codex session JSON 批量导入（一次贴多个，格式自动认）。
-- ZCode 账号没有单独的授权流程：在官方 ZCode 客户端里登录一次，Nexus 直接读它留下的凭证
-  （`~/.zcode/v2/credentials.json`，AES-256-GCM）。一份凭证里的个人版 / 团队版是两条独立的号——
-  额度是分开的。也可以自己贴一把 `{apiKeyId}.{apiKeySecret}`。
-- Qoder 账号贴 PAT 导入（一行一个），国际版 / 国内版各走各的网关。
-- 查看订阅、额度、重置时间；到期 / 封禁 / 额度耗尽自动标记。
-- 额度和账单分两张卡：一张是还剩多少、什么时候重置，另一张是标价、券、下次扣多少、历史发票。
-  两者不是一个口径，不叠成一个数。
-- 凭证存在本地 SQLite 里，不进系统钥匙串，也不上传任何地方。macOS 上目录 / 文件收为
-  `0700` / `0600`；Windows 上靠 `%APPDATA%` 的默认 ACL。
-
-![账号](docs/images/accounts.png)
-
-### Cursor 切号
-
-不逆向、不 patch、Cursor 升级不失效：直接写 Cursor 自己的登录态库（`state.vscdb`），一号一套
-专属机器码，切之前自动备份、可还原。
-
-![切号](docs/images/switcher.png)
-
-### 游乐场
-
-应用内的多轮对话工作台，直接打到本地网关；用来验证账号可用、对比模型输出。
-
-![游乐场](docs/images/playground.png)
-
-### Cursor 面板：由谁付账（可选，进阶）
-
-Cursor IDE 内置的 Agent 面板走的是 `agent.v1` 到 api5，客户端没有任何指向 127.0.0.1 的口子——
-它**不经过本地网关**。要让面板换个人付账只有打补丁这一条路，「Cursor 面板」页把它做成三选一：
-
-- **原生**：不改 Cursor。面板用 IDE 里登着的号、扣它自己的额度；换号用「切号」。
-- **CRSR**（[`docs/CRSR.md`](./docs/CRSR.md)）：不改路由，只把面板请求的鉴权头换成某个账号
-  `crsr_` User API Key 兑出来的票据——面板还是原生的 `agent.v1.AgentService/Run`，只是换了个人
-  付账。票据续期由补丁自己完成，关掉 Nexus 也不会在写代码写到一半时突然 401。
-- **Sand**（[`docs/SAND.md`](./docs/SAND.md)）：把面板改道到 Cursor 内部的 sand 通道，用 Grok Bot
-  的额度付账。改动多、跟 Cursor 版本硬绑；支持通过 SSH 在远程开发机上安装。
-
-两条补丁都会**修改 Cursor 的应用文件**，占同一个挂点、只能装一条。装之前请先读对应文档与下方的
-「风险与免责」。
-
-## 安装
-
-到 [Releases](https://github.com/roviix/nexus/releases) 下载对应平台的安装包
-（macOS `.dmg`、Windows `.exe`）。已签名的正式版支持应用内自动更新；未签名的 Preview 只能
-手工下载，macOS 上首次打开需要在「系统设置 → 隐私与安全性」里放行。
-
-## 从源码构建
-
-依赖：Rust stable、Node.js 20+、Tauri v2 的
-[平台前置条件](https://v2.tauri.app/start/prerequisites/)。
-
+### 本地运行与打包
 ```bash
-git clone git@github.com:roviix/nexus.git
+# 克隆仓库
+git clone https://github.com/roviix/nexus.git
 cd nexus/apps/desktop
+
+# 安装依赖并启动本地开发 (含热重载)
 npm ci
-npm run dev            # Vite + Tauri，热重载
-npm run tauri build    # 出当前平台的安装包（未签名）
+npm run dev
+
+# 打包当前平台安装包
+npm run tauri build
 ```
 
-只想看界面、不想装 Rust 工具链的话，`ui-preview` 把 Tauri 那层换成假实现，纯浏览器就能跑：
-
-```bash
-cd apps/desktop && npm run preview:ui   # http://127.0.0.1:1500/?route=overview
+### 仓库架构
 ```
-
-也可以用脚本，只打当前平台该打的那种：
-
-```bash
-scripts/build-dmg.sh                                              # macOS，出 dmg（本机证书签名）
-scripts/build-dmg.sh --install                                    # macOS，打完直接装进 /Applications
-powershell -ExecutionPolicy Bypass -File scripts\build-windows.ps1 # Windows，出 nsis
-```
-
-macOS 这条**会签名**（`scripts/macos-signing-identity.sh` 挑本机钥匙串里的证书，没有就造一张
-自签的）：不签的包拿不到系统「App 管理」权限，Sand 补丁装不上；签名不等于公证，包只在本机可用。
-
-工程检查（CI 跑的就是这几条，macOS/Linux 与 Windows 都要过）：
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cd apps/desktop && npm run typecheck && npm test
-node scripts/test-package-release.mjs
-```
-
-平台分支（`tasklist` / `taskkill`、`%APPDATA%` 路径、只读属性）在 Linux 上一行都编不到，
-所以 CI 有一个单独的 `check-windows` job 跑同样的 clippy 与测试。
-
-### 排障用的环境变量
-
-| 变量 | 作用 |
-|---|---|
-| `CURSOR_USER_DIR` | 覆盖 Cursor 数据目录（也可在应用「设置」里改） |
-| `CURSOR_STATE_DB` | 直接指定 `state.vscdb`，指到副本上可以安全地试切号 |
-| `CURSOR_APP_PATH` | 覆盖 Cursor 应用本体位置（也可在应用「设置」里改） |
-| `NEXUS_CRSR_CREDENTIAL_FILE` | 把 CRSR 通道的凭证文件指到别处。Nexus 与被打补丁的 Cursor 是两个进程，要设在两边都看得见的地方才有效（见 [`docs/CRSR.md`](./docs/CRSR.md) §7） |
-
-### 数据在哪
-
-| | 数据与日志 | Cursor 数据目录 |
-|---|---|---|
-| macOS | `~/Library/Application Support/com.roviix.nexus/`、`~/Library/Logs/com.roviix.nexus/` | `~/Library/Application Support/Cursor` |
-| Windows | `%APPDATA%\com.roviix.nexus\`、同目录 `logs\` | `%APPDATA%\Cursor` |
-
-全部凭证都在应用数据目录下的 `nexus.db` 里，明文，不进系统钥匙串；macOS 上目录收为 `0700`、
-文件收为 `0600`，Windows 上不改文件权限，靠 `%APPDATA%` 的默认 ACL（取舍与理由见
-[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §9.1）。整库搬家走
-`~/.roviix/backups`；只搬账号可在账号页导出到 `~/.roviix/exports`，再在另一台机器「批量添加」
-中导入。导出文件含明文凭证，用完就删。
-
-## 仓库结构
-
-```
-.
-├── Cargo.toml                      # workspace
+nexus/
+├── Cargo.toml                  # Workspace 配置
 ├── crates/
-│   ├── nexus-core/                 # 领域类型 / 错误 / id / 时间（无 IO）
-│   ├── nexus-store/                # SQLite（数据 + 秘密）+ 迁移 + 活动日志 + 设置
-│   ├── nexus-cursor/               # 定位、读写 state.vscdb 与机器码、进程控制
-│   ├── nexus-switcher/             # 切号本、备份、切号编排
-│   ├── nexus-accounts/             # 账号池、OAuth、刷 token、用量
-│   ├── nexus-chatgpt/              # ChatGPT 订阅号：登录、刷 token、Codex 后端
-│   ├── nexus-grok/ nexus-grokbot/  # Grok 账号与 Grok Bot 额度
-│   ├── nexus-kiro/                 # Kiro 账号
-│   ├── nexus-zcode/                # ZCode（智谱 GLM）账号：从官方客户端导入凭证
-│   ├── nexus-qoder/                # Qoder 账号与聊天协议
-│   ├── nexus-gateway/              # 本地网关：方言口 + 额度接力 + 供应商通道 + 按客户端路由 + 账本
-│   ├── nexus-connect/              # 一键接入：改 Claude Code / Codex / OpenCode / Grok CLI 配置
-│   ├── nexus-playground/           # 游乐场的线程 / 消息存储
-│   ├── nexus-sand/                 # Sand 补丁引擎（本机 + 远程 SSH）
-│   └── nexus-crsr/                 # CRSR 补丁：原生 Agent 面板走 crsr_ API Key
-├── apps/desktop/
-│   ├── src-tauri/                  # Tauri 命令、事件、capabilities
-│   ├── src/                        # React 前端
-│   └── ui-preview/                 # 不起 Rust 也能跑的 UI 预览（mock core）
-├── packages/design-tokens/         # CSS 变量
-├── scripts/                        # 打包、签名、发布清单
-└── docs/                           # ARCHITECTURE.md / SAND.md / CRSR.md
+│   ├── nexus-core/             # 领域实体、全局错误与时间工具
+│   ├── nexus-store/            # 本地 SQLite 存储、凭证加密与状态迁移
+│   ├── nexus-gateway/          # 本地统一网关服务、协议转译与路由分流
+│   ├── nexus-mesh/             # 去中心化 P2P 共享网络与反向加密隧道
+│   ├── nexus-connect/          # 客户端配置读写、自动注入与快照备份
+│   ├── nexus-accounts/         # 账号池调度逻辑、额度计算与生命周期管理
+│   └── nexus-*/                # 各平台适配驱动 (chatgpt, claude, kiro, grok, zcode, qoder...)
+├── apps/desktop/               # Tauri v2 + React 桌面客户端源码
+└── docs/                       # 架构设计深入文档 (ARCHITECTURE.md, MESH.md)
 ```
 
-**依赖只能向下**，且 `nexus-switcher` 与 `nexus-accounts` **互不依赖**——切号本与账号池是两个
-独立模块，这条约束由 Cargo 依赖图强制执行。两者之间唯一的数据通路是
-`accounts_add_to_switch_book` 命令里那一次显式拷贝。
+</details>
 
-## 发布
+---
 
-推一个 `v*` 标签（如 `v0.5.0`，须与 `Cargo.toml` / `package.json` / `tauri.conf.json` 里的版本一致），
-[`release.yml`](./.github/workflows/release.yml) 会在 macOS 与 Windows 上打包、生成 SHA-256 / MD5 与
-updater 用的 `latest.json`，并发到 GitHub Releases。自动更新端点固定为
-`https://github.com/roviix/nexus/releases/latest/download/latest.json`。
+## ⚠️ 免责声明 (Disclaimer)
 
-需要的 GitHub 配置：
+- Nexus 仅供个人合法学习、研究与个人多设备统一工作流调度使用。
+- 本工具通过调用用户自身具备合法授权的账户会话或开放客户端接口对外供能。用户需严格遵守相关平台的服务条款（Terms of Service），请勿将其用于高频滥用或未经授权的商业转售。
+- 本项目与 OpenAI、Anthropic、Cursor、xAI、AWS 等公司无任何商业隶属或背书关系。
+- 软件基于 MIT 许可证按“现状”分发，作者不对使用过程中产生的账号状态变动或任何直接/间接损失承担责任。
 
-| 名称 | 类型 | 说明 |
-|---|---|---|
-| `TAURI_UPDATER_PUBLIC_KEY` | Variable | updater 公钥（写进 `tauri.conf.json`） |
-| `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Secret | updater 私钥，**必需** |
-| `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | Secret | 可选；缺则 macOS 出 ad-hoc 签名 Preview（App 管理能跨重启记住） |
-| `WINDOWS_CERTIFICATE_BASE64` / `WINDOWS_CERTIFICATE_PASSWORD` | Secret | 可选；缺则 Windows 出未签名 Preview |
-| `TAURI_UPDATER_ENDPOINT` | Variable | 可选；不填就用本仓库的 GitHub Releases |
+---
 
-两平台证书齐全时发**签名正式版**（进入自动更新）；否则发 **Preview**（只能手工下载）。
+## 📄 开源协议
 
-版本间的变化见 [CHANGELOG.md](./CHANGELOG.md)。
-
-## 风险与免责
-
-- Nexus 用你自己的订阅账号调用各平台的**非公开客户端接口**。这可能违反相关平台的服务条款，
-  账号有被限流、警告或封禁的风险。请自行评估，**不要**用在你不能承受损失的账号上。
-- Sand 与 CRSR 补丁会修改 Cursor 的应用文件。它们是幂等、可逆、带版本护栏的，但仍属于对第三方
-  软件的改动；Cursor 升级后需要重新安装补丁。两条占同一挂点，只能装一条。
-- CRSR 通道走的是 Cursor **API Key 的计费口径**，和订阅额度不是同一本账。用之前先确认你清楚
-  自己在花什么。
-- 本项目与 Cursor、OpenAI、xAI、Amazon 无任何关联，不受其背书。
-- 软件按「原样」提供，不附带任何担保，详见 [LICENSE](./LICENSE)。
-
-其余**有意为之**的取舍（凭证明文、网关对同机进程开放等）列在
-[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §11，报 issue 前请先读一遍。
-
-## 参与
-
-见 [CONTRIBUTING.md](./CONTRIBUTING.md) 与 [行为准则](./CODE_OF_CONDUCT.md)。
-安全问题请按 [SECURITY.md](./SECURITY.md) 私下报告。
-
-## 许可
-
-[MIT](./LICENSE) © 2026 Roviix
+本项目采用 [MIT 许可证](./LICENSE) 开源。欢迎提交 Issue 与 Star 支持！

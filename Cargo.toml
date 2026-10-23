@@ -12,17 +12,20 @@ members = [
     "crates/nexus-zcode",
     "crates/nexus-qoder",
     "crates/nexus-claude",
+    "crates/nexus-antigravity",
+    "crates/nexus-gemini-web",
     "crates/nexus-sand",
     "crates/nexus-crsr",
     "crates/nexus-grokbot",
     "crates/nexus-gateway",
     "crates/nexus-playground",
     "crates/nexus-connect",
+    "crates/nexus-mesh",
     "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 # Claude 通道直接用 boring2（BoringSSL）写 HTTP/1.1。wreq 0.15 写不出头的大小写。
 rust-version = "1.85"
@@ -41,15 +44,19 @@ nexus-kiro = { path = "crates/nexus-kiro" }
 nexus-zcode = { path = "crates/nexus-zcode" }
 nexus-qoder = { path = "crates/nexus-qoder" }
 nexus-claude = { path = "crates/nexus-claude" }
+nexus-antigravity = { path = "crates/nexus-antigravity" }
+nexus-gemini-web = { path = "crates/nexus-gemini-web" }
 nexus-sand = { path = "crates/nexus-sand" }
 nexus-crsr = { path = "crates/nexus-crsr" }
 nexus-grokbot = { path = "crates/nexus-grokbot" }
 nexus-gateway = { path = "crates/nexus-gateway" }
 nexus-playground = { path = "crates/nexus-playground" }
 nexus-connect = { path = "crates/nexus-connect" }
+nexus-mesh = { path = "crates/nexus-mesh" }
+bytes = "1"
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -71,7 +78,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 # `rustls-tls`）：公司网络普遍用代理重签 TLS，那张自签 CA 只装在系统证书库里。
 # 认死 webpki 的话，一进这类网络用量刷新 / OAuth 轮询会全线握手失败，
 # 而且报错是「证书无效」这种用户完全无从下手的形态。Windows 上尤其常见。
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "http2", "gzip", "cookies"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "http2", "gzip", "cookies", "stream"] }
 sha2 = "0.10"
 base64 = "0.23"
 # ZCode 官方客户端的凭证文件是 AES-256-GCM，V4 请求签名还要 HKDF / HMAC / Ed25519。

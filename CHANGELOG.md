@@ -8,6 +8,94 @@
 
 ## [未发布]
 
+### 新增
+
+- **全面支持 Google 反重力 (Google Antigravity / AGY) 生产级接入。**
+  - **全链路账号管理**：支持 Google OAuth 2.0 PKCE 浏览器一键授权（本地 51121 端口回跳）、完整 URL 回贴降级、以 `1//` 开头的原生 Refresh Token 导入、第三方 JSON 配置解析以及本机已登录环境 (`~/.gemini/antigravity`) 自动扫描。
+  - **凭证安全与并发防踩踏**：内置 Single-Flight 异步续期互斥锁 (`refresh_lock`) 与提前 5 分钟换票机制，杜绝并发请求导致的 Google 400 `invalid_grant` 废号问题；凭证加密落盘 SQLite `secrets` 表，IPC 边界零明文外泄。
+  - **网关通道与模型家族映射**：接入 `antigravity` 网关通道与 `agy/`、`google/` 前缀别名，支持 `gemini-3.1-pro`、`gemini-3.8-flash`、`gemini-2.5-pro`、`claude-3-7-sonnet` 等模型。
+  - **确定性缓存保持**：实现基于首轮对话哈希的确定性 Session ID 派生 (`derive_session_id`)，强力保护 Google 服务端 Prompt Caching / KV-Cache 命中率，大幅优化首字延迟与额度消耗。
+  - **完整协议中转**：支持多轮对话上下文、顶层 `systemInstruction`、双向工具调用 (Function Calling / Tool Use / JSON 智能反序列化)、原生 `thought: true` 与流式 `<thinking>` XML 标签状态机双重剥离。
+  - **GCP 租户自动探测与额度接力**：自动调用 `loadCodeAssist` 探测绑定的 GCP Project ID 与套餐 Tier；并在触发 HTTP 429 配额耗尽时严格遵循「额度接力，不是负载均衡」自动无感切号。
+  - **精雕桌面端卡片体验**：桌面端上线专属 Google Antigravity 账号管理网格卡片 (`AntigravityAccountCard`)，清晰展示 GCP 项目 ID、Token 有效倒计时、模型特性胶囊与一键健康/配额刷新。
+
+## [0.9.0] — 2026-10-01
+
+### 变更
+
+- **Cursor 标准对话中转暂时停用，不再拿整池账号反复撞无法承载标准请求的 Stream。** 2026-10-01
+  对 16 个 session、4 个 `crsr_` 兑换票和 fresh `grok_bot` 做了真实矩阵，并重跑私有版最后成功的
+  H1/H2 极简探针：外部无状态请求都在首帧前被拒，`RunInference` 也明确未给账号开放。官方
+  `sendPrompt + SSE` 对新鲜唯一短语确实返回成功，user/reply 也共用同一 requestId；进一步取证却确认
+  当前 agent 全是 `harness=temporal`，消息直接 signal 到云端 `grokBotTurnWorkflow`，没有进入 pod host
+  的 `InferenceService/Stream`。显式请求创建临时 BOX agent 也被服务强制成 Temporal，探针随后成功删除。
+  因此官方 Agent 成功不能再当作本地 Stream 成功证据，更不能冒充 OpenAI / Anthropic 标准接口。
+  生产网关把 Cursor 保留成可寻址的墓碑通道：旧默认设置和 `cursor/…` 路由不迁移、不静默改投别家；
+  非流式请求在取号前返回 HTTP 503，流式请求以 HTTP 200 建立 SSE 后返回 `code=503` 的方言错误帧
+  并完整终结。对话模型从目录隐藏，号池也不会再被错误标成逐号失效。账号管理、切号和 CRSR 不受影响；
+  底层协议与真机探针保留。
+
+- **Cursor/Sand 探针跟上当前 0.65 runtime 与 3.21.13 wire schema。** 客户端版本不再停在 0.44；
+  `InferenceStreamRequest` 补齐 parent/root request、subagent、compaction、turn unit、originating flow、
+  routing reason 等 tags 13–21，core message 补齐 summary/clear/fallback tags 13–15。
+
+- **Cursor 低层协议保留上游思考凭据并在工具循环里回传。** 以前完成结果里只有正文哈希占位，
+  客户端带回来的思考块也不往上游送；现在流内及时给出的真签名和加密思考会转给客户端，完成时
+  才补到的凭据留在完成结果里。客户端带回来的再按 Cursor 官方客户端的做法放进
+  `reasoning_parts`。只回放当前这一轮、只回放带签名或密文的，换模型、换通道之后的旧签名
+  不会被送上去。生产 Cursor 标准聊天仍由本版本的墓碑通道拦截，这套低层实现留给复测恢复。
+
+### 修复
+
+- **Cursor 墓碑默认通道不再被同名 API Key 供应商抢占。** 默认仍保存为 Cursor 时，裸模型也先命中
+  平台级墓碑；只有显式 `provider/…` 才会绕开它，避免上下文静默外送和意外计费。短路仍发生在取号前。
+- **Sand Direct 升到 0.65 后不再被旧凭证文件里的 `clientVersion=0.44.0` 拉回旧身份。** 当前注入块固定
+  使用与自身版本一致的 0.65 headers；旧 0.44 Box/Direct 完整块仍可原位迁移并被任一模式卸载。
+- **Claude Code 走 Cursor 通道时上下文占用不再被算成两倍。** Cursor 报的输入 token 已经含缓存读写，
+  原样写进 Anthropic 的 `input_tokens` 后，Claude Code 再加一遍缓存，上下文没到一半就自动压缩。
+  现在 Anthropic 方言只报没命中缓存的那部分；OpenAI 两种方言照旧报总数。账本记的数不变。
+- **工具结果里的图片走 Cursor 通道时不再被丢掉。** 截图、读图这类工具返回的图按官方客户端的形状
+  放进 `experimental_content`，跟着各自的结果走，正文照旧带上。
+- **Kiro 通道终于真的出字。** 2026-10-01 用本机 KIRO POWER 订阅对真上游逐条打下来：Amazon Q 把
+  eventstream 响应标成 `content-type: application/json`，而网关按 content-type 分流，于是整条流被
+  当成 JSON 正文解析——上游一切正常、HTTP 200、不报任何错，客户端一个字都收不到。现在改成看响应体
+  的头几个字节（帧以 4 字节大端总长开头，JSON 以 `{` / `[` 开头），content-type 只当提示。顺带修掉
+  另一个会吞掉短回答的问题：整段响应落在第一截里时，原来先拉下一截再解析，于是那一截被整段漏掉。
+- **Kiro 的工具约束不再只靠模型自觉。** `tool_choice` 仍用提示词转达（Amazon Q 没有这个字段），
+  但提示现在贴在当轮消息末尾，不再埋在四千多 token 之前；也不再写成会触发上游隐藏指令防护的
+  `[INSTRUCTION: …]`。返回端另有硬边界：`none` 不会从正文 `<invoke>` 恢复调用，指定工具时
+  其它工具会被拦截，`required` 只回文本会明确报上游违约且不罚账号。
+- **Kiro 的模型清单不再有点下去必报错的选项。** 表里的名字这次是逐个对真上游打过的，上游回
+  `INVALID_MODEL_ID` 的三个（`claude-sonnet-4.8`、`claude-fable-5`、`claude-opus-4.1`）去掉了，
+  剩下 13 个全部确认可用。上下文窗口和思考能力判定里相应的条目一并清掉。
+- **同一个 Kiro 号不会再在号池里占两格。** 旧版把社交登录记在所有 Google / GitHub 号共用的
+  `profileArn` 上。用账号管理器切号时 refresh token 会被轮换，于是再导入同一个号时既认不回旧行
+  （token 对不上）、旧行又还是可用状态（不该顶掉），结果另起一行：同一个号两格，旧那格带着一把
+  过期凭证、邮箱和套餐全空。现在导入前会先拿旧行自己的凭证问一次额度接口、把它改记到真实用户
+  名下；若该用户的 canonical 行已经存在，就只迁移用量与缺失的 profile、保留 canonical 凭证并删除
+  旧行，同一个人最终只占一格。
+- **Kiro 账号页不再在后台偷偷续期。** 打开页面只读本地快照；套餐与额度改为点卡片刷新按钮时
+  主动查询，并明确提示 token 临期时可能同时续期。这样从 Kiro Account Manager 切进来的社交号
+  不会因为浏览账号页就被 Nexus 轮换 refresh token、把官方 Kiro IDE 的登录态挤掉。
+- **Kiro 的 reasoning 档位与环境信息收紧。** OpenAI Chat 的 `reasoning_effort` 和 Responses 的
+  `reasoning.effort` 保留原始 low / medium / high / xhigh，`none` 能显式关闭；不再把 high 先换成
+  固定 16k、又误降成 medium。出站 `envState` 不再上传 Nexus 进程的绝对 cwd（那既不是调用客户端
+  的目录，还会泄露用户名和项目路径），没有可信客户端目录时只发 `.`。
+- **Kiro 图片超限不再拿 400 硬撞上游。** 大 GIF 取静态首帧压成 JPEG；解码失败、或压到 256px
+  仍超过字段预算的图改成明确的省略说明。小图和可正常压缩的 PNG/JPEG/WebP 行为不变。
+- **未签名 Preview 不再混进稳定自动更新。** 两个平台代码签名不齐时，GitHub Release 明确标成
+  prerelease、`latest=false`，打包器不生成 `latest.json`；只有签名正式版才成为 Latest 并进入
+  应用内更新。预览安装包与 updater 归档仍保留，供手工下载和排障。
+
+### 新增
+
+- **Kiro 有了真上游探针。** `cargo run -p nexus-gateway --example kiro_matrix`：`status` 看账号与
+  token 有效期、`usage` 看套餐和额度、`profiles` 看企业 profile、`models` 把模型表逐个打一遍、
+  `import` 复现「库里已有共用 ARN 旧行」再导入、`raw` 直接看上游回的字节、`matrix` 走网关真正的
+  出站路径逐条判 PASS / FAIL / LIMIT（上游不支持的单独标出来，不混进失败）。单元测试只能证明
+  我们发出去的 JSON 是我们以为的样子，证明不了上游认不认——这半边以前是空的，Kiro 不出字才会
+  藏到现在。和 Cursor 的 `live_matrix` 一样要 `NEXUS_GATEWAY_PROBE=1`，默认不碰 refresh token。
+
 ## [0.8.0] — 2026-09-27
 
 ### 新增
@@ -496,10 +584,15 @@ Cursor，下一次续期就会掉登录，而这类号没密码、接不了验�
 
 - 第一个能装的包：切号、账号池、本地网关、游乐场、接入向导、Sand 补丁的首个完整形态。
 
-[未发布]: https://github.com/roviix/nexus/compare/v0.7.5...HEAD
+[未发布]: https://github.com/roviix/nexus/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/roviix/nexus/releases/tag/v0.9.0
+[0.8.0]: https://github.com/roviix/nexus/releases/tag/v0.8.0
+[0.7.6]: https://github.com/roviix/nexus/releases/tag/v0.7.6
 [0.7.5]: https://github.com/roviix/nexus/releases/tag/v0.7.5
 [0.7.4]: https://github.com/roviix/nexus/releases/tag/v0.7.4
 [0.7.3]: https://github.com/roviix/nexus/releases/tag/v0.7.3
+[0.7.2]: https://github.com/roviix/nexus/releases/tag/v0.7.2
+[0.7.1]: https://github.com/roviix/nexus/releases/tag/v0.7.1
 [0.7.0]: https://github.com/roviix/nexus/releases/tag/v0.7.0
 [0.6.6]: https://github.com/roviix/nexus/releases/tag/v0.6.6
 [0.6.5]: https://github.com/roviix/nexus/releases/tag/v0.6.5

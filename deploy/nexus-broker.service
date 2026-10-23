@@ -1,0 +1,21 @@
+[Unit]
+Description=Nexus Mesh Cloud Broker Coordinator
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/nexus
+ExecStart=/opt/nexus/nexus-broker
+Restart=always
+RestartSec=3
+Environment=NEXUS_PORT_HTTP=8790
+Environment=NEXUS_PORT_TUNNEL=8791
+Environment=NEXUS_BIND_ADDR=0.0.0.0
+Environment=RUST_LOG=info,nexus_mesh=info
+
+# 资源与文件限制
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

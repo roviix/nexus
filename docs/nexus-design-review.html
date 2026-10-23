@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nexus 2.0 产品体验、概念架构与视觉交互完整规范</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --paper: #161b22;
+    --surface: #21262d;
+    --canvas: #090d13;
+    --ink: #f0f6fc;
+    --muted: #8b949e;
+    --faint: #484f58;
+    --line: #30363d;
+    --line-strong: #444c56;
+    --accent: #10b981;
+    --accent-soft: rgba(16, 185, 129, 0.14);
+    --blue: #3b82f6;
+    --blue-soft: rgba(59, 130, 246, 0.14);
+    --warn: #f59e0b;
+    --warn-soft: rgba(245, 158, 11, 0.14);
+    --bad: #ef4444;
+    --bad-soft: rgba(239, 68, 68, 0.14);
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.9em; }
+  .layout { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+  nav.toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow-y: auto;
+    padding: 32px 20px 48px;
+    background: #090d13;
+    border-right: 1px solid var(--line);
+  }
+  nav.toc .toc-brand { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  nav.toc .toc-ver { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  nav.toc p { margin: 24px 0 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+  nav.toc a { display: block; color: var(--muted); font-size: 13.5px; padding: 6px 8px; border-radius: 6px; transition: all 0.14s ease; }
+  nav.toc a:hover { color: #fff; background: var(--surface); text-decoration: none; }
+  nav.toc a.active { color: var(--accent); font-weight: 500; background: var(--accent-soft); }
+  main { max-width: 980px; padding: 48px 64px 120px; }
+  h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 12px; color: #fff; }
+  h2 { font-size: 24px; font-weight: 600; letter-spacing: -0.01em; margin: 56px 0 16px; padding-top: 12px; border-top: 1px solid var(--line); color: #fff; }
+  h3 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; color: #fff; }
+  p { margin: 0 0 14px; color: #c9d1d9; }
+  .lede { font-size: 17px; line-height: 1.6; color: #e6edf3; }
+  .meta { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
+  ul, ol { margin: 0 0 16px; padding-left: 1.4em; color: #c9d1d9; }
+  li { margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0 24px; font-size: 13.5px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  th, td { text-align: left; vertical-align: middle; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; background: var(--surface); }
+  .callout { background: var(--paper); border: 1px solid var(--line); border-left: 4px solid var(--accent); padding: 16px 18px; border-radius: var(--radius); margin: 18px 0 24px; }
+  .callout.warn { border-left-color: var(--warn); background: rgba(245, 158, 11, 0.06); }
+  .callout.blue { border-left-color: var(--blue); background: rgba(59, 130, 246, 0.06); }
+  .pill { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 7px; border-radius: 999px; font-weight: 500; }
+  .pill.ok { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(16, 185, 129, 0.3); }
+  .pill.blue { background: var(--blue-soft); color: var(--blue); border: 1px solid rgba(59, 130, 246, 0.3); }
+  .pill.muted { background: var(--surface); color: var(--muted); border: 1px solid var(--line); }
+  .card-box { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 20px; margin: 14px 0 20px; }
+  .card-box h4 { margin: 0 0 8px; font-size: 15px; color: #fff; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .wire-window {
+    background: #090d13;
+    border: 1px solid var(--line-strong);
+    border-radius: 10px;
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+    margin: 20px 0 32px;
+  }
+  .wire-titlebar {
+    background: #161b22;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .wire-dots { display: flex; gap: 6px; }
+  .wire-dot { width: 11px; height: 11px; border-radius: 50%; }
+  .wire-dot.r { background: #ff5f56; }
+  .wire-dot.y { background: #ffbd2e; }
+  .wire-dot.g { background: #27c93f; }
+  .wire-shell { display: grid; grid-template-columns: 200px 1fr; min-height: 480px; }
+  .wire-side { background: #12161c; border-right: 1px solid var(--line); padding: 14px 10px; display: flex; flex-direction: column; }
+  .wire-group-title { font-size: 10.5px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin: 14px 8px 6px; letter-spacing: 0.04em; }
+  .wire-nav-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #8b949e; padding: 7px 10px; border-radius: 6px; cursor: pointer; transition: 0.12s; }
+  .wire-nav-item:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
+  .wire-nav-item.is-active { color: #fff; background: rgba(16, 185, 129, 0.15); font-weight: 500; }
+  .wire-nav-item.is-active .wire-icon { color: var(--accent); }
+  .wire-pod { margin-top: auto; padding: 8px 10px; border-radius: 6px; background: #161b22; border: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
+  .wire-pod-pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .wire-body { padding: 24px 28px; background: #0d1117; overflow-y: auto; }
+  .wire-interactive-btn { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+  .wire-interactive-btn:hover { border-color: var(--line-strong); background: #30363d; }
+  .wire-interactive-btn.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  pre { background: #090d13; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; overflow-x: auto; color: #e6edf3; font-size: 13px; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { position: relative; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    main { padding: 24px 20px 64px; }
+    .grid2, .grid3, .wire-shell { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <div class="toc-brand">
+    <span>N E X U S</span>
+    <span class="toc-ver">2.0 正式规范</span>
+  </div>
+  <p>核心蓝图</p>
+  <a href="#arch">一、核心架构哲学 (三级解耦)</a>
+  <a href="#ia">二、八大概念重构与交互边界</a>
+  <a href="#nav-spec">三、全局导航体系与网关引擎舱</a>
+  <a href="#simulator">四、Nexus 2.0 交互体验模拟器</a>
+  <p>八大子模块规范</p>
+  <a href="#clients">1. 接入 (Clients)</a>
+  <a href="#channels">2. 通道 (Channels & Mesh)</a>
+  <a href="#models">3. 模型广场 (Models Plaza)</a>
+  <a href="#playground">4. 游乐场 (Playground)</a>
+  <a href="#accounts">5. 账号库 (Accounts)</a>
+  <a href="#switcher">6. Cursor 专属 (切号与面板)</a>
+  <p>评审闭环答卷</p>
+  <a href="#qa">五、八大设计评审答卷闭环</a>
+</nav>
+<main>
+
+<h1>Nexus 2.0 概念架构、交互体验设计与视觉规范</h1>
+<p class="lede">Nexus 2.0 将原本网状交错的概念重构为极其清晰的<b>「底层资产 · 逻辑编排 · 终端消费」三级流水线</b>，并将独立于网关之外的 Cursor IDE 切号与补丁归入独立轨道。保留全量核心能力，杜绝功能堆叠与入口绕路。</p>
+<div class="meta">规范版本：2.0.0 · 生效日期：2026-10-16 · 覆盖范围：macOS & Windows 桌面端全体模块</div>
+
+<h2 id="arch">一、核心架构哲学 —— 「资产 · 通道 · 消费」三级解耦模型</h2>
+<p>在现有版本中，「通道」曾被死板地与平台（Claude、ChatGPT 等）1:1 绑定，导致用户觉得通道只是账号页签的重复。Nexus 2.0 正式将通道定义为<b>「可自由编排的逻辑路由池与云端算力节点」</b>：</p>
+
+<pre>
+  【第一级：底层资产层】           【第二级：逻辑编排层 (核心枢纽)】            【第三级：终端消费层】
+   只管凭证死活与原始额度           负责账号分组、路由前缀、Mesh 借入/出借       只认「通道 + 模型」，即改即用
+
+  ┌──────────────────┐          ┌─────────────────────────────────┐       ┌────────────────────────┐
+  │ 账号库 (Accounts) │          │         通道 (Channels)          │       │  接入 (Clients)         │
+  │                  │  自由编排 │                                 │       │  - Claude Code         │
+  │ - Claude 号 A ───┼─────────►│ ● [本地通道] Claude-主力 (A+B)   ├───┐   │  - Codex / OpenCode... │
+  │ - Claude 号 B ───┼──┐       │   前缀: claude-work/*            │   │   ├────────────────────────┤
+  │ - Claude 号 C ───┼──┼──────►│ ● [本地通道] Claude-备用 (C)     ├───┼──►│  本地网关 (127.0.0.1)   │
+  │ - OpenAI / Kiro..│  │       │   前缀: claude-sub/* (↗ 已出借)  │   │   ├────────────────────────┤
+  │ - 供应商 API Key │  │       ├─────────────────────────────────┤   │   │  模型广场 & 游乐场      │
+  └──────────────────┘  │       │ ☁ [云端通道] 家里台式机 (Mesh)   ├───┘   │  - 按通道浏览与多模态测试│
+                        │       │   前缀: home-pc/* · 延迟 22ms    │       └────────────────────────┘
+                        │       └─────────────────────────────────┘
+  ══════════════════════╪════════════════════════════════════════════════════════════════════════════
+  【独立轨道：IDE 原生伴侣】 (直写本地客户端库与补丁，不经过本地网关)
+  - Cursor 账号凭证 ────┴──────► [切号 (热切/冷切)]  +  [Cursor 面板账单 (原生 / CRSR / Sand)]
+</pre>
+
+<div class="grid2">
+  <div class="card-box">
+    <h4>零配置新手体验</h4>
+    <p>新手在账号库添加第一个 Claude 账号时，系统自动归入预置的 <code>claude/*</code> 默认通道。加完号即可直接在「接入」页选模型，无需手动学习编排通道。</p>
+  </div>
+  <div class="card-box">
+    <h4>极致进阶灵活度</h4>
+    <p>3 个 Claude 账号可拆分为 <code>Claude-主力</code>（绑定 2 个 Pro 号供日常写代码）与 <code>Claude-备用</code>（绑定 1 个测试号），并可将备用通道通过 Mesh 跨机出借给他人。</p>
+  </div>
+</div>
+
+<h2 id="ia">二、八大概念重构与交互边界定义</h2>
+<table>
+  <thead>
+    <tr>
+      <th style="width: 18%;">核心概念</th>
+      <th style="width: 42%;">核心职责定义 (只管什么)</th>
+      <th style="width: 40%;">Nexus 2.0 体验升级</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>1. 账号 (Accounts)</b></td>
+      <td><b>管原始凭证与官方额度</b>。负责订阅号登录、Token 刷新、窗口剩余百分比与重置倒计时。</td>
+      <td>新增「所属通道」胶囊与实时调用印记。可在卡片上直接调整分配所属分流通道。</td>
+    </tr>
+    <tr>
+      <td><b>2. 通道 (Channels)</b></td>
+      <td><b>管账号编排、路由前缀与跨机流转</b>。连接底层账号与上层模型的逻辑桥梁。</td>
+      <td>打破平台 1:1 限制，支持新建自定义分流通道，卡片显示绑定账号迷你额度条。</td>
+    </tr>
+    <tr>
+      <td><b>3. Mesh 跨机算力</b></td>
+      <td><b>管通道的云端化 (借入与出借)</b>。本机通道共享与远端算力挂载。</td>
+      <td>出借改为<b>两段式状态机</b>（显式确认才生成配对码）；借入通道显示为 <code>☁️ Mesh 云端通道</code>。</td>
+    </tr>
+    <tr>
+      <td><b>4. 本地网关 (Gateway)</b></td>
+      <td><b>管 127.0.0.1 守护进程与安全口令</b>。客户端底层通信总线。</td>
+      <td>化作左下角全局常驻的<b>「网关引擎舱 (Gateway Engine Pod)」</b>，带呼吸脉冲与控制台抽屉。</td>
+    </tr>
+    <tr>
+      <td><b>5. 接入 (Clients)</b></td>
+      <td><b>管本机编程客户端的接管与通道/模型指派</b>。</td>
+      <td>提拔为默认高频首屏。已安装工具置顶展开，行内 <code>[通道 ▾] → [模型 ▾]</code> 直选即生效。</td>
+    </tr>
+    <tr>
+      <td><b>6. 模型广场 (Models)</b></td>
+      <td><b>管全通道可用模型目录与快速探针</b>。</td>
+      <td>默认全量视图，顶部通道胶囊过滤，支持一键「指派给软件」与行内单轮试探。</td>
+    </tr>
+    <tr>
+      <td><b>7. 游乐场 (Playground)</b></td>
+      <td><b>管多模态会话验证与生成资产留存</b>。</td>
+      <td>四个子项收拢为页面内顶部 Segmented 切换器，不再污染全局导航。</td>
+    </tr>
+    <tr>
+      <td><b>8. Cursor 专属</b></td>
+      <td><b>管 Cursor 本机登录态与 Agent 计费补丁</b>。</td>
+      <td>合并切号池与账号库，支持热切/冷切与机器码重置；面板明确标识 <code>● 当前磁盘已生效</code>。</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="nav-spec">三、全局导航体系与网关引擎舱</h2>
+<p>左侧主导航梳理为三组核心菜单，底座常驻<b>网关引擎舱</b>；右上角常驻全局搜索（<code>⌘K</code>）与实时请求流抽屉（<code>⚡</code>）：</p>
+
+<div class="wire-window">
+  <div class="wire-titlebar">
+    <div class="wire-dots">
+      <div class="wire-dot r"></div>
+      <div class="wire-dot y"></div>
+      <div class="wire-dot g"></div>
+    </div>
+    <div style="font-size: 12px; color: var(--muted); font-weight: 500;">Nexus 2.0 Master Shell Layout</div>
+    <div style="display: flex; gap: 8px;">
+      <span class="pill muted mono">⌘K 全局搜索</span>
+      <span class="pill ok mono">⚡ 实时请求流 (40ms)</span>
+    </div>
+  </div>
+  <div class="wire-shell">
+    <div class="wire-side">
+      <div style="font-weight: 700; color: #fff; margin-bottom: 12px; font-size: 14px; letter-spacing: 0.05em;">N E X U S</div>
+      
+      <div class="wire-group-title">路由与网关</div>
+      <div class="wire-nav-item is-active"><span class="wire-icon">⚡</span> 接入 (Clients)</div>
+      <div class="wire-nav-item"><span class="wire-icon">◈</span> 模型广场 (Models)</div>
+      <div class="wire-nav-item"><span class="wire-icon">⇄</span> 通道管理 (Channels)</div>
+      <div class="wire-nav-item"><span class="wire-icon">▶</span> 游乐场 (Playground)</div>
+      <div class="wire-nav-item"><span class="wire-icon">◎</span> 概览 (Overview)</div>
+
+      <div class="wire-group-title">资产库</div>
+      <div class="wire-nav-item"><span class="wire-icon">❖</span> 账号 (Accounts)</div>
+
+      <div class="wire-group-title">Cursor 专属</div>
+      <div class="wire-nav-item"><span class="wire-icon">⇋</span> 切号 (Switcher)</div>
+      <div class="wire-nav-item"><span class="wire-icon">⛨</span> Cursor 面板</div>
+
+      <div class="wire-pod">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="wire-pod-pulse"></div>
+          <div>
+            <div style="font-size: 11px; font-weight: 600; color: #fff;">127.0.0.1:8787</div>
+            <div style="font-size: 10px; color: var(--muted);">守护中 · 实时就绪</div>
+          </div>
+        </div>
+        <span class="pill ok" style="font-size: 10px;">ON</span>
+      </div>
+    </div>
+    <div class="wire-body">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0;">接入 (Clients) · 首屏落地页</h3>
+        <span class="pill ok">网关链路通畅</span>
+      </div>
+      <div class="card-box" style="margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <b>Claude Code</b>
+          <div style="display: flex; gap: 8px;">
+            <select class="wire-interactive-btn"><option>通道: Claude-主力 (claude-work/*)</option></select>
+            <select class="wire-interactive-btn"><option>模型: claude-3-7-sonnet</option></select>
+            <button class="wire-interactive-btn primary">测一下</button>
+          </div>
+        </div>
+        <div style="font-size: 12px; color: var(--accent); margin-top: 8px;">✓ 链路畅通 · 落点通道: Claude-主力 → 命中账号: work@company.com · 延迟 24ms</div>
+      </div>
+      <div class="card-box" style="opacity: 0.6;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <b>Codex CLI (未安装)</b>
+          <span style="font-size: 12px; color: var(--muted);">折叠展示 · 本机未探及配置文件</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2 id="simulator">四、Nexus 2.0 交互体验模拟器</h2>
+<p>以下为在页面内可直接点击运行的原生交互微缩原型。您可以体验左下角引擎舱的展开、顶部通道筛选与配对码生成的两段式体验：</p>
+
+<div class="card-box" id="demo-box" style="background: #090d13; border-color: var(--accent);">
+  <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 14px;">
+    <div>
+      <span style="font-weight: 600; color: #fff;">Nexus 2.0 实时状态机仿真器</span>
+      <span class="pill ok" id="sim-gw-badge" style="margin-left: 8px;">网关运行中</span>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="wire-interactive-btn" onclick="toggleSimGateway()">切换网关启停</button>
+      <button class="wire-interactive-btn" onclick="openSimMeshModal()">模拟 Mesh 出借两段式弹窗</button>
+    </div>
+  </div>
+
+  <div id="sim-content" style="font-size: 13px; color: #c9d1d9;">
+    <p>当前网关状态：<code class="mono" id="sim-gw-state">127.0.0.1:8787 (PID: 90214 · 守护中)</code></p>
+    <p>当前模拟请求流：<span class="pill blue">Claude Code</span> → <span class="pill ok">claude-work/*</span> → <code>claude-3-7-sonnet</code> (延迟 18ms · 命中账号 <code>pro-work@corp.com</code>)</p>
+  </div>
+
+  <div id="sim-modal" style="display: none; background: #161b22; border: 1px solid var(--line-strong); border-radius: 8px; padding: 16px; margin-top: 14px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+      <b style="color: #fff;">Mesh 跨机共享两段式状态机演示</b>
+      <button class="wire-interactive-btn" onclick="closeSimMeshModal()">关闭</button>
+    </div>
+    <div id="sim-mesh-stage1">
+      <p style="color: var(--muted); font-size: 12.5px;">【阶段一：只读配置态】点开弹窗绝不擅自生成配对码，用户可以放心调整参数：</p>
+      <div style="display: flex; gap: 10px; align-items: center; margin: 10px 0;">
+        <span>最大并发限制：</span>
+        <select class="wire-interactive-btn"><option>2 并发</option><option>4 并发</option></select>
+      </div>
+      <button class="wire-interactive-btn primary" onclick="activateSimMeshStage2()">开启共享并生成配对码</button>
+    </div>
+    <div id="sim-mesh-stage2" style="display: none;">
+      <p style="color: var(--accent); font-size: 12.5px;">✓ 【阶段二：出码就绪态】配对码已就绪，正在监听局域网与 P2P 握手：</p>
+      <div style="font-size: 26px; font-weight: 700; letter-spacing: 0.25em; text-align: center; padding: 14px; background: #090d13; border-radius: 6px; color: var(--accent); margin: 12px 0;">
+        849-201
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 11.5px; color: var(--muted);">有效倒计时: 09:58 · 凭证不出本机</span>
+        <button class="wire-interactive-btn" onclick="resetSimMeshStage()">停止共享并注销码</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let simGwOn = true;
+  function toggleSimGateway() {
+    simGwOn = !simGwOn;
+    document.getElementById('sim-gw-badge').innerText = simGwOn ? '网关运行中' : '网关已停止';
+    document.getElementById('sim-gw-badge').className = simGwOn ? 'pill ok' : 'pill muted';
+    document.getElementById('sim-gw-state').innerText = simGwOn ? '127.0.0.1:8787 (PID: 90214 · 守护中)' : '网关离线 (点击左下角引擎舱或一键接入时自动拉起)';
+  }
+  function openSimMeshModal() {
+    document.getElementById('sim-modal').style.display = 'block';
+  }
+  function closeSimMeshModal() {
+    document.getElementById('sim-modal').style.display = 'none';
+  }
+  function activateSimMeshStage2() {
+    document.getElementById('sim-mesh-stage1').style.display = 'none';
+    document.getElementById('sim-mesh-stage2').style.display = 'block';
+  }
+  function resetSimMeshStage() {
+    document.getElementById('sim-mesh-stage1').style.display = 'block';
+    document.getElementById('sim-mesh-stage2').style.display = 'none';
+  }
+</script>
+
+<h2 id="clients">1. 接入 (Clients) 模块规范</h2>
+<p><b>接入是 Nexus 最核心的高频首屏</b>。用户打开软件，最关心的就是「我的写代码客户端现在连上了没有，走的是哪个通道的哪个模型」。</p>
+<ul>
+  <li><b>卡片智能折叠置顶</b>：已在本机检测到配置文件的软件（如 Claude Code）默认展开置顶；未安装或未检测到的软件折叠在底部，避免噪音。</li>
+  <li><b>行内直选免重启</b>：卡片行内提供 <code>[通道 ▾] → [模型 ▾]</code> 两级级联选择，改动后自动静默持久化到网关配置文件。由于客户端只连接到固定端点（如 <code>http://127.0.0.1:8787/client/claude</code>），客户端软件<b>完全无需重启</b>，下一轮对话即刻生效。</li>
+  <li><b>行内探针与回显</b>：点击 <code>[测一下]</code> 按钮，网关发送真实测试请求并回显：<code>✓ 链路畅通 · 落点通道: [Claude-主力] → 命中账号: xxx@corp.com · 延迟 24ms</code>。</li>
+</ul>
+
+<h2 id="channels">2. 通道 (Channels) 与 Mesh 模块规范</h2>
+<p>通道是路由总线的调度中枢。分为本地逻辑通道与 Mesh 云端通道：</p>
+<ul>
+  <li><b>1:N 逻辑通道编排</b>：支持用户点击 <code>[+ 新建本地分流通道]</code>，自定义通道名称与路由前缀（如 <code>claude-work/*</code>），并可勾选绑定特定的账号子集，选择轮询负载均衡或高优容灾策略。</li>
+  <li><b>Mesh 云端通道同构抽象</b>：远端机器通过配对码共享过来的算力，显示为 <code>☁️ Mesh 云端通道</code>，带动态实时延迟（如 <code>22ms</code>），在上层客户端中与本地通道享有完全相同的选择体验。</li>
+  <li><b>出借状态机两段式修复</b>：彻底解决「点开出借弹窗就自动生成配对码」的缺陷，严格划分为「阶段一：只读配置」与「阶段二：显式确认出码」。</li>
+</ul>
+
+<h2 id="models">3. 模型广场 (Models Plaza) 模块规范</h2>
+<ul>
+  <li><b>全量视图默认呈现</b>：一进入广场默认展示所有已就绪通道的模型，彻底告别以前「必须先选通道才能看」的死板体验。</li>
+  <li><b>通道胶囊过滤条</b>：顶部提供 <code>[全部就绪通道]</code>、<code>[● 本地: Claude-主力]</code>、<code>[☁️ Mesh: 家里台式机]</code> 等胶囊筛选，自动隐藏无凭证的空通道。</li>
+  <li><b>一键指派给软件</b>：每张模型卡提供 <code>[试一下 (抽屉探针)]</code> 与 <code>[指派给软件]</code>，点击可一键将该模型绑定给 Claude Code 或 Codex。</li>
+</ul>
+
+<h2 id="playground">4. 游乐场 (Playground) 模块规范</h2>
+<ul>
+  <li><b>内部分段切换器</b>：将原本占据侧边栏四个层级的子项，收进游乐场页面内部顶部：<code>[💬 对话调试] [🎨 图片生成] [🎬 视频生成] | [🗂 本机生成资产]</code>。</li>
+  <li><b>双向联动工作台</b>：在模型广场点击「在游乐场打开」，无缝自动填充对应的通道前缀与模型 ID，方便开发者深入多轮测试。</li>
+</ul>
+
+<h2 id="accounts">5. 账号库 (Accounts) 模块规范</h2>
+<ul>
+  <li><b>所属通道归属胶囊</b>：在账号卡上展示 <code>所属通道: [claude-work ▾]</code>，可直接在卡片上修改所属通道。</li>
+  <li><b>用量与重置倒计时</b>：专注于官方订阅窗口剩余百分比与重置时间，与网关调用吞吐量清晰剥离。</li>
+</ul>
+
+<h2 id="switcher">6. Cursor 专属轨道 (切号与面板)</h2>
+<ul>
+  <li><b>统一切号轨道</b>：合并 Cursor 账号库与切号快照，彻底废除繁琐的二次入池操作。所有 Cursor 账号一键立即可切。</li>
+  <li><b>热切与冷切自由控制</b>：
+    <ul>
+      <li>未勾选重置机器码且 Cursor 正在运行：按钮为 <code>[⚡ 热切上号]</code>，十秒内静默生效，无需重启 IDE。</li>
+      <li>勾选 <code>[□ 切换时同时重置机器码 (需重启 IDE)]</code>：按钮为 <code>[↻ 重启并换号]</code>，退出 Cursor、写入全新硬件机器标识并自动拉起。</li>
+    </ul>
+  </li>
+  <li><b>Cursor 面板三档互斥</b>：原生、CRSR、Sand，卡片明确高亮 <code>● 当前磁盘已生效</code> 状态。</li>
+</ul>
+
+<h2 id="qa">五、八大设计评审答卷闭环</h2>
+<p>针对此前设计评审稿提出的 8 大核心困惑，Nexus 2.0 给出的确定性架构答卷如下：</p>
+<div class="card-box">
+  <p><b>Q1: 第一屏应该是软件接入还是概览？</b><br />
+  <b>答：</b>默认首屏设为<b>「接入 (Clients)」</b>。工具接入与模型指派是开发者每天操作最高频的行为，已安装软件置顶展开；概览作为系统总线大盘保留在菜单末尾。</p>
+</div>
+<div class="card-box">
+  <p><b>Q2: 「通道」这个词还要不要？</b><br />
+  <b>答：</b><b>必须保留并升华</b>。通道不是平台的翻版，而是逻辑分流池（同平台多账号灵活拆分）与云端算力节点（Mesh 远端通道同构抽象）的核心枢纽。</p>
+</div>
+<div class="card-box">
+  <p><b>Q3: 模型广场与接入职责如何划分？</b><br />
+  <b>答：</b>接入管<b>「客户端落地指派」</b>（即改即生效免重启）；模型广场管<b>「全量模型目录盘点与单轮快速探针」</b>。模型广场支持一键「指派给软件」联动。</p>
+</div>
+<div class="card-box">
+  <p><b>Q4: 网关开关放在哪里不抢点击？</b><br />
+  <b>答：</b>从概览大卡片剥离，化作左下角全局常驻的<b>「网关引擎舱 (Gateway Engine Pod)」</b>，带呼吸绿灯，点击弹出独立控制台抽屉。</p>
+</div>
+<div class="card-box">
+  <p><b>Q5: Mesh 借用与出借的状态机如何设计？</b><br />
+  <b>答：</b>借用通道化身为<b>「☁️ Mesh 云端通道」</b>，带延迟显示；出借严格采用<b>两段式状态机</b>，只有用户显式点击「开启共享并生成配对码」才生成有效邀请码。</p>
+</div>
+<div class="card-box">
+  <p><b>Q6: 账号官方额度与网关 Token 用量如何区分？</b><br />
+  <b>答：</b>账号卡只展示官方订阅额度条与重置时间；网关转发产生的吞吐统计在网关引擎舱及右上角实时请求流抽屉展示，两套指标互不混淆。</p>
+</div>
+<div class="card-box">
+  <p><b>Q7: Cursor 账号与切号池要不要合并？</b><br />
+  <b>答：</b><b>合并为单一清单</b>。废除二次入池门槛，所有可用 Cursor 账号支持一键热切或冷切。</p>
+</div>
+<div class="card-box">
+  <p><b>Q8: Cursor 对话通道接不通如何呈现？</b><br />
+  <b>答：</b>Cursor 属于独立 IDE 伴侣轨道，网关侧不再摆放失效的 Cursor 通道卡片，彻底避免坏死列表的负面感受。</p>
+</div>
+
+</main>
+</div>
+</body>
+</html>

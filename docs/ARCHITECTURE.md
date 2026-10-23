@@ -400,7 +400,8 @@ channel       通道注册表选路（§6.2）
    ▼
 lane          额度接力挑号 / 挑供应商（§6.3、§6.7）
    ▼
-upstream      Cursor InferenceService/Stream · ChatGPT Codex · Grok · Kiro · ZCode · Qoder · 供应商
+upstream      ChatGPT Codex · Grok · Kiro · ZCode · Qoder · Claude · 供应商
+              （Cursor Stream 保留为不可用墓碑，不发上游）
    ▼
 inbound       统一表示 → 客户端方言的 SSE（流式原样支持；供应商同协议时原样透传）
    ▼
@@ -413,6 +414,20 @@ ledger        记一行账、一条最近请求（§6.5）
 **模型名映射**不是可选项：Claude Code 发 `claude-sonnet-4-5`、Codex 发 `gpt-5`，不映射到上游
 认识的名字就是 400。`models` 模块管这件事，也支持强制所有请求走某一个模型。
 
+**Cursor 标准对话通道自 2026-10-01 起是停用墓碑。** 当天用 16 个 session、4 个正常兑换的
+`api_key_token` 与 fresh `grok_bot` 做了真上游矩阵，并重跑私有版最后成功的 H1/H2 极简请求；
+外部无状态 `InferenceService/Stream` 都在首帧前被拒，`RunInference` 也明确回账号未开通。
+官方 `sendPrompt + SSE` 对唯一短语确实成功，user/reply 也共用同一 requestId；但 host 生成协议明确按
+agent 的 durable harness 分流：BOX 才把 `sendPrompt` 投递给 owner Sand host，TEMPORAL 则 signal 到云端
+`grokBotTurnWorkflow`。当前列出的 agent 全是 `harness=temporal`，主 host 与它的 worker 在成功 turn
+期间都没有执行 `InferenceService` interceptor；显式请求创建临时 BOX agent 也被服务强制成 Temporal，
+随后已删除。因此这条官方成功只证明 Temporal Agent 工作流可用，不能当成本地 Stream 成功证据。
+新版普通 IDE / CLI 也以 `agent.v1.AgentService/Run` 为主入口；两条 Agent 路径都缺标准中转需要的精确
+tool choice、思考签名、缓存 usage 与无状态工具续轮。因此保留 Stream 编解码、3.21.13 wire schema 与真机探针，
+但生产标准选路不再出网。
+公开的 Cursor API/SDK 也是 Agent 工作流而非裸 Chat Completions（见
+[Cursor APIs Overview](https://cursor.com/docs/api/)）。
+
 ### 6.2 通道是实体
 
 四个平台最初是 `Gateway` 上四个平行的字段、一条手排的 if 链选路，`/v1/models`、账本、状态快照、
@@ -423,9 +438,16 @@ Channel         = id + 前缀集合 + 一队号（Lane）+ 一个后端（Upstre
 ChannelRegistry = 若干通道 + 用户指定的默认通道
 ```
 
-**对外目录的主键是 `{通道}/{模型}`**（`cursor/claude-opus-5`），**选路只剩两条规则**，对聊天 /
+**对外目录的主键是 `{通道}/{模型}`**（`chatgpt/gpt-5.4`），**选路只剩两条规则**，对聊天 /
 生图 / 生视频一致：显式前缀强制走那条通道，不看它此刻有没有号；裸名或空模型走**用户设的默认
 通道**。别名 `codex/`、`xai/`、`glm/` 只在请求前缀里认，不进目录。
+
+Cursor 是这套规则里有意保留的**墓碑通道**：`cursor/…`、保存着的默认通道和旧客户端路由仍然
+确定命中它，随后在取号前失败。非流式请求返回 HTTP 503；流式请求以 HTTP 200 建立 SSE 后，
+返回 `code=503` 的方言错误帧并完整终结。不能简单删注册——删掉后旧前缀可能落到别的默认通道，
+既泄露上下文又意外计费。Cursor 对话模型从 `/v1/models` 与模型广场隐藏；数据库里的默认值、路由、
+号池一个字节不迁移，所以上游若重新开放，只需切回活跃 gate。生图走另一条 `AiService/RunGenerateImage`，
+没有用 Stream 的失败替它下结论，目录与路径暂时保留。
 
 早先还有中间一条「无前缀时按『声明拥有该模型且此刻有号』反推归属」。它猜错的时候没法解释：
 同一个模型名在两条通道上都有，请求落到哪条取决于哪条恰好还有号，用户看到的是「昨天还好好的，
@@ -434,7 +456,8 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 两条规则之外有两处例外，都不靠猜，依据都是用户亲手写下的名字：
 
 - **供应商通道认裸名**（`ChannelGate::claims_bare`）。它的模型清单是用户自己填的（§6.7），裸名对上
-  清单就是在指它，而且和此刻有没有可用的供应商无关。别的通道一律不认裸名。
+  清单就是在指它，而且和此刻有没有可用的供应商无关。别的通道一律不认裸名。唯一更高优先级的
+  边界是默认通道本身为平台级墓碑：此时裸名仍落到墓碑，防止旧默认静默外送；显式 `provider/…` 不受影响。
 - **按客户端的作用域**（§6.8）。从 `/client/{id}/v1` 进来的请求先按这个客户端的路由改写模型名，
   改写之后才进上面这套规则；不分客户端的 `/v1` 不受影响。
 
@@ -460,6 +483,11 @@ ChannelRegistry = 若干通道 + 用户指定的默认通道
 - quota / billing 类才把整个号标成耗尽；
 - 未登录标失效，等用户去重新授权；
 - 上游明说「指名的这个模型你出不了」时不能按限流处理——按限流每 5 分钟就会在它身上再白撞一次。
+
+平台级停用比这些账号级错误更早：`ChannelGate::unavailable_reason()` 在 lane `acquire` 之前
+产生状态 503 的错误（非流式是 HTTP 503，流式是 HTTP 200 SSE 内的 `code=503` 错误帧），
+最近请求记 `account = null`，不接力、不调用上游、不把任何账号标成冷却。Cursor Stream 退役若仍按
+401 处理，会一发请求连续罚掉四个本来正常的号，正是新增这道门的原因。
 
 ### 6.4 网关不碰 Cursor IDE 的面板（2026-09 的一次收缩）
 
@@ -541,7 +569,7 @@ Channel = 前缀 + Lane + Upstream + Gate：
 
 ### 6.8 按客户端路由
 
-接入以前把**裸模型名**写进客户端配置，请求一律落到全局默认通道。于是「Claude Code 走 Cursor、
+接入以前把**裸模型名**写进客户端配置，请求一律落到全局默认通道。于是「Claude Code 走 Claude、
 Codex 走 ChatGPT」不能同时成立；而且换模型就得重写配置、重启客户端。
 
 现在一键接入写的地址带着客户端名：`http://127.0.0.1:8787/client/claude`，下面挂着和 `/v1` 完全

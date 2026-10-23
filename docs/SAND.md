@@ -1,5 +1,23 @@
 # Sand 通道 · 设计与决策记录
 
+> **2026-10-01 运行时结论（已复验）**：补丁安装与 3.21.13 锚点校验仍成立，但旧的 direct / Box Relay
+> 成功结论已失效。外部无状态 Stream（session、`api_key_token`、fresh `grok_bot`，含私有版最后成功的
+> H1/H2 形状）全部在首帧前被拒；同票、同会话下只切 bare/max/effort/fast 的受控矩阵也全部返回同一
+> `permission_denied`，profile、team header、0.65 headers、machine id 与 pod 内执行位置都不是差异来源。
+>
+> 官方 `sendPrompt + SSE` 对新鲜唯一短语仍能成功，user/reply 共用 requestId；但当前所有 agent 都是
+> `harness=temporal`。host 生成协议明确写着：只有 BOX agent 才把消息投递给 owner Sand host，TEMPORAL
+> agent 会直接 signal 到云端 `grokBotTurnWorkflow`。成功 turn 期间主 host 与唯一 worker 都没有执行
+> `InferenceService` interceptor。即使通过受支持的 gateway API 同时请求 `creationRoute=box` 和
+> `harness=box`，服务仍创建为 Temporal；可逆探针没有发送消息并已成功删除临时 agent。
+>
+> 因此目前**没有一条成功的本地 BOX/裸 Stream 证据**，Temporal 成功也不能冒充标准 API。
+> 0.65 host 的本地模型选择代码确实包含结构化 `grok-4.7` 与 max/effort/fast，但没有证据表明云端
+> Temporal worker 使用同一 profile，更不能把它硬编码成标准请求默认。Sand 面板端到端仍未走通，当前
+> 不建议启用。`grokbot_stream_probe.rs` 复测 raw/profile/team；`grokbot_box_agent_probe.rs` 可逆验证
+> BOX 创建策略。两者都带显式额度门禁，不能再信私有旧脚本末尾那句硬编码的 “WORKS” 总结。
+> 它不进普通构建；手动复测需显式加 `--features live-probes` 和文件内的额度门禁环境变量。
+
 > **2026-09-16 收缩（§13）**：网关的透传口整条拆掉，随之消失的有——本机「推理经本机网关」（§11 整节）、
 > 网关侧的 Grok Bot 开关（§12.4）、远程的「经本机网关」出网路（§9 里三条路只剩代理 / 直连）、
 > Grok 鉴权的「关」档。§9 / §11 / §12 里凡是提到透传口、端点改道、`client_type=sand` 的段落都是
