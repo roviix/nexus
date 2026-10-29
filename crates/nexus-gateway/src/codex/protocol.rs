@@ -275,7 +275,10 @@ pub fn parse_size(size: Option<&str>) -> Option<(u32, u32)> {
 pub fn split_route_prefix(model: &str) -> (&str, bool) {
     let m = model.trim();
     for p in ROUTE_PREFIXES {
-        if m.len() > p.len() && m[..p.len()].eq_ignore_ascii_case(p) {
+        // 按字节比：`model` 来自客户端请求体，可能是任意 UTF-8，`m[..p.len()]` 在多字节字符
+        // 中间切会 panic（`"模型模"` 对 `"chatgpt/"` 就正好切进第三个字）。前缀是 ASCII，命中时
+        // `p.len()` 必落在字符边界，后面那一刀才安全。
+        if m.len() > p.len() && m.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()) {
             return (&m[p.len()..], true);
         }
     }
@@ -1744,6 +1747,12 @@ mod tests {
         assert_eq!(aliased.body["model"], "gpt-6-astra");
         assert_eq!(to_effort(Some("ULTRA")), Some("ultra"));
         assert_eq!(to_effort(Some("bogus")), None);
+        // 非 ASCII 模型名按字节切前缀，不能 panic。"模型模" 9 字节 > "chatgpt/" 8 字节，
+        // 旧实现会在第三个字中间切。
+        assert_eq!(split_route_prefix("模型模"), ("模型模", false));
+        assert_eq!(split_route_prefix("chatgpt/模型"), ("模型", true));
+        assert!(!is_codex_model("模型模"));
+        assert!(is_codex_model("chatgpt/gpt-6"));
     }
 
     #[test]

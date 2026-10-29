@@ -68,17 +68,29 @@ pub async fn handle_inference_stream(
     if !chat_req.model.contains('/') {
         let m_lower = chat_req.model.to_ascii_lowercase();
         if m_lower.starts_with("kiro-") {
-            if gw.channels.get("mesh").is_some_and(|c| c.gate.owns(Capability::Chat, &chat_req.model)) {
+            if gw
+                .channels
+                .get("mesh")
+                .is_some_and(|c| c.gate.owns(Capability::Chat, &chat_req.model))
+            {
                 // 由 MeshGate 直接认领
             } else if gw.channels.get("kiro").is_some() {
                 chat_req.model = format!("kiro/{}", chat_req.model);
             }
-        } else if m_lower.contains("gpt-5") || m_lower.contains("gpt-4") || m_lower.starts_with("o1") || m_lower.starts_with("o3") {
+        } else if m_lower.contains("gpt-5")
+            || m_lower.contains("gpt-4")
+            || m_lower.starts_with("o1")
+            || m_lower.starts_with("o3")
+        {
             if gw.channels.get("chatgpt").is_some() {
                 chat_req.model = format!("chatgpt/{}", chat_req.model);
             }
         } else if m_lower.contains("claude-") {
-            if gw.channels.get("mesh").is_some_and(|c| c.gate.owns(Capability::Chat, &chat_req.model)) {
+            if gw
+                .channels
+                .get("mesh")
+                .is_some_and(|c| c.gate.owns(Capability::Chat, &chat_req.model))
+            {
                 // 由 MeshGate 直接认领
             } else if gw.channels.get("claude").is_some() {
                 chat_req.model = format!("claude/{}", chat_req.model);
@@ -120,12 +132,8 @@ pub async fn handle_inference_stream(
             let chunk_opt = match delta {
                 Delta::Text(text) => Some(encode_text_part(&text)),
                 Delta::Thinking(th) => Some(encode_thinking_part(&th, None, false)),
-                Delta::ThinkingSignature(sig) => {
-                    Some(encode_thinking_part("", Some(&sig), true))
-                }
-                Delta::RedactedThinking(data) => {
-                    Some(encode_thinking_part(&data, None, true))
-                }
+                Delta::ThinkingSignature(sig) => Some(encode_thinking_part("", Some(&sig), true)),
+                Delta::RedactedThinking(data) => Some(encode_thinking_part(&data, None, true)),
                 Delta::Headers(_) | Delta::Raw { .. } => None,
             };
 
@@ -134,7 +142,11 @@ pub async fn handle_inference_stream(
             }
         };
 
-        let stream_res = upstream.stream(&credential, &chat_req, &mut on_delta).await;
+        let stream_res = tokio::select! {
+            r = upstream.stream(&credential, &chat_req, &mut on_delta) => r,
+            // Cursor 那头停了：丢掉上游这一轮，别替它跑完白花额度。
+            _ = tx.closed() => return,
+        };
 
         match stream_res {
             Ok(completion) => {

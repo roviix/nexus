@@ -120,20 +120,27 @@ impl AntigravityUpstream {
                         return Err(UpstreamError::new(
                             UpstreamKind::RateLimit,
                             429,
-                            format!("Google Antigravity 账号 [{label}] 的模型 {model} 暂时受限：{body}"),
+                            format!(
+                                "Google Antigravity 账号 [{label}] 的模型 {model} 暂时受限：{body}"
+                            ),
                         )
                         .with_reset_at_ms(now_ms.saturating_add(wait_ms as i64)));
                     }
-                    last_detail = format!("Google Antigravity 上游返回错误 ({status})：{body}");
+                    let head: String = body.chars().take(400).collect();
+                    last_detail = format!("Google Antigravity 上游返回错误 ({status})：{head}");
                     if has_next && should_try_next_endpoint(code) {
                         tracing::warn!(%url, %status, "Antigravity 端点不可用，尝试下一个");
                         continue;
                     }
-                    return Err(UpstreamError::new(
-                        UpstreamKind::Upstream,
-                        code,
-                        last_detail,
-                    ));
+                    // 403（项目没开通 / 权限不够）是这个号的问题，换号才有用；400 是这轮请求本身的
+                    // 问题，换号必然重现。两者都不能一概归成「上游抖动」——那样既不换号也不罚号，
+                    // 坏号会一直钉在队首。
+                    let kind = match code {
+                        400 | 422 => UpstreamKind::BadRequest,
+                        403 => UpstreamKind::Forbidden,
+                        _ => UpstreamKind::Upstream,
+                    };
+                    return Err(UpstreamError::new(kind, code, last_detail));
                 }
                 Err(err) => {
                     last_detail = format!("连接 Google Antigravity 服务失败：{err}");
@@ -179,7 +186,7 @@ impl Upstream for AntigravityUpstream {
                 .iter()
                 .filter(|message| message.role == Role::Assistant)
                 .count();
-            let payload = envelope(&project_name, &model, &inner_req);
+            let payload = envelope(project_name, &model, &inner_req);
 
             let resp = self
                 .post_v1(
@@ -206,45 +213,61 @@ impl Upstream for AntigravityUpstream {
                 input_basis: InputBasis::IncludesCache,
                 ..Default::default()
             };
+            let mut candidates_tokens: u32 = 0;
+            let mut saw_candidate = false;
+            // MALFORMED_FUNCTION_CALL 这类：模型想调工具但没写对，这一轮什么也没交出来。
+            let mut broken_call: Option<String> = None;
 
-            while let Some(chunk) = tokio::time::timeout(self.idle_timeout, resp.chunk())
-                .await
-                .map_err(|_| {
-                    UpstreamError::new(
-                        UpstreamKind::Timeout,
-                        504,
-                        "等待 Google Antigravity 流式响应超时",
-                    )
-                })?
-                .map_err(|err| {
-                    UpstreamError::new(
-                        UpstreamKind::Upstream,
-                        502,
-                        format!("读取 Google Antigravity 数据帧失败：{err}"),
-                    )
-                })?
-            {
-                for ev in decoder.push(&chunk) {
+            loop {
+                let next = tokio::time::timeout(self.idle_timeout, resp.chunk())
+                    .await
+                    .map_err(|_| {
+                        UpstreamError::new(
+                            UpstreamKind::Timeout,
+                            504,
+                            "等待 Google Antigravity 流式响应超时",
+                        )
+                    })?
+                    .map_err(|err| {
+                        UpstreamError::new(
+                            UpstreamKind::Upstream,
+                            502,
+                            format!("读取 Google Antigravity 数据帧失败：{err}"),
+                        )
+                    })?;
+                // 流结束时缓冲里可能还剩最后一帧（没有收尾空行），那一帧常常带着
+                // finishReason 和用量，不能丢。
+                let (events, done) = match next {
+                    Some(chunk) => (decoder.push(&chunk), false),
+                    None => (decoder.finish(), true),
+                };
+                for ev in events {
                     let data = ev.data.trim();
                     if data.is_empty() || data == "[DONE]" {
                         continue;
                     }
 
-                    let parsed: GenerateContentResponse =
-                        match serde_json::from_str::<GenerateContentResponse>(data) {
-                            Ok(p) => p.unwrap_envelope(),
-                            Err(e) => {
-                                tracing::warn!(%e, %data, "解析 Antigravity SSE 数据帧失败");
-                                continue;
-                            }
-                        };
+                    let parsed = match serde_json::from_str::<GenerateContentResponse>(data) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(%e, len = data.len(), "解析 Antigravity SSE 数据帧失败");
+                            continue;
+                        }
+                    };
+                    // 上游在 200 的流里报错：照实说出来。吞掉的话这一轮是个空的「成功」，
+                    // lane 还会把这个号记成好号。
+                    let outer_error = parsed.error.clone();
+                    let parsed = parsed.unwrap_envelope();
+                    if let Some(err) = outer_error.or_else(|| parsed.error.clone()) {
+                        return Err(stream_error(&err, &model, &credential.label));
+                    }
 
                     if let Some(meta) = parsed.usage_metadata {
                         if let Some(p) = meta.prompt_token_count {
                             usage.input_tokens = p as u32;
                         }
                         if let Some(c) = meta.candidates_token_count {
-                            usage.output_tokens = c as u32;
+                            candidates_tokens = c.max(0) as u32;
                         }
                         if let Some(cached) = meta.cached_content_token_count {
                             usage.cache_read_tokens = cached.max(0) as u32;
@@ -256,11 +279,21 @@ impl Upstream for AntigravityUpstream {
 
                     if let Some(candidates) = parsed.candidates {
                         for cand in candidates {
+                            saw_candidate = true;
                             if let Some(fr) = cand.finish_reason.as_deref() {
                                 finish_reason = match fr {
                                     "MAX_TOKENS" => FinishReason::Length,
-                                    "SAFETY" | "BLOCKLIST" => FinishReason::ContentFilter,
-                                    "STOP" => FinishReason::Stop,
+                                    "SAFETY"
+                                    | "BLOCKLIST"
+                                    | "PROHIBITED_CONTENT"
+                                    | "SPII"
+                                    | "RECITATION"
+                                    | "IMAGE_SAFETY"
+                                    | "IMAGE_PROHIBITED_CONTENT" => FinishReason::ContentFilter,
+                                    "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL" => {
+                                        broken_call = Some(fr.to_string());
+                                        FinishReason::Stop
+                                    }
                                     _ => FinishReason::Stop,
                                 };
                             }
@@ -325,6 +358,9 @@ impl Upstream for AntigravityUpstream {
                         }
                     }
                 }
+                if done {
+                    break;
+                }
             }
 
             // 冲刷末尾缓存
@@ -338,16 +374,38 @@ impl Upstream for AntigravityUpstream {
                 on_delta(Delta::Text(tx));
             }
 
+            let nothing = final_text.is_empty() && tool_calls.is_empty();
+            if let Some(reason) = broken_call.filter(|_| nothing) {
+                return Err(UpstreamError::new(
+                    UpstreamKind::Upstream,
+                    502,
+                    format!("模型这一轮的工具调用没写对（{reason}），重试一次通常就好"),
+                ));
+            }
+            if !saw_candidate && nothing && final_thinking.is_empty() {
+                return Err(UpstreamError::new(
+                    UpstreamKind::Upstream,
+                    502,
+                    "Google Antigravity 返回了空响应",
+                ));
+            }
+            // 后面一帧的 STOP 不能盖掉工具调用：客户端要按 tool_use 收尾。
+            if !tool_calls.is_empty() {
+                finish_reason = FinishReason::ToolCalls;
+            }
+
+            // Gemini 的 candidatesTokenCount 不含思考；Anthropic 和 OpenAI 的输出口径都含。
+            usage.output_tokens = candidates_tokens.saturating_add(usage.reasoning_tokens);
             // 兜底 token 估算
-            if usage.input_tokens == 0 && usage.output_tokens == 0 {
+            let measured = usage.input_tokens > 0 || usage.output_tokens > 0;
+            if !measured {
                 let estimated_in = request
                     .messages
                     .iter()
                     .map(|m| estimate_tokens(&m.text))
                     .sum::<u32>();
-                let estimated_out = (final_text.len() / 4) as u32;
                 usage.input_tokens = estimated_in;
-                usage.output_tokens = estimated_out;
+                usage.output_tokens = estimate_tokens(&final_text);
             }
 
             if let (Some(session), Some(sig)) = (session_for_sig, thinking_signature.as_deref()) {
@@ -360,7 +418,7 @@ impl Upstream for AntigravityUpstream {
                 tool_calls,
                 finish_reason,
                 usage,
-                usage_measured: true,
+                usage_measured: measured,
                 routed_model: Some(model),
                 ttft_ms: None,
                 turn_ms: 0,
@@ -387,7 +445,7 @@ impl Upstream for AntigravityUpstream {
             });
             let project_name = project_id.as_deref().unwrap_or("aicode-consumers");
             let inner_req = build_request(&model, request);
-            let payload = envelope(&project_name, &model, &inner_req);
+            let payload = envelope(project_name, &model, &inner_req);
 
             let resp = match self
                 .post_v1(
@@ -453,6 +511,52 @@ fn envelope(project: &str, model: &str, request: &GenerateContentRequest) -> Val
         body.insert("requestType".into(), json!(kind));
     }
     Value::Object(body)
+}
+
+/// 流里的 Google 错误对象（`{code, message, status, details}`）→ 我们的错误。
+/// 和 HTTP 层同一套判据：配额 / 限流按模型冷却并带上恢复时刻，凭证失效换号，权限不够换号，
+/// 参数问题不罚号。
+fn stream_error(err: &Value, model: &str, label: &str) -> UpstreamError {
+    let code = err.get("code").and_then(Value::as_u64).unwrap_or(0) as u16;
+    let status = err.get("status").and_then(Value::as_str).unwrap_or("");
+    let message = err
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or(status)
+        .chars()
+        .take(400)
+        .collect::<String>();
+    let body = err.to_string();
+    let detail = format!("Google Antigravity：{message}");
+    if is_auth_expired(code, &body) || status == "UNAUTHENTICATED" {
+        return UpstreamError::new(
+            UpstreamKind::Auth,
+            401,
+            format!("Google Antigravity 账号 [{label}] 凭证失效：{message}"),
+        );
+    }
+    let quota = status == "RESOURCE_EXHAUSTED" || code == 429;
+    if let Some(wait_ms) = model_cooldown_ms(if quota { 429 } else { code }, &body) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        return UpstreamError::new(
+            UpstreamKind::RateLimit,
+            429,
+            format!("Google Antigravity 账号 [{label}] 的模型 {model} 暂时受限：{message}"),
+        )
+        .with_reset_at_ms(now_ms.saturating_add(wait_ms as i64));
+    }
+    match (code, status) {
+        (403, _) | (_, "PERMISSION_DENIED") => {
+            UpstreamError::new(UpstreamKind::Forbidden, 403, detail)
+        }
+        (400, _) | (_, "INVALID_ARGUMENT") | (_, "FAILED_PRECONDITION") => {
+            UpstreamError::new(UpstreamKind::BadRequest, 400, detail)
+        }
+        _ => UpstreamError::new(UpstreamKind::Upstream, 502, detail),
+    }
 }
 
 fn inline_as_text(mime: &str, data: &str) -> String {
@@ -774,6 +878,90 @@ mod tests {
             messages,
             ..ChatRequest::default()
         }
+    }
+
+    /// 起一个只会回这段 SSE 的假 Cloud Code（不管路径），返回指向它的上游。
+    async fn serve_sse(body: &'static str) -> AntigravityUpstream {
+        let app = axum::Router::new()
+            .fallback(move || async move { ([("content-type", "text/event-stream")], body) });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let db = Arc::new(nexus_store::Db::open_in_memory().unwrap());
+        let secrets = Arc::new(nexus_store::MemorySecrets::new());
+        let accounts = Arc::new(AntigravityService::new(db, secrets));
+        AntigravityUpstream::with_endpoint(accounts, format!("http://{addr}"))
+    }
+
+    fn credential() -> Credential {
+        Credential {
+            label: "ada@example.com".into(),
+            access_token: "ya29.test".into(),
+            identity: crate::identity::DeviceIdentity::derived("ya29.test"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_error_inside_the_stream_is_an_error_not_an_empty_success() {
+        let upstream = serve_sse(
+            "data: {\"error\":{\"code\":403,\"message\":\"Cloud AI Companion API has not been used\",\"status\":\"PERMISSION_DENIED\"}}\n\n",
+        )
+        .await;
+        let req = request(vec![Message::text(Role::User, "hi")]);
+        let err = upstream
+            .stream(&credential(), &req, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, UpstreamKind::Forbidden, "{}", err.message);
+        assert!(err.kind.blames_account(), "这个号的项目问题：换号");
+
+        let upstream = serve_sse(
+            "data: {\"error\":{\"code\":429,\"message\":\"quota\",\"status\":\"RESOURCE_EXHAUSTED\",\"details\":[{\"retryDelay\":\"30s\"}]}}\n\n",
+        )
+        .await;
+        let err = upstream
+            .stream(&credential(), &req, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, UpstreamKind::RateLimit);
+        assert!(err
+            .retry_after_secs()
+            .is_some_and(|s| (25..=31).contains(&s)));
+    }
+
+    #[tokio::test]
+    async fn the_last_frame_without_a_blank_line_still_counts_and_thinking_is_output() {
+        // 最后一帧没有收尾空行：finishReason 和用量都在它身上。
+        let upstream = serve_sse(concat!(
+            "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"PONG\"}]}}]}}\n\n",
+            "data: {\"response\":{\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":3,\"thoughtsTokenCount\":7}}}",
+        ))
+        .await;
+        let req = request(vec![Message::text(Role::User, "hi")]);
+        let done = upstream
+            .stream(&credential(), &req, &mut |_| {})
+            .await
+            .unwrap();
+        assert_eq!(done.text, "PONG");
+        assert_eq!(done.usage.input_tokens, 10);
+        assert_eq!(done.usage.output_tokens, 10, "输出口径含思考");
+        assert_eq!(done.usage.reasoning_tokens, 7);
+        assert!(done.usage_measured);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_function_call_is_reported_instead_of_ending_silently() {
+        let upstream = serve_sse(
+            "data: {\"response\":{\"candidates\":[{\"finishReason\":\"MALFORMED_FUNCTION_CALL\"}]}}\n\n",
+        )
+        .await;
+        let req = request(vec![Message::text(Role::User, "hi")]);
+        let err = upstream
+            .stream(&credential(), &req, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("MALFORMED_FUNCTION_CALL"));
+        assert!(!err.kind.blames_account());
     }
 
     #[test]

@@ -385,9 +385,7 @@ pub fn thinking_config_for(model: &str) -> Option<ThinkingConfig> {
             || lower.contains("-low")
             || lower.contains("tiered"));
     let claude_thinking = lower.contains("claude")
-        && (lower.contains("thinking")
-            || lower.contains("sonnet")
-            || lower.contains("opus"));
+        && (lower.contains("thinking") || lower.contains("sonnet") || lower.contains("opus"));
     if flash_tier || claude_thinking || lower.contains("-thinking") {
         return Some(ThinkingConfig {
             thinking_budget: if claude_thinking { Some(1024) } else { None },
@@ -862,6 +860,12 @@ pub struct ThinkingTagParser {
     buffer: String,
 }
 
+impl Default for ThinkingTagParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ThinkingTagParser {
     pub fn new() -> Self {
         Self {
@@ -1315,8 +1319,14 @@ mod tests {
     #[test]
     fn maps_models_accurately() {
         assert_eq!(upstream_model("gemini-3.1-pro"), "gemini-3.8-flash-high");
-        assert_eq!(upstream_model("gemini-3.1-pro-high"), "gemini-3.8-flash-high");
-        assert_eq!(upstream_model("gemini-3.1-pro-low"), "gemini-3.8-flash-high");
+        assert_eq!(
+            upstream_model("gemini-3.1-pro-high"),
+            "gemini-3.8-flash-high"
+        );
+        assert_eq!(
+            upstream_model("gemini-3.1-pro-low"),
+            "gemini-3.8-flash-high"
+        );
         assert_eq!(
             upstream_model("antigravity/gemini-3.8-flash"),
             "gemini-3.8-flash-high"
@@ -1325,14 +1335,8 @@ mod tests {
             upstream_model("gemini-3.8-flash-low"),
             "gemini-3.8-flash-low"
         );
-        assert_eq!(
-            upstream_model("gemini-2.5-flash"),
-            "gemini-3.8-flash-high"
-        );
-        assert_eq!(
-            upstream_model("claude-3-7-sonnet"),
-            "claude-sonnet-4-6"
-        );
+        assert_eq!(upstream_model("gemini-2.5-flash"), "gemini-3.8-flash-high");
+        assert_eq!(upstream_model("claude-3-7-sonnet"), "claude-sonnet-4-6");
         assert_eq!(
             upstream_model("claude-opus-4.6"),
             "claude-opus-4-6-thinking"

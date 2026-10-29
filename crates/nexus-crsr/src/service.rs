@@ -158,14 +158,18 @@ impl CrsrService {
             // 尝试自动为该账号在官方铸一把长期 crsr_ API Key
             match self.accounts.mint_api_key(id).await {
                 Ok(_minted) => {
-                    let key = self.accounts.repo.require_secret(id, AccountSecret::ApiKey)?;
+                    let key = self
+                        .accounts
+                        .repo
+                        .require_secret(id, AccountSecret::ApiKey)?;
                     credential::mint(&self.http, key.expose(), &account.email, &account.id).await?
                 }
                 Err(_) => {
                     // 若官方铸 Key 接口不可用，则直接复用账号的有效会话 JWT
                     if let Ok(session) = self.accounts.session(id).await {
                         let now = credential::now_ms();
-                        let expires_at_ms = credential::expires_at_ms_of(session.access_token.expose());
+                        let expires_at_ms =
+                            credential::expires_at_ms_of(session.access_token.expose());
                         credential::CrsrCredential {
                             api_key: String::new(),
                             access_token: session.access_token.expose().to_string(),
@@ -177,7 +181,9 @@ impl CrsrService {
                             gateway_url: None,
                         }
                     } else {
-                        return Err(AppError::invalid("该账号无可用 crsr_ API Key 或已过期会话，请先登录该账号。"));
+                        return Err(AppError::invalid(
+                            "该账号无可用 crsr_ API Key 或已过期会话，请先登录该账号。",
+                        ));
                     }
                 }
             }
@@ -350,7 +356,10 @@ impl CrsrService {
             &self.db,
             SCOPE,
             None,
-            format!("已完成 Cursor 路由挂点接管（{} 个文件）", committed.files_written),
+            format!(
+                "已完成 Cursor 路由挂点接管（{} 个文件）",
+                committed.files_written
+            ),
         );
 
         let relaunched = self.maybe_launch(relaunch, progress);

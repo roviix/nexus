@@ -214,7 +214,7 @@ export function KiroDrawer({
               type="button"
               className="btn btn-sm btn-soft dr-cta"
               disabled
-              title="Kiro 客户端（~/.aws/sso/cache/kiro-auth-token.json）当前正在登录此账号"
+              title="Kiro 客户端当前登录的就是这个号"
             >
               <Icon name="check" size={13} style={{ color: "var(--ok)" }} />
               <span>Kiro 当前登录</span>
@@ -225,7 +225,7 @@ export function KiroDrawer({
               className="btn btn-sm btn-primary dr-cta"
               disabled={switching}
               onClick={handleSwitchClient}
-              title="将此账号凭证一键写入本机 Kiro 客户端配置文件，实现即刻换号登录"
+              title="把这个号写入本机 Kiro 客户端"
             >
               {switching ? <Spinner /> : <Icon name="switcher" size={13} />}
               <span>{switching ? "正在切号…" : "切号到 Kiro 客户端"}</span>

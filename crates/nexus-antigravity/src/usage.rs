@@ -29,26 +29,6 @@ pub fn quota_hint(usage: Option<&AntigravityUsage>) -> (Option<f64>, bool) {
     (u.percent_used, exhausted)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retry_delay_is_per_model_and_auth_is_not() {
-        assert_eq!(
-            model_cooldown_ms(429, r#"{"retryDelay":"12s"}"#),
-            Some(12_000)
-        );
-        assert_eq!(
-            model_cooldown_ms(429, r#"{"error":{"details":[{"retryDelay":"2m"}]}}"#),
-            Some(120_000)
-        );
-        assert!(model_cooldown_ms(401, "invalid_grant").is_none());
-        assert!(model_cooldown_ms(403, "ACCESS_TOKEN_EXPIRED").is_none());
-        assert_eq!(model_cooldown_ms(429, "RESOURCE_EXHAUSTED"), Some(60_000));
-    }
-}
-
 fn is_five_hour(window: &str) -> bool {
     let lower = window.to_ascii_lowercase();
     lower.contains("5h") || lower.contains("5-h") || lower == "5"
@@ -133,4 +113,24 @@ pub fn is_auth_expired(status: u16, error_body: &str) -> bool {
         && (error_body.contains("ACCESS_TOKEN_EXPIRED")
             || error_body.contains("invalid_grant")
             || error_body.contains("UNAUTHENTICATED"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_delay_is_per_model_and_auth_is_not() {
+        assert_eq!(
+            model_cooldown_ms(429, r#"{"retryDelay":"12s"}"#),
+            Some(12_000)
+        );
+        assert_eq!(
+            model_cooldown_ms(429, r#"{"error":{"details":[{"retryDelay":"2m"}]}}"#),
+            Some(120_000)
+        );
+        assert!(model_cooldown_ms(401, "invalid_grant").is_none());
+        assert!(model_cooldown_ms(403, "ACCESS_TOKEN_EXPIRED").is_none());
+        assert_eq!(model_cooldown_ms(429, "RESOURCE_EXHAUSTED"), Some(60_000));
+    }
 }

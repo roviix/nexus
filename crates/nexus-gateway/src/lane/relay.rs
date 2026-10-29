@@ -24,7 +24,7 @@
 //! 快照里单列成 `available`，界面上就是「添加」弹窗里的候选。
 
 use super::roster::Roster;
-use super::sources::{Candidate, CandidateKind, QuotaHint, Source};
+use super::sources::{Candidate, CandidateKind, QuotaHint, ResolvedToken, Source};
 use super::{BoxFuture, Credential, Lane, Outcome};
 use crate::error::{UpstreamError, UpstreamKind};
 use crate::identity::DeviceIdentity;
@@ -365,6 +365,35 @@ fn no_account_error(
             format!("{} {why}", c.label)
         })
         .collect();
+    // 每个号都只是在限流冷却：这是一次会自己好的限流，不是号池坏了。按 429 报、带上最早恢复的
+    // 时刻，客户端据此退避重试，而不是当成服务端故障。
+    let cooling: Option<Vec<u64>> = blocks
+        .iter()
+        .map(|b| match b {
+            Some(Block::Cooled {
+                kind: UpstreamKind::RateLimit | UpstreamKind::Provider,
+                secs_left,
+            }) => Some(*secs_left),
+            _ => None,
+        })
+        .collect();
+    if let Some(soonest) = cooling.and_then(|secs| secs.into_iter().min()) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let wait = soonest.max(1);
+        return UpstreamError::new(
+            UpstreamKind::RateLimit,
+            429,
+            format!(
+                "{} 个账号都在限流冷却，{wait} 秒后再试：{}",
+                cands.len(),
+                reasons.join("；")
+            ),
+        )
+        .with_reset_at_ms(now_ms + wait as i64 * 1000);
+    }
     UpstreamError::new(
         UpstreamKind::Upstream,
         503,
@@ -376,6 +405,27 @@ fn no_account_error(
     )
 }
 
+/// 取凭证，放在独立任务里跑完。
+///
+/// 取凭证可能要换票：联网拿新 token，再把轮换后的 refresh token 落库。客户端中途断开时调用方
+/// 会被丢掉；换票若跟着停在半路，上游已经作废旧票、这边却没存下新票，下次拿旧票去换就是
+/// `invalid_grant`，好号被打成要重新登录。
+async fn resolve_detached(
+    source: &Arc<dyn Source>,
+    cand: &Candidate,
+) -> Result<ResolvedToken, UpstreamError> {
+    let (src, c) = (source.clone(), cand.clone());
+    tokio::spawn(async move { src.resolve(&c).await })
+        .await
+        .unwrap_or_else(|e| {
+            Err(UpstreamError::new(
+                UpstreamKind::Upstream,
+                502,
+                format!("取凭证的任务意外中止：{e}"),
+            ))
+        })
+}
+
 impl Lane for RelayLane {
     fn acquire<'a>(&'a self, model: &'a str) -> BoxFuture<'a, Result<Credential, UpstreamError>> {
         Box::pin(async move {
@@ -383,7 +433,7 @@ impl Lane for RelayLane {
             let mut tried: HashSet<String> = HashSet::new();
             loop {
                 let (source, cand) = self.pick(&cands, model, &tried)?;
-                match source.resolve(&cand).await {
+                match resolve_detached(&source, &cand).await {
                     Ok(token) => {
                         let identity = match &cand.pinned_machine_id {
                             Some(m) => DeviceIdentity::pinned(&token.access_token, m.clone()),
@@ -432,7 +482,7 @@ impl Lane for RelayLane {
                     format!("账号 {label} 已不在这条通道里"),
                 ));
             };
-            let token = source.resolve(&cand).await?;
+            let token = resolve_detached(&source, &cand).await?;
             let identity = match &cand.pinned_machine_id {
                 Some(m) => DeviceIdentity::pinned(&token.access_token, m.clone()),
                 None => DeviceIdentity::derived(&token.access_token),
@@ -770,6 +820,31 @@ mod tests {
             &snap.candidates[0].state,
             CandidateState::Cooled { models, .. } if models == &vec!["claude".to_string()]
         ));
+    }
+
+    #[tokio::test]
+    async fn every_account_cooling_is_a_429_with_the_soonest_reset_not_a_503() {
+        let src = FakeSource::new("fake", &["a@x.com", "b@x.com"]);
+        let lane = lane_of(vec![src]);
+        let a = lane.acquire("m").await.unwrap();
+        lane.report(&a, "m", Outcome::Err(&err(UpstreamKind::RateLimit, 429)));
+        let b = lane.acquire("m").await.unwrap();
+        lane.report(&b, "m", Outcome::Err(&err(UpstreamKind::RateLimit, 429)));
+        let e = lane.acquire("m").await.unwrap_err();
+        assert_eq!(e.kind, UpstreamKind::RateLimit, "{}", e.message);
+        assert_eq!(e.status, 429);
+        let secs = e.retry_after_secs().unwrap();
+        assert!((1..=60).contains(&secs), "{secs}");
+
+        // 有一个号是真耗尽（鉴权 / 额度）：那就不是一次会自己好的限流，仍然是 503。
+        let src = FakeSource::new("fake", &["a@x.com", "b@x.com"]);
+        let lane = lane_of(vec![src]);
+        let a = lane.acquire("m").await.unwrap();
+        lane.report(&a, "m", Outcome::Err(&err(UpstreamKind::Auth, 401)));
+        let b = lane.acquire("m").await.unwrap();
+        lane.report(&b, "m", Outcome::Err(&err(UpstreamKind::RateLimit, 429)));
+        let e = lane.acquire("m").await.unwrap_err();
+        assert_eq!(e.status, 503);
     }
 
     #[tokio::test]

@@ -84,18 +84,26 @@ impl GeminiWebService {
         })
     }
 
-    pub fn import_cookie(&self, cookie: &str, email: Option<String>, note: Option<String>) -> Result<GeminiWebAccount> {
+    pub fn import_cookie(
+        &self,
+        cookie: &str,
+        email: Option<String>,
+        note: Option<String>,
+    ) -> Result<GeminiWebAccount> {
         let cookie = cookie.trim();
         if !cookie.contains("__Secure-1PSID=") {
             return Err(AppError::new(
                 ErrorCode::InvalidInput,
                 "这不是 Gemini 网页登录 Cookie，缺少 __Secure-1PSID",
-            ).with_hint("在 gemini.google.com 已登录的页面里复制请求头 Cookie。"));
+            )
+            .with_hint("在 gemini.google.com 已登录的页面里复制请求头 Cookie。"));
         }
         let account_ref = crate::protocol::account_ref_from_cookie(cookie).ok_or_else(|| {
             AppError::new(ErrorCode::InvalidInput, "Cookie 里的 __Secure-1PSID 是空的")
         })?;
-        let email = email.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
+        let email = email
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty());
         let now = now_iso();
         let existing: Option<String> = self.db.with(|conn| {
             conn.query_row(
@@ -107,7 +115,7 @@ impl GeminiWebService {
         })?;
         let id = existing
             .map(GeminiWebAccountId::from_raw)
-            .unwrap_or_else(GeminiWebAccountId::new);
+            .unwrap_or_default();
         self.db.with(|conn| {
             conn.execute(
                 "INSERT INTO gemini_web_accounts
@@ -171,9 +179,14 @@ impl GeminiWebService {
 
     pub fn remove(&self, id: &str) -> Result<()> {
         let aid = GeminiWebAccountId::from_raw(id);
-        let _ = self.secrets.delete(&gemini_web_secret(&aid, GeminiWebSecret::Cookie));
+        let _ = self
+            .secrets
+            .delete(&gemini_web_secret(&aid, GeminiWebSecret::Cookie));
         self.db.with(|conn| {
-            conn.execute("DELETE FROM gemini_web_accounts WHERE id = ?1", [aid.as_str()])?;
+            conn.execute(
+                "DELETE FROM gemini_web_accounts WHERE id = ?1",
+                [aid.as_str()],
+            )?;
             Ok(())
         })
     }

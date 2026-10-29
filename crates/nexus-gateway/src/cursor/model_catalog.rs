@@ -191,11 +191,7 @@ pub struct UsableModelsAddition {
     pub models: Vec<agent::ModelDetails>,
 }
 
-const CONTEXTS: [(&str, &str); 3] = [
-    ("200k", "200K"),
-    ("500k", "500K"),
-    ("1m", "1M"),
-];
+const CONTEXTS: [(&str, &str); 3] = [("200k", "200K"), ("500k", "500K"), ("1m", "1M")];
 
 const EFFORTS: [(&str, &str); 4] = [
     ("low", "Low"),
@@ -367,7 +363,10 @@ fn collect_nexus_models(gw: &Gateway) -> Vec<(String, String)> {
                 let bare_clean = nexus_store::key_providers::bare_model(bare);
 
                 // 1. Cursor 下拉列表中的专属接入模型名：如 "kiro-claude-opus-5.5-thinking (Nexus)"
-                add_model(format!("{bare_clean} (Nexus)"), format!("{bare_clean} (Nexus)"));
+                add_model(
+                    format!("{bare_clean} (Nexus)"),
+                    format!("{bare_clean} (Nexus)"),
+                );
                 // 2. 裸模型名兼容项：如 "kiro-claude-opus-5.5-thinking"
                 add_model(bare_clean.to_string(), format!("{bare_clean} (Nexus)"));
             }
@@ -384,7 +383,10 @@ fn collect_nexus_models(gw: &Gateway) -> Vec<(String, String)> {
                     .unwrap_or(alias_clean)
                     .trim();
                 let bare_clean = nexus_store::key_providers::bare_model(bare);
-                add_model(format!("{bare_clean} (Nexus)"), format!("{bare_clean} (Nexus)"));
+                add_model(
+                    format!("{bare_clean} (Nexus)"),
+                    format!("{bare_clean} (Nexus)"),
+                );
                 add_model(bare_clean.to_string(), format!("{bare_clean} (Nexus)"));
             }
         }
@@ -416,10 +418,12 @@ pub async fn handle_available_models(
     let extra_bytes = addition.encode_to_vec();
 
     // 尝试透传获取官方底座模型并合并
-    let upstream_res = super::native_relay::handle_native_relay(State(gw), headers, body, path_and_query).await;
+    let upstream_res =
+        super::native_relay::handle_native_relay(State(gw), headers, body, path_and_query).await;
     if upstream_res.status().is_success() {
         let (parts, upstream_body) = upstream_res.into_parts();
-        if let Ok(bytes) = axum::body::to_bytes(upstream_body, usize::MAX).await {
+        if let Ok(bytes) = axum::body::to_bytes(upstream_body, crate::server::MAX_BODY_BYTES).await
+        {
             let merged_bytes = merge_protobuf_payload(&bytes, &extra_bytes);
             return Response::from_parts(parts, axum::body::Body::from(merged_bytes));
         }
@@ -454,10 +458,12 @@ pub async fn handle_usable_models(
     };
     let extra_bytes = addition.encode_to_vec();
 
-    let upstream_res = super::native_relay::handle_native_relay(State(gw), headers, body, path_and_query).await;
+    let upstream_res =
+        super::native_relay::handle_native_relay(State(gw), headers, body, path_and_query).await;
     if upstream_res.status().is_success() {
         let (parts, upstream_body) = upstream_res.into_parts();
-        if let Ok(bytes) = axum::body::to_bytes(upstream_body, usize::MAX).await {
+        if let Ok(bytes) = axum::body::to_bytes(upstream_body, crate::server::MAX_BODY_BYTES).await
+        {
             let merged_bytes = merge_protobuf_payload(&bytes, &extra_bytes);
             return Response::from_parts(parts, axum::body::Body::from(merged_bytes));
         }
@@ -531,7 +537,10 @@ mod tests {
         assert_eq!(model.parameter_definitions[1].id, "effort");
         assert_eq!(model.parameter_definitions[2].id, "fast");
 
-        let param_type = model.parameter_definitions[1].parameter_type.as_ref().unwrap();
+        let param_type = model.parameter_definitions[1]
+            .parameter_type
+            .as_ref()
+            .unwrap();
         let enum_param = param_type.enum_parameter.as_ref().unwrap();
         assert_eq!(enum_param.values.len(), 4);
         assert_eq!(enum_param.values[0].value, "low");
@@ -565,7 +574,10 @@ mod tests {
                 _credential: &'a crate::lane::Credential,
                 _request: &'a crate::normalized::ChatRequest,
                 _on_delta: crate::upstream::DeltaSink<'a>,
-            ) -> crate::lane::BoxFuture<'a, Result<crate::normalized::Completion, crate::error::UpstreamError>> {
+            ) -> crate::lane::BoxFuture<
+                'a,
+                Result<crate::normalized::Completion, crate::error::UpstreamError>,
+            > {
                 Box::pin(async { unimplemented!() })
             }
         }

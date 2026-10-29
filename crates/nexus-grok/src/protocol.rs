@@ -30,12 +30,7 @@ pub const REFRESH_AHEAD: Duration = Duration::from_secs(5 * 60);
 /// 对外目录。精选活跃与前沿旗舰模型：
 /// - 次世代与前沿旗舰: grok-4.7, grok-4.6, grok-4.5
 /// - 轻量高吞吐: grok-4-fast
-pub const GROK_MODELS: &[&str] = &[
-    "grok-4.7",
-    "grok-4.6",
-    "grok-4.5",
-    "grok-4-fast",
-];
+pub const GROK_MODELS: &[&str] = &["grok-4.7", "grok-4.6", "grok-4.5", "grok-4-fast"];
 
 /// 生图模型。`grok-imagine` 是官方文档里的别名，实际发 `grok-imagine-image`。
 pub const GROK_IMAGE_MODELS: &[&str] = &[

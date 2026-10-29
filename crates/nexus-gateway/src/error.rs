@@ -99,6 +99,41 @@ impl UpstreamError {
         }
         self
     }
+
+    /// 距上游说的恢复时刻还有几秒（向上取整，至少 1）。上游没说就是 `None`。
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        let at = self.reset_at_ms?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let left = (at - now).max(0);
+        Some(((left + 999) / 1000).max(1) as u64)
+    }
+}
+
+/// 上游说的是不是「上下文太长」。各家措辞不同，收成一份：客户端的自动压缩挂在专门的错误码 /
+/// 措辞上（OpenAI 的 `context_length_exceeded`、Anthropic 的 `prompt is too long`），
+/// 网关得把它认出来、按客户端的方言说。不收 `too many tokens`：那也是每分钟 token 限流的说法。
+pub fn is_context_overflow(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    [
+        "prompt is too long",
+        "input is too long",
+        "context length",
+        "context_length",
+        "context window",
+        "context_window",
+        "maximum context",
+        "reduce the length of",
+        "content_length_exceeds_threshold",
+        "exceeds the context",
+        "上下文过长",
+        "上下文超长",
+        "超出上下文",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
 }
 
 impl fmt::Display for UpstreamError {

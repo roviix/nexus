@@ -200,7 +200,8 @@ fn find_last_invoke_close(buffer: &str, from: usize, boundary: usize) -> Option<
     let mut last = None;
     while let Some(rel) = region[search..].find("invoke>") {
         let name_pos = search + rel;
-        if name_pos >= 2 && &region[name_pos - 2..name_pos] == "</" {
+        // 按字节比：`name_pos - 2` 可能落在一个汉字中间，按 `&str` 切会 panic，整条流跟着断掉。
+        if name_pos >= 2 && &bytes[name_pos - 2..name_pos] == b"</" {
             last = Some(from + name_pos + "invoke>".len());
         } else if name_pos >= 1 && bytes[name_pos - 1] == b':' {
             let mut j = name_pos - 1;
@@ -210,7 +211,7 @@ fn find_last_invoke_close(buffer: &str, from: usize, boundary: usize) -> Option<
             } {
                 j -= 1;
             }
-            if j >= 2 && &region[j - 2..j] == "</" {
+            if j >= 2 && &bytes[j - 2..j] == b"</" {
                 last = Some(from + name_pos + "invoke>".len());
             }
         }
@@ -263,7 +264,7 @@ fn find_param_close(body: &str, from: usize) -> Option<(usize, usize)> {
     let mut search = 0usize;
     while let Some(rel) = region[search..].find(kw) {
         let name_pos = search + rel;
-        if name_pos >= 2 && &region[name_pos - 2..name_pos] == "</" {
+        if name_pos >= 2 && &bytes[name_pos - 2..name_pos] == b"</" {
             last = Some((from + name_pos - 2, from + name_pos + kw.len()));
         } else if name_pos >= 1 && bytes[name_pos - 1] == b':' {
             let mut j = name_pos - 1;
@@ -273,7 +274,7 @@ fn find_param_close(body: &str, from: usize) -> Option<(usize, usize)> {
             } {
                 j -= 1;
             }
-            if j >= 2 && &region[j - 2..j] == "</" {
+            if j >= 2 && &bytes[j - 2..j] == b"</" {
                 last = Some((from + j - 2, from + name_pos + kw.len()));
             }
         }

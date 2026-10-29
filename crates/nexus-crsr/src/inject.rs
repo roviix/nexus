@@ -48,7 +48,10 @@ static PATCHED_AUTH_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// Capture 2: method param (如 `e` 或 `t`)
 /// Capture 3: bool/opts param (如 `r`)
 static UNPATCHED_TRANSPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"_getTransportForService\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)=!0\)\{let n;").unwrap()
+    Regex::new(
+        r"_getTransportForService\(([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+),([a-zA-Z0-9_$]+)=!0\)\{let n;",
+    )
+    .unwrap()
 });
 
 /// 匹配已打补丁的 _getTransportForService。

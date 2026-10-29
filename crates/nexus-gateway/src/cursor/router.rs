@@ -98,7 +98,9 @@ pub fn is_custom_model_id(gw: &Gateway, raw: &str) -> bool {
 
     // 3. 被网关就绪通道认领（如 MeshGate 认领的 kiro-claude-* 或其它对等节点共享模型）
     for ch in gw.channels.extras() {
-        if ch.gate.ready() && (ch.gate.claims_bare(clean) || ch.gate.owns(crate::channel::Capability::Chat, clean)) {
+        if ch.gate.ready()
+            && (ch.gate.claims_bare(clean) || ch.gate.owns(crate::channel::Capability::Chat, clean))
+        {
             return true;
         }
     }
@@ -107,12 +109,18 @@ pub fn is_custom_model_id(gw: &Gateway, raw: &str) -> bool {
     if let Ok(routes) = gw.routes.read() {
         if let Some(cursor_route) = routes.get("cursor") {
             let bare_requested = nexus_store::key_providers::bare_model(clean);
-            let model_requested = bare_requested.split_once('/').map(|(_, r)| r).unwrap_or(bare_requested);
+            let model_requested = bare_requested
+                .split_once('/')
+                .map(|(_, r)| r)
+                .unwrap_or(bare_requested);
 
             let configured = cursor_route.model.trim();
             if !configured.is_empty() {
                 let bare_configured = nexus_store::key_providers::bare_model(configured);
-                let model_configured = bare_configured.split_once('/').map(|(_, r)| r).unwrap_or(bare_configured);
+                let model_configured = bare_configured
+                    .split_once('/')
+                    .map(|(_, r)| r)
+                    .unwrap_or(bare_configured);
                 if clean.eq_ignore_ascii_case(configured)
                     || bare_requested.eq_ignore_ascii_case(bare_configured)
                     || model_requested.eq_ignore_ascii_case(model_configured)
@@ -127,7 +135,10 @@ pub fn is_custom_model_id(gw: &Gateway, raw: &str) -> bool {
                     continue;
                 }
                 let bare_alias = nexus_store::key_providers::bare_model(alias_clean);
-                let model_alias = bare_alias.split_once('/').map(|(_, r)| r).unwrap_or(bare_alias);
+                let model_alias = bare_alias
+                    .split_once('/')
+                    .map(|(_, r)| r)
+                    .unwrap_or(bare_alias);
                 if clean.eq_ignore_ascii_case(alias_clean)
                     || bare_requested.eq_ignore_ascii_case(bare_alias)
                     || model_requested.eq_ignore_ascii_case(model_alias)
@@ -147,7 +158,7 @@ pub fn is_custom_model_request(gw: &Gateway, req: &InferenceStreamRequest) -> bo
         .requested_model
         .as_ref()
         .map(|m| m.model_id.as_str())
-        .or_else(|| req.model_id.as_deref())
+        .or(req.model_id.as_deref())
         .unwrap_or("");
     is_custom_model_id(gw, raw)
 }
@@ -159,7 +170,7 @@ pub fn is_custom_agent_run_request(gw: &Gateway, req: &agent::AgentRunRequest) -
         .as_ref()
         .map(|m| m.model_id.as_str())
         .or_else(|| req.model_details.as_ref().map(|m| m.model_id.as_str()))
-        .or_else(|| req.dev_raw_model_slug.as_deref())
+        .or(req.dev_raw_model_slug.as_deref())
         .unwrap_or("");
     is_custom_model_id(gw, raw)
 }
@@ -203,30 +214,41 @@ pub async fn handle_cursor_route(
         return agent_server::handle_agent_unary_metadata(&subpath, &headers);
     }
 
-    // 2. Connect-RPC 双向流式 Agent 运行流 (AgentService/Run)
-    // 注意：双向流式客户端在接收到服务端首个响应前不会发送 EOF，绝不能在入口通过 to_bytes 阻塞等待整个 body！
-    if subpath.contains("agent.v1.AgentService/Run") {
-        return handle_agent_service_run_stream(gw, headers, req.into_body(), &path_and_query).await;
+    // 2. RunSSE 是服务端流：请求体只有一个 BidiRequestId，读完整体后建立本地下行管道，
+    //    模型归属由随后的 BidiAppend 判定。必须排在 Run 之前，否则会被 "Run" 前缀吞掉。
+    if subpath.contains("agent.v1.AgentService/RunSSE") {
+        let body = match axum::body::to_bytes(req.into_body(), crate::server::MAX_BODY_BYTES).await
+        {
+            Ok(b) => b,
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        };
+        return agent_server::handle_run_sse(State(gw), headers, body).await;
     }
 
-    // 3. 其他非双向长流端点，安全读取完整 body
-    let body = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+    // 3. Connect-RPC 双向流式 Agent 运行流 (AgentService/Run)
+    // 注意：双向流式客户端在接收到服务端首个响应前不会发送 EOF，绝不能在入口通过 to_bytes 阻塞等待整个 body！
+    if subpath.contains("agent.v1.AgentService/Run") {
+        return handle_agent_service_run_stream(gw, headers, req.into_body(), &path_and_query)
+            .await;
+    }
+
+    // 其他非双向长流端点，安全读取完整 body
+    let body = match axum::body::to_bytes(req.into_body(), crate::server::MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
     // 4. 动态模型目录与能力查询（Module 2）
     if subpath.contains("AvailableModels") {
-        return model_catalog::handle_available_models(State(gw), headers, body, &path_and_query).await;
+        return model_catalog::handle_available_models(State(gw), headers, body, &path_and_query)
+            .await;
     }
     if subpath.contains("GetUsableModels") {
-        return model_catalog::handle_usable_models(State(gw), headers, body, &path_and_query).await;
+        return model_catalog::handle_usable_models(State(gw), headers, body, &path_and_query)
+            .await;
     }
 
-    // 5. 原生 Agent 会话引擎（Module 3 CLI 端点）
-    if subpath.contains("agent.v1.AgentService/RunSSE") {
-        return agent_server::handle_run_sse(State(gw), headers, body).await;
-    }
+    // 5. 原生 Agent 会话引擎（BidiAppend 上行）
     if subpath.contains("aiserver.v1.BidiService/BidiAppend") {
         return agent_server::handle_bidi_append(State(gw), headers, body).await;
     }
@@ -389,7 +411,8 @@ async fn handle_agent_service_run_stream(
                 vec![Ok(Bytes::from(pending))]
             };
             let inbound = tokio_stream::StreamExt::chain(tokio_stream::iter(chunk_vec), stream);
-            return agent_server::handle_agent_run_direct(State(gw), headers, run_req, inbound).await;
+            return agent_server::handle_agent_run_direct(State(gw), headers, run_req, inbound)
+                .await;
         }
     } else {
         warn!("AgentService/Run: 未能在首帧中解析出 AgentRunRequest 或 BidiRequestId，将透传至官方底座");
@@ -397,7 +420,7 @@ async fn handle_agent_service_run_stream(
 
     // 官方底座模型或未识别流：无缝拼装已读数据与后续流，直通 Cursor 官方
     let initial = tokio_stream::once(Ok(Bytes::from(buffered)));
-    let rest = stream.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let rest = stream.map_err(std::io::Error::other);
     let full_stream = initial.chain(rest);
     let reqwest_body = reqwest::Body::wrap_stream(full_stream);
 
@@ -433,7 +456,10 @@ mod tests {
                 _credential: &'a crate::lane::Credential,
                 _request: &'a crate::normalized::ChatRequest,
                 _on_delta: crate::upstream::DeltaSink<'a>,
-            ) -> crate::lane::BoxFuture<'a, Result<crate::normalized::Completion, crate::error::UpstreamError>> {
+            ) -> crate::lane::BoxFuture<
+                'a,
+                Result<crate::normalized::Completion, crate::error::UpstreamError>,
+            > {
                 Box::pin(async { unimplemented!() })
             }
         }

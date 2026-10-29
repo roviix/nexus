@@ -24,9 +24,15 @@ async fn main() {
         .filter_map(|v| v.split('=').next())
         .map(|s| s.to_string())
         .collect();
-    println!("rotate_status={} set_cookie_names={names:?}", rotate.status());
+    println!(
+        "rotate_status={} set_cookie_names={names:?}",
+        rotate.status()
+    );
     let cookie = session::refresh_session(&client, cookie.trim()).await;
-    println!("rotated_has_psidts={}", cookie.contains("__Secure-1PSIDTS="));
+    println!(
+        "rotated_has_psidts={}",
+        cookie.contains("__Secure-1PSIDTS=")
+    );
     match session::generate(
         &client,
         &cookie,

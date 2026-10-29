@@ -275,10 +275,7 @@ impl AntigravitySecret {
         }
     }
 
-    pub const ALL: [AntigravitySecret; 2] = [
-        AntigravitySecret::Access,
-        AntigravitySecret::Refresh,
-    ];
+    pub const ALL: [AntigravitySecret; 2] = [AntigravitySecret::Access, AntigravitySecret::Refresh];
 }
 
 pub fn antigravity_secret(id: &AntigravityAccountId, kind: AntigravitySecret) -> SecretRef {
@@ -393,7 +390,11 @@ mod tests {
         );
         assert_eq!(ClaudeSecret::ALL.len(), 3);
         assert_eq!(
-            antigravity_secret(&AntigravityAccountId::from_raw(same), AntigravitySecret::Refresh).as_str(),
+            antigravity_secret(
+                &AntigravityAccountId::from_raw(same),
+                AntigravitySecret::Refresh
+            )
+            .as_str(),
             "antigravity/X1/refresh"
         );
         assert_eq!(AntigravitySecret::ALL.len(), 2);

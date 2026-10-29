@@ -7,7 +7,5 @@ pub mod protocol;
 pub mod service;
 pub mod session;
 
-pub use protocol::{
-    catalog_ids, owns_model, resolve_model, ModelSpec, MODELS, ROUTE_PREFIXES,
-};
+pub use protocol::{catalog_ids, owns_model, resolve_model, ModelSpec, MODELS, ROUTE_PREFIXES};
 pub use service::{GeminiWebAccount, GeminiWebService, GeminiWebStatus};

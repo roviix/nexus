@@ -43,7 +43,10 @@ pub async fn refresh_session(client: &reqwest::Client, cookie: &str) -> String {
     merge_set_cookie(&cookie, &set_cookies)
 }
 
-pub async fn open_app(client: &reqwest::Client, cookie: &str) -> Result<(String, String, String), String> {
+pub async fn open_app(
+    client: &reqwest::Client,
+    cookie: &str,
+) -> Result<(String, String, String), String> {
     let resp = client
         .get(PAGE_URL)
         .header("User-Agent", CHROME_UA)
@@ -56,10 +59,14 @@ pub async fn open_app(client: &reqwest::Client, cookie: &str) -> Result<(String,
         return Err("Cookie 已被 Gemini 拒绝".into());
     }
     let set_cookies = set_cookie_headers(&resp);
-    let html = resp.text().await.map_err(|err| format!("读取 Gemini 页面失败：{err}"))?;
+    let html = resp
+        .text()
+        .await
+        .map_err(|err| format!("读取 Gemini 页面失败：{err}"))?;
     let cookie = merge_set_cookie(cookie, &set_cookies);
     let xsrf = extract_xsrf(&html).ok_or_else(|| {
-        "页面里没有登录令牌。只贴 __Secure-1PSID 时，需要先换到短票；若仍没有，这份票已经失效。".to_string()
+        "页面里没有登录令牌。只贴 __Secure-1PSID 时，需要先换到短票；若仍没有，这份票已经失效。"
+            .to_string()
     })?;
     let bl = extract_bl(&html).unwrap_or_else(|| DEFAULT_BL.to_string());
     Ok((cookie, xsrf, bl))
@@ -114,19 +121,39 @@ pub async fn generate(
     let mut raw = String::new();
     let mut buf = String::new();
     let mut resp = resp;
-    while let Some(chunk) = resp.chunk().await.map_err(|err| format!("读取网页流失败：{err}"))? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|err| format!("读取网页流失败：{err}"))?
+    {
         buf.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(idx) = buf.find('\n') {
             let line = buf[..idx].to_string();
             buf.drain(..=idx);
             raw.push_str(&line);
             raw.push('\n');
-            ingest(&line, &mut text_tracker, &mut think_tracker, &mut text, &mut thinking, &mut upstream, on_piece);
+            ingest(
+                &line,
+                &mut text_tracker,
+                &mut think_tracker,
+                &mut text,
+                &mut thinking,
+                &mut upstream,
+                on_piece,
+            );
         }
     }
     if !buf.trim().is_empty() {
         raw.push_str(&buf);
-        ingest(&buf, &mut text_tracker, &mut think_tracker, &mut text, &mut thinking, &mut upstream, on_piece);
+        ingest(
+            &buf,
+            &mut text_tracker,
+            &mut think_tracker,
+            &mut text,
+            &mut thinking,
+            &mut upstream,
+            on_piece,
+        );
     }
     if text.is_empty() && thinking.is_empty() {
         return Err(format!("Gemini 网页没有返回内容帧（{} 字节）", raw.len()));
@@ -169,12 +196,17 @@ fn ingest(
     }
 }
 
-async fn post(client: &reqwest::Client, prepared: &crate::protocol::PreparedRequest) -> Result<reqwest::Response, String> {
+async fn post(
+    client: &reqwest::Client,
+    prepared: &crate::protocol::PreparedRequest,
+) -> Result<reqwest::Response, String> {
     let mut req = client.post(&prepared.url).body(prepared.body.clone());
     for (key, value) in &prepared.headers {
         req = req.header(key, value);
     }
-    req.send().await.map_err(|err| format!("连接 Gemini 网页失败：{err}"))
+    req.send()
+        .await
+        .map_err(|err| format!("连接 Gemini 网页失败：{err}"))
 }
 
 fn set_cookie_headers(resp: &reqwest::Response) -> Vec<String> {
@@ -188,7 +220,9 @@ fn set_cookie_headers(resp: &reqwest::Response) -> Vec<String> {
 fn cookie_subset(cookie: &str, names: &[&str]) -> String {
     names
         .iter()
-        .filter_map(|name| crate::protocol::cookie_value(cookie, name).map(|value| format!("{name}={value}")))
+        .filter_map(|name| {
+            crate::protocol::cookie_value(cookie, name).map(|value| format!("{name}={value}"))
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }

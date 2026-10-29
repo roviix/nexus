@@ -52,7 +52,7 @@ pub fn cursor_routes(gw: Arc<Gateway>) -> Router {
                 } else {
                     stripped.to_string()
                 };
-                let body = axum::body::to_bytes(req.into_body(), usize::MAX)
+                let body = axum::body::to_bytes(req.into_body(), crate::server::MAX_BODY_BYTES)
                     .await
                     .unwrap_or_default();
                 split_tunnel::transparent_proxy_to_cursor(headers, body, &subpath).await
@@ -61,22 +61,24 @@ pub fn cursor_routes(gw: Arc<Gateway>) -> Router {
         // Target 1: 原生 Connect-RPC 透明中继与指纹归一化
         .route(
             "/native/{*path}",
-            any(|State(gw): State<Arc<Gateway>>, headers: HeaderMap, req: Request| async move {
-                let path = req.uri().path().to_string();
-                let stripped = path
-                    .strip_prefix("/cursor/native")
-                    .or_else(|| path.strip_prefix("/native"))
-                    .unwrap_or(&path);
-                let subpath = if stripped.is_empty() || !stripped.starts_with('/') {
-                    format!("/{stripped}")
-                } else {
-                    stripped.to_string()
-                };
-                let body = axum::body::to_bytes(req.into_body(), usize::MAX)
-                    .await
-                    .unwrap_or_default();
-                native_relay::handle_native_relay(State(gw), headers, body, &subpath).await
-            }),
+            any(
+                |State(gw): State<Arc<Gateway>>, headers: HeaderMap, req: Request| async move {
+                    let path = req.uri().path().to_string();
+                    let stripped = path
+                        .strip_prefix("/cursor/native")
+                        .or_else(|| path.strip_prefix("/native"))
+                        .unwrap_or(&path);
+                    let subpath = if stripped.is_empty() || !stripped.starts_with('/') {
+                        format!("/{stripped}")
+                    } else {
+                        stripped.to_string()
+                    };
+                    let body = axum::body::to_bytes(req.into_body(), crate::server::MAX_BODY_BYTES)
+                        .await
+                        .unwrap_or_default();
+                    native_relay::handle_native_relay(State(gw), headers, body, &subpath).await
+                },
+            ),
         )
         .layer(middleware::from_fn(cors::cursor_cors_middleware))
         .with_state(gw)

@@ -12,7 +12,7 @@ pub mod parse;
 pub mod serialize;
 
 pub use parse::{parse_request, ParseError, ParsedRequest};
-pub use serialize::{protocol_error, Serializer};
+pub use serialize::{protocol_error, responses_failed_event, Serializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {

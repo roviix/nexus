@@ -196,13 +196,14 @@ impl MeshService {
         for c in cfg_guard.host_channels.iter().filter(|c| c.enabled) {
             for m in &c.allowed_models {
                 let clean = m.trim();
-                let clean = if let Some(stripped) = clean.strip_prefix(&format!("{}/", c.channel_id)) {
-                    stripped
-                } else if let Some((_, stripped)) = clean.split_once('/') {
-                    stripped
-                } else {
-                    clean
-                };
+                let clean =
+                    if let Some(stripped) = clean.strip_prefix(&format!("{}/", c.channel_id)) {
+                        stripped
+                    } else if let Some((_, stripped)) = clean.split_once('/') {
+                        stripped
+                    } else {
+                        clean
+                    };
                 if !clean.is_empty() && !models.contains(&clean.to_string()) {
                     models.push(clean.to_string());
                 }
@@ -295,13 +296,14 @@ impl MeshService {
             {
                 for m in &c.allowed_models {
                     let clean = m.trim();
-                    let clean = if let Some(stripped) = clean.strip_prefix(&format!("{}/", c.channel_id)) {
-                        stripped
-                    } else if let Some((_, stripped)) = clean.split_once('/') {
-                        stripped
-                    } else {
-                        clean
-                    };
+                    let clean =
+                        if let Some(stripped) = clean.strip_prefix(&format!("{}/", c.channel_id)) {
+                            stripped
+                        } else if let Some((_, stripped)) = clean.split_once('/') {
+                            stripped
+                        } else {
+                            clean
+                        };
                     if !clean.is_empty() && !remote_models.contains(&clean.to_string()) {
                         remote_models.push(clean.to_string());
                     }
@@ -328,16 +330,11 @@ impl MeshService {
                         ]);
                     }
                     "antigravity" => {
-                        remote_models.extend([
-                            "gemini-2.5-pro".to_string(),
-                            "gemini-2.5-flash".to_string(),
-                        ]);
+                        remote_models
+                            .extend(["gemini-2.5-pro".to_string(), "gemini-2.5-flash".to_string()]);
                     }
                     "grok" => {
-                        remote_models.extend([
-                            "grok-3".to_string(),
-                            "grok-3-mini".to_string(),
-                        ]);
+                        remote_models.extend(["grok-3".to_string(), "grok-3-mini".to_string()]);
                     }
                     "kiro" => {
                         remote_models.extend([
@@ -346,16 +343,11 @@ impl MeshService {
                         ]);
                     }
                     "zcode" => {
-                        remote_models.extend([
-                            "glm-4-plus".to_string(),
-                            "glm-4-flash".to_string(),
-                        ]);
+                        remote_models.extend(["glm-4-plus".to_string(), "glm-4-flash".to_string()]);
                     }
                     "qoder" => {
-                        remote_models.extend([
-                            "qwen-2.5-coder".to_string(),
-                            "deepseek-v3".to_string(),
-                        ]);
+                        remote_models
+                            .extend(["qwen-2.5-coder".to_string(), "deepseek-v3".to_string()]);
                     }
                     _ => {
                         remote_models.push("auto/smart".to_string());
@@ -481,7 +473,11 @@ impl MeshService {
     }
 
     /// 严格校验来自外部 Mesh 隧道调用的通道与模型是否在本地开放共享配置中。
-    pub async fn is_channel_and_model_allowed(&self, channel_id: &str, model: &str) -> Result<(), String> {
+    pub async fn is_channel_and_model_allowed(
+        &self,
+        channel_id: &str,
+        model: &str,
+    ) -> Result<(), String> {
         let cfg = self.config.read().await;
         if cfg.role != MeshRole::Provider {
             return Err("本地节点未处于共享供给方 (Provider) 模式".to_string());
@@ -506,17 +502,24 @@ impl MeshService {
                 let allowed = ch.allowed_models.iter().any(|m| {
                     let m_clean = m.trim().to_ascii_lowercase();
                     let stripped = m_clean.strip_prefix(&format!("{cid}/")).unwrap_or(&m_clean);
-                    target_model == m_clean || target_model == stripped || target_model.ends_with(stripped)
+                    target_model == m_clean
+                        || target_model == stripped
+                        || target_model.ends_with(stripped)
                 });
                 if !allowed {
-                    return Err(format!("本地通道 [{channel_id}] 未开放模型 [{model}] 的共享"));
+                    return Err(format!(
+                        "本地通道 [{channel_id}] 未开放模型 [{model}] 的共享"
+                    ));
                 }
             }
             return Ok(());
         }
 
         // 回退规则：检查 share_platforms 是否包含该通道
-        let platform_matched = cfg.share_platforms.iter().any(|p| p.eq_ignore_ascii_case(&cid));
+        let platform_matched = cfg
+            .share_platforms
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(&cid));
         if !platform_matched {
             return Err(format!("本地未开放平台 [{channel_id}] 的共享授权"));
         }
@@ -548,7 +551,12 @@ impl MeshService {
             while !stop_signal.load(Ordering::Relaxed) {
                 let (broker_url, node_id, device_name, auth_token) = {
                     let c = config.read().await;
-                    (c.broker_url.clone(), c.node_id.to_string(), c.device_name.clone(), c.auth_token.clone())
+                    (
+                        c.broker_url.clone(),
+                        c.node_id.to_string(),
+                        c.device_name.clone(),
+                        c.auth_token.clone(),
+                    )
                 };
 
                 let host = broker_url
@@ -581,13 +589,19 @@ impl MeshService {
                             while !stop_ping.load(Ordering::Relaxed) {
                                 tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
                                 let now = now_secs() as u64;
-                                if tunnel_ping.send_frame(protocol::TunnelFrame::Ping { timestamp: now }).await.is_err() {
+                                if tunnel_ping
+                                    .send_frame(protocol::TunnelFrame::Ping { timestamp: now })
+                                    .await
+                                    .is_err()
+                                {
                                     break;
                                 }
                             }
                         });
 
-                        tunnel_client.run_session_with_handshake(stream, Some(handshake)).await;
+                        tunnel_client
+                            .run_session_with_handshake(stream, Some(handshake))
+                            .await;
                         ping_task.abort();
                         is_connected.store(false, Ordering::SeqCst);
                         tracing::warn!(%addr, "Provider 反向隧道连接断开，即将按退避算法重连");
@@ -635,7 +649,8 @@ impl MeshService {
     /// 确保后台反向隧道工作协程已启动（若当前处于 Provider 状态或开放了 Host 通道）。
     pub async fn ensure_worker_started(&self) {
         let cfg = self.config.read().await;
-        let is_provider = cfg.role == MeshRole::Provider || cfg.host_channels.iter().any(|h| h.enabled);
+        let is_provider =
+            cfg.role == MeshRole::Provider || cfg.host_channels.iter().any(|h| h.enabled);
         if is_provider {
             self.start_tunnel_worker().await;
         }
@@ -738,6 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::field_reassign_with_default)]
     async fn test_channel_and_model_authorization() {
         let mut config = MeshConfig::default();
         config.role = MeshRole::Provider;
@@ -765,20 +781,38 @@ mod tests {
         let service = MeshService::new(config);
 
         // 1. 允许的模型与通道 -> 成功
-        assert!(service.is_channel_and_model_allowed("claude", "claude-3-7-sonnet").await.is_ok());
-        assert!(service.is_channel_and_model_allowed("claude", "claude/claude-3-7-sonnet").await.is_ok());
+        assert!(service
+            .is_channel_and_model_allowed("claude", "claude-3-7-sonnet")
+            .await
+            .is_ok());
+        assert!(service
+            .is_channel_and_model_allowed("claude", "claude/claude-3-7-sonnet")
+            .await
+            .is_ok());
 
         // 2. 未允许的模型 -> 拒绝
-        assert!(service.is_channel_and_model_allowed("claude", "claude-3-5-haiku").await.is_err());
+        assert!(service
+            .is_channel_and_model_allowed("claude", "claude-3-5-haiku")
+            .await
+            .is_err());
 
         // 3. 已关闭共享的通道 -> 拒绝
-        assert!(service.is_channel_and_model_allowed("chatgpt", "gpt-4o").await.is_err());
+        assert!(service
+            .is_channel_and_model_allowed("chatgpt", "gpt-4o")
+            .await
+            .is_err());
 
         // 4. 未配置的通道 -> 拒绝
-        assert!(service.is_channel_and_model_allowed("grok", "grok-3").await.is_err());
+        assert!(service
+            .is_channel_and_model_allowed("grok", "grok-3")
+            .await
+            .is_err());
 
         // 5. 角色关闭 -> 拒绝
         service.set_sharing_enabled(false).await;
-        assert!(service.is_channel_and_model_allowed("claude", "claude-3-7-sonnet").await.is_err());
+        assert!(service
+            .is_channel_and_model_allowed("claude", "claude-3-7-sonnet")
+            .await
+            .is_err());
     }
 }

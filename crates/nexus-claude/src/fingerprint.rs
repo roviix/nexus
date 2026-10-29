@@ -256,7 +256,7 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 /// 官方 Claude Code 工具名。小写 / 下划线 / 连字符都归到 TitleCase。
-/// 不认识的名字原样留下——剥掉会让 OpenCode 自己的工具整轮作废。
+/// 第三方请求里认不出的函数工具不带去上游（见 `rewrite_tools`）；Anthropic 服务端工具不改名。
 const TOOLS: &[(&str, &str)] = &[
     ("agent", "Agent"),
     ("askuserquestion", "AskUserQuestion"),
@@ -622,26 +622,67 @@ fn text_block(text: &str, cache: Option<Value>) -> Value {
     Value::Object(o)
 }
 
+/// Anthropic 的服务端工具（`web_search_20250305`、`bash_20250124` …）：名字是协议规定死的，
+/// 改成 TitleCase 上游就不认了。它们不是第三方函数工具，原样留着。
+fn is_server_tool(tool: &Value) -> bool {
+    tool.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| !t.is_empty() && t != "custom")
+}
+
+/// 整个请求体里已经有几个 `cache_control` 断点。上游最多收 4 个，多一个整轮 400。
+fn cache_breakpoints(v: &Value) -> usize {
+    match v {
+        Value::Object(map) => {
+            usize::from(map.contains_key("cache_control"))
+                + map.values().map(cache_breakpoints).sum::<usize>()
+        }
+        Value::Array(items) => items.iter().map(cache_breakpoints).sum(),
+        _ => 0,
+    }
+}
+
+const MAX_CACHE_BREAKPOINTS: usize = 4;
+
 fn rewrite_tools(body: &mut Value) -> ToolMap {
     let mut map = ToolMap::default();
+    let existing_breakpoints = cache_breakpoints(body);
     if let Some(Value::Array(tools)) = body.get_mut("tools") {
+        // 认不出的第三方函数工具不带去上游（订阅号只该看到 Claude Code 自己的工具）；
+        // 不是对象的条目更不能留——后面往它上面挂 cache_control 会直接 panic。
         tools.retain(|tool| {
+            if !tool.is_object() {
+                return false;
+            }
+            if is_server_tool(tool) {
+                return true;
+            }
             let Some(name) = tool.get("name").and_then(Value::as_str) else {
                 return true;
             };
             known_tool(name).is_some()
         });
-        for tool in tools.iter_mut() {
+        for tool in tools.iter_mut().filter(|t| !is_server_tool(t)) {
             rename_field(tool, "name", &mut map);
         }
-        if let Some(last) = tools.last_mut() {
-            if last.get("cache_control").is_none() {
-                last["cache_control"] = json!({ "type": "ephemeral", "ttl": CACHE_TTL });
+        if existing_breakpoints < MAX_CACHE_BREAKPOINTS {
+            if let Some(last) = tools.last_mut().filter(|t| t.is_object()) {
+                if last.get("cache_control").is_none() {
+                    last["cache_control"] = json!({ "type": "ephemeral", "ttl": CACHE_TTL });
+                }
             }
         }
     }
+    // tool_choice 只跟着改过名的函数工具走；指向服务端工具的保持原名。
     if let Some(choice) = body.get_mut("tool_choice") {
-        rename_field(choice, "name", &mut map);
+        let renamed = choice
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(known_tool)
+            .is_some_and(|official| map.restore(official) != official);
+        if renamed {
+            rename_field(choice, "name", &mut map);
+        }
     }
     rewrite_history(body, &mut map);
     map
@@ -984,6 +1025,53 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(&format!("{CLI_VERSION}.{fp}")));
+    }
+
+    #[test]
+    fn server_tools_keep_their_protocol_names_and_junk_tools_do_not_panic() {
+        let mut body = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{ "role": "user", "content": "search" }],
+            "tools": [
+                { "type": "web_search_20250305", "name": "web_search", "max_uses": 3 },
+                { "type": "bash_20250124", "name": "bash" },
+                { "name": "read", "description": "r", "input_schema": { "type": "object" } },
+                "not a tool"
+            ],
+            "tool_choice": { "type": "tool", "name": "web_search" }
+        });
+        let prep = prepare(&mut body, "acct", false, &[], false);
+        let tools = body["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["web_search", "bash", "Read"],
+            "服务端工具名是协议定死的"
+        );
+        assert_eq!(tools.len(), 3, "非对象的条目丢掉，不在上面挂 cache_control");
+        assert_eq!(body["tool_choice"]["name"], "web_search");
+        assert_eq!(prep.tools.restore("Read"), "read");
+    }
+
+    #[test]
+    fn the_tool_cache_breakpoint_is_skipped_when_the_client_already_used_four() {
+        let cc = json!({ "type": "ephemeral" });
+        let mut body = json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "a", "cache_control": cc },
+                { "type": "text", "text": "b", "cache_control": cc },
+                { "type": "text", "text": "c", "cache_control": cc },
+                { "type": "text", "text": "d", "cache_control": cc }
+            ] }],
+            "tools": [{ "name": "read", "input_schema": { "type": "object" } }]
+        });
+        prepare(&mut body, "acct", false, &[], false);
+        assert!(
+            body["tools"][0].get("cache_control").is_none(),
+            "第 5 个断点会被上游整轮 400"
+        );
+        assert!(cache_breakpoints(&body) <= MAX_CACHE_BREAKPOINTS);
     }
 
     #[test]

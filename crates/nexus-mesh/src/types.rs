@@ -136,7 +136,11 @@ impl Default for MeshConfig {
             device_name: default_device_name(),
             broker_url: "https://nexus.roviix.com".to_string(),
             auth_token: None,
-            share_platforms: vec!["claude".to_string(), "chatgpt".to_string(), "cursor".to_string()],
+            share_platforms: vec![
+                "claude".to_string(),
+                "chatgpt".to_string(),
+                "cursor".to_string(),
+            ],
             max_concurrency: 3,
             reserve_quota_percent: 20,
             local_preemption: true,

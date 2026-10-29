@@ -554,11 +554,59 @@ fn apply_auth_reqwest(req: reqwest::RequestBuilder, target: &Target) -> reqwest:
 async fn finish_send(target: &Target, resp: UpResp) -> Result<UpResp, UpstreamError> {
     let status = resp.status();
     if !(200..300).contains(&status) {
+        // 头得在读正文之前取：读正文会把响应吃掉。
+        let reset = reset_at_ms(|name| resp.header(name));
         let text = resp.error_text().await;
-        return Err(http_err(&target.name, status, &text));
+        let mut err = http_err(&target.name, status, &text);
+        if let Some(at) = reset {
+            err = err.with_reset_at_ms(at);
+        }
+        return Err(err);
     }
     Ok(resp)
 }
+
+/// 上游说的恢复时刻（Unix 毫秒）。`retry-after(-ms)` 是相对秒数；Claude 订阅窗口用满时给的
+/// `anthropic-ratelimit-unified-reset` 是 Unix 秒，API Key 的 `*-reset` 是 RFC 3339。
+/// 拿到了 lane 就按它冷却、客户端按它退避，而不是一律猜 60 秒。
+fn reset_at_ms(header: impl Fn(&str) -> Option<String>) -> Option<i64> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let relative = |name: &str, unit_ms: f64| {
+        header(name)
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| now_ms + (n * unit_ms) as i64)
+    };
+    if let Some(at) = relative("retry-after-ms", 1.0).or_else(|| relative("retry-after", 1000.0)) {
+        return Some(at);
+    }
+    for name in [
+        "anthropic-ratelimit-unified-reset",
+        "anthropic-ratelimit-requests-reset",
+        "anthropic-ratelimit-tokens-reset",
+    ] {
+        let Some(v) = header(name) else { continue };
+        let v = v.trim();
+        if let Ok(secs) = v.parse::<i64>() {
+            if secs > 1_000_000_000 {
+                return Some(secs * 1000);
+            }
+        }
+        if let Ok(t) =
+            time::OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339)
+        {
+            return Some(t.unix_timestamp() * 1000);
+        }
+    }
+    None
+}
+
+/// 流里两帧之间最多空这么久。官方的流在长思考、长工具参数时也一直有增量或 ping；
+/// 再长就是连接僵死了——不掐的话这个请求永远挂着，客户端等不到结局。
+const STREAM_IDLE: Duration = Duration::from_secs(300);
 
 /// 共享客户端和 Claude 专用客户端的响应，读的方式一样。
 enum UpResp {
@@ -574,17 +622,42 @@ impl UpResp {
         }
     }
 
-    async fn chunk(&mut self, target: &Target) -> Result<Option<Vec<u8>>, UpstreamError> {
+    fn header(&self, name: &str) -> Option<String> {
         match self {
             Self::Shared(resp) => resp
-                .chunk()
-                .await
-                .map(|c| c.map(|b| b.to_vec()))
-                .map_err(|e| net_err(target, e.is_timeout(), &e)),
-            Self::Claude(resp) => resp
-                .chunk()
-                .await
-                .map_err(|e| net_err(target, e.timeout, &e)),
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            Self::Claude(resp) => resp.header(name).map(str::to_string),
+        }
+    }
+
+    async fn chunk(&mut self, target: &Target) -> Result<Option<Vec<u8>>, UpstreamError> {
+        let read = async {
+            match self {
+                Self::Shared(resp) => resp
+                    .chunk()
+                    .await
+                    .map(|c| c.map(|b| b.to_vec()))
+                    .map_err(|e| net_err(target, e.is_timeout(), &e)),
+                Self::Claude(resp) => resp
+                    .chunk()
+                    .await
+                    .map_err(|e| net_err(target, e.timeout, &e)),
+            }
+        };
+        match tokio::time::timeout(STREAM_IDLE, read).await {
+            Ok(r) => r,
+            Err(_) => Err(UpstreamError::new(
+                UpstreamKind::Timeout,
+                504,
+                format!(
+                    "供应商「{}」{} 秒没有新的数据",
+                    target.name,
+                    STREAM_IDLE.as_secs()
+                ),
+            )),
         }
     }
 
@@ -1072,8 +1145,29 @@ impl Acc {
 
     fn fail(&mut self, v: &Value) {
         let message = error_message(v).unwrap_or_else(|| snippet(&v.to_string()));
-        let kind = classify(0, &message);
-        self.error = Some((kind, status_of(kind), message));
+        // Anthropic 的流内错误带着明确的类型，先信它。尤其是 overloaded_error：那是上游整体过载，
+        // 每个号都会撞上，不能当成这个号限流去冷却、换号（会一发请求罚掉一串好号）。
+        let typed = match v.pointer("/error/type").and_then(Value::as_str) {
+            Some("overloaded_error") => Some((UpstreamKind::Upstream, 529)),
+            Some("rate_limit_error") => Some((UpstreamKind::RateLimit, 429)),
+            Some("authentication_error") => Some((UpstreamKind::Auth, 401)),
+            Some("permission_error") => Some((UpstreamKind::Forbidden, 403)),
+            Some("billing_error") => Some((UpstreamKind::Quota, 402)),
+            Some("api_error") => Some((UpstreamKind::Upstream, 500)),
+            _ => None,
+        };
+        let (kind, status) = typed
+            .or_else(|| {
+                message
+                    .to_lowercase()
+                    .contains("overloaded")
+                    .then_some((UpstreamKind::Upstream, 529))
+            })
+            .unwrap_or_else(|| {
+                let kind = classify(0, &message);
+                (kind, status_of(kind))
+            });
+        self.error = Some((kind, status, message));
     }
 
     fn finish(&mut self, target: &Target) -> Completion {
@@ -1541,7 +1635,8 @@ fn classify(status: u16, message: &str) -> UpstreamKind {
         500..=599 => UpstreamKind::Upstream,
         // 流里报的错没有状态码：按文字认。
         0 if quota => UpstreamKind::Quota,
-        0 if lower.contains("rate") || lower.contains("overloaded") => UpstreamKind::RateLimit,
+        // 过载不在这里：它是上游整体的状态，不怪号（见 `Acc::fail`）。
+        0 if lower.contains("rate") => UpstreamKind::RateLimit,
         0 if model => UpstreamKind::ModelUnsupported,
         _ => UpstreamKind::Upstream,
     }
@@ -1715,9 +1810,45 @@ mod tests {
             &mut acc,
             &mut |_| {},
         );
-        let (kind, _, message) = acc.error.clone().unwrap();
-        assert_eq!(kind, UpstreamKind::RateLimit);
+        let (kind, status, message) = acc.error.clone().unwrap();
+        // 过载是上游整体的状态：不怪号（不冷却、不换号），状态码保持 529 让客户端退避。
+        assert_eq!(kind, UpstreamKind::Upstream);
+        assert!(!kind.blames_account());
+        assert_eq!(status, 529);
         assert_eq!(message, "Overloaded");
+
+        let mut acc = Acc::new(Instant::now());
+        apply_event(
+            ApiFormat::Anthropic,
+            "error",
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow"}}"#,
+            &mut acc,
+            &mut |_| {},
+        );
+        assert_eq!(acc.error.clone().unwrap().0, UpstreamKind::RateLimit);
+    }
+
+    #[test]
+    fn rate_limit_reset_is_read_from_every_header_shape() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let one = |name: &'static str, value: &'static str| {
+            move |h: &str| (h == name).then(|| value.to_string())
+        };
+        let at = reset_at_ms(one("retry-after", "30")).unwrap();
+        assert!((at - now_ms - 30_000).abs() < 2_000, "{at}");
+        let at = reset_at_ms(one("anthropic-ratelimit-unified-reset", "1900000000")).unwrap();
+        assert_eq!(at, 1_900_000_000_000);
+        let at = reset_at_ms(one(
+            "anthropic-ratelimit-requests-reset",
+            "2030-01-01T00:00:00Z",
+        ))
+        .unwrap();
+        assert_eq!(at, 1_893_456_000_000);
+        assert!(reset_at_ms(|_| None).is_none());
+        assert!(reset_at_ms(one("retry-after", "soon")).is_none());
     }
 
     #[test]

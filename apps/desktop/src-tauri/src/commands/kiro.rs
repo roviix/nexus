@@ -32,7 +32,10 @@ pub async fn kiro_social_complete(
     session_id: String,
     callback: String,
 ) -> Result<KiroAccount> {
-    let up = state.kiro.complete_social_login(&session_id, &callback).await?;
+    let up = state
+        .kiro
+        .complete_social_login(&session_id, &callback)
+        .await?;
     activity::info(
         &state.db,
         "kiro",
@@ -220,7 +223,9 @@ pub async fn kiro_switch_to_client(
 }
 
 #[tauri::command(async)]
-pub fn kiro_active_client(state: State<'_, AppState>) -> Result<Option<nexus_kiro::KiroActiveInfo>> {
+pub fn kiro_active_client(
+    state: State<'_, AppState>,
+) -> Result<Option<nexus_kiro::KiroActiveInfo>> {
     state.kiro.active_client(&state.home_dir)
 }
 

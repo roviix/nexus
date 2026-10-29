@@ -93,7 +93,10 @@ fn init_macos_proxy() {
     if has_env {
         return;
     }
-    if let Ok(out) = std::process::Command::new("/usr/sbin/scutil").arg("--proxy").output() {
+    if let Ok(out) = std::process::Command::new("/usr/sbin/scutil")
+        .arg("--proxy")
+        .output()
+    {
         if out.status.success() {
             let s = String::from_utf8_lossy(&out.stdout);
             let is_https = s.contains("HTTPSEnable : 1") || s.contains("HTTPEnable : 1");
@@ -246,7 +249,9 @@ pub fn run() {
                 for url in event.urls() {
                     let raw = url.as_str();
                     tracing::info!(%raw, "收到 DeepLink 回调");
-                    if raw.starts_with("kiro://") && (raw.contains("code=") || raw.contains("authenticate-success")) {
+                    if raw.starts_with("kiro://")
+                        && (raw.contains("code=") || raw.contains("authenticate-success"))
+                    {
                         let handle = app_handle.clone();
                         let raw_url = raw.to_string();
                         tauri::async_runtime::spawn(async move {

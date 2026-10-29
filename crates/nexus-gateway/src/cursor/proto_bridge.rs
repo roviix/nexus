@@ -166,7 +166,10 @@ pub fn from_inference_messages(core_msgs: &[InferenceCoreMessage]) -> Vec<Messag
                                 if !img.data.is_empty() {
                                     images.push(ImageInput {
                                         data: img.data.clone(),
-                                        mime_type: img.mime_type.clone().unwrap_or_else(|| "image/png".into()),
+                                        mime_type: img
+                                            .mime_type
+                                            .clone()
+                                            .unwrap_or_else(|| "image/png".into()),
                                     });
                                 }
                             }
@@ -192,7 +195,10 @@ pub fn from_inference_messages(core_msgs: &[InferenceCoreMessage]) -> Vec<Messag
                                 if !img.data.is_empty() {
                                     res_images.push(ImageInput {
                                         data: img.data.clone(),
-                                        mime_type: img.mime_type.clone().unwrap_or_else(|| "image/png".into()),
+                                        mime_type: img
+                                            .mime_type
+                                            .clone()
+                                            .unwrap_or_else(|| "image/png".into()),
                                     });
                                 }
                             }
@@ -216,16 +222,13 @@ pub fn from_inference_messages(core_msgs: &[InferenceCoreMessage]) -> Vec<Messag
             .map(|tc| ToolCall {
                 id: tc.tool_call_id.clone(),
                 name: tc.tool_name.clone(),
-                arguments: tc
-                    .raw_tool_call_args
-                    .clone()
-                    .unwrap_or_else(|| {
-                        tc.args
-                            .as_ref()
-                            .map(json_from_struct)
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "{}".into())
-                    }),
+                arguments: tc.raw_tool_call_args.clone().unwrap_or_else(|| {
+                    tc.args
+                        .as_ref()
+                        .map(json_from_struct)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "{}".into())
+                }),
             })
             .collect();
 
@@ -259,12 +262,12 @@ fn from_inference_tool(tool: &InferenceAgentTool) -> ToolDef {
         .parameters
         .as_ref()
         .map(json_from_struct)
-        .and_then(|mut v| {
+        .map(|mut v| {
             // Cursor 官方下发的 parameters 经常套一层 {"jsonSchema": {...}}
             if let Some(inner) = v.get_mut("jsonSchema").map(serde_json::Value::take) {
-                Some(inner)
+                inner
             } else {
-                Some(v)
+                v
             }
         })
         .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} }));
@@ -410,7 +413,10 @@ mod tests {
         assert_eq!(normalized.messages.len(), 1);
         let msg = &normalized.messages[0];
         assert_eq!(msg.reasoning.len(), 1);
-        assert_eq!(msg.reasoning[0].signature.as_deref(), Some("claude_sig_xyz123"));
+        assert_eq!(
+            msg.reasoning[0].signature.as_deref(),
+            Some("claude_sig_xyz123")
+        );
         assert_eq!(msg.reasoning[0].text, "thinking thoughts...");
     }
 

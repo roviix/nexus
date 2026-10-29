@@ -557,10 +557,7 @@ mod tests {
             upstream_model("kiro/claude-3-5-sonnet"),
             "claude-sonnet-4.5"
         );
-        assert_eq!(
-            upstream_model("kiro/claude-3-5-haiku"),
-            "claude-haiku-4.5"
-        );
+        assert_eq!(upstream_model("kiro/claude-3-5-haiku"), "claude-haiku-4.5");
         assert_eq!(upstream_model("kiro/claude-haiku-4.5"), "claude-haiku-4.5");
         assert_eq!(
             upstream_model("kiro/claude-sonnet-4-6-thinking"),
@@ -641,7 +638,9 @@ mod tests {
         assert!(auth_url.contains("idp=Google"));
         assert!(auth_url.contains("state=state-123"));
         assert!(auth_url.contains("code_challenge=challenge-abc"));
-        assert!(auth_url.contains("redirect_uri=kiro%3A%2F%2Fkiro.kiroAgent%2Fauthenticate-success"));
+        assert!(
+            auth_url.contains("redirect_uri=kiro%3A%2F%2Fkiro.kiroAgent%2Fauthenticate-success")
+        );
 
         let cb = "kiro://kiro.kiroAgent/authenticate-success?code=my-code-123&state=state-123";
         let (code, state) = parse_social_callback(cb);

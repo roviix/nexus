@@ -654,7 +654,7 @@ function ChannelsMainView({
                 <div className="channel-card-badges">
                   {ch.id === "cursor" ? (
                     <span className="pill pill-mesh-badge" style={{ background: "rgba(59, 130, 246, 0.15)", color: "var(--accent)" }}>
-                      ● 原生直通号源
+                      ● 原生直通
                     </span>
                   ) : null}
                   {isDefault ? (
@@ -857,11 +857,11 @@ function ChannelsMainView({
 
                 <div className="mesh-field-group">
                   <div className="mesh-field-head">
-                    <label className="mesh-field-label">本机额度预留线</label>
-                    <span className="pill pill-tag is-ok">已启用 20% 自用保护</span>
+                    <label className="mesh-field-label">本机优先</label>
+                    <span className="pill pill-tag is-ok">已启用</span>
                   </div>
                   <div className="mesh-field-desc">
-                    远端请求达到本机剩余额度 80% 水位线时自动挂起出借，保障本机主工作流不中断。
+                    本机在用网关时暂停出借，空闲 30 秒后恢复。
                   </div>
                 </div>
               </div>

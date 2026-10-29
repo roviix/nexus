@@ -16,10 +16,10 @@ use std::sync::LazyLock;
 // 官方桌面公开客户端凭据（采用掩码解混淆，避免开源公网误报阻断推送）
 pub static OAUTH_CLIENT_ID: LazyLock<String> = LazyLock::new(|| {
     const OBF_CID: &[u8] = &[
-        107, 106, 109, 107, 106, 106, 108, 106, 108, 106, 111, 99, 107, 119, 46, 55, 50, 41, 41, 51,
-        52, 104, 50, 104, 107, 54, 57, 40, 63, 104, 105, 111, 44, 46, 53, 54, 53, 48, 50, 110, 61,
-        110, 106, 105, 63, 42, 116, 59, 42, 42, 41, 116, 61, 53, 53, 61, 54, 63, 47, 41, 63, 40, 57,
-        53, 52, 46, 63, 52, 46, 116, 57, 53, 55,
+        107, 106, 109, 107, 106, 106, 108, 106, 108, 106, 111, 99, 107, 119, 46, 55, 50, 41, 41,
+        51, 52, 104, 50, 104, 107, 54, 57, 40, 63, 104, 105, 111, 44, 46, 53, 54, 53, 48, 50, 110,
+        61, 110, 106, 105, 63, 42, 116, 59, 42, 42, 41, 116, 61, 53, 53, 61, 54, 63, 47, 41, 63,
+        40, 57, 53, 52, 46, 63, 52, 46, 116, 57, 53, 55,
     ];
     let bytes: Vec<u8> = OBF_CID.iter().map(|b| b ^ 0x5A).collect();
     String::from_utf8(bytes).expect("valid utf8 client id")
@@ -156,14 +156,24 @@ async fn post_token<T: Serialize>(body: &T, action: &'static str) -> Result<Valu
         .map_err(|err| AppError::new(ErrorCode::Network, format!("读取响应失败：{err}")))?;
 
     if !status.is_success() {
+        // 只有 400 / 401（invalid_grant、invalid_client）是凭证本身作废了。Google 那边 5xx、
+        // 限流是暂时的：判成「需要重新授权」会把一个好号踢出号池，直到用户手动重登。
+        let fatal = matches!(status.as_u16(), 400 | 401) || text.contains("invalid_grant");
         let hint = if text.contains("invalid_grant") {
             "Google 授权码已失效或已被使用，请重新在浏览器中授权。"
+        } else if fatal {
+            "Google 拒绝了这个凭证，请重新授权。"
         } else {
-            "Google OAuth 服务端返回错误。"
+            "Google 授权服务暂时不可用，稍后会自动重试。"
         };
+        let head: String = text.chars().take(300).collect();
         return Err(AppError::new(
-            ErrorCode::Unauthorized,
-            format!("{action}失败 (HTTP {status})：{text}"),
+            if fatal {
+                ErrorCode::Unauthorized
+            } else {
+                ErrorCode::Upstream
+            },
+            format!("{action}失败 (HTTP {status})：{head}"),
         )
         .with_hint(hint));
     }

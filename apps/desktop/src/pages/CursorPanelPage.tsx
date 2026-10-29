@@ -105,15 +105,15 @@ export function CursorPanelPage({ route, onGo }: { route: Route; onGo: (r: Route
       <div style={{ marginBottom: 16 }}>
         <Banner
           tone="info"
-          title="⚡ Cursor 控制台已全面升级并合并至「客户端接入」"
-          hint="全新网关架构已打通！Cursor IDE 现已支持直接在「客户端接入」页中实现「原生直通」（本地号池 / Mesh 跨机共享）与「跨协议异构模型转译」（无缝支持 Claude 3.7 Extended Thinking、OpenAI、DeepSeek 等）。下方的 CRSR / Sand 历史补丁仍可保留查看与卸载。"
+          title="Cursor 接入已移到「客户端接入」"
+          hint="在那里选原生直通，或让 Cursor 用其他通道的模型。下面的 CRSR / Sand 补丁仍可查看和卸载。"
           action={
             <button
               type="button"
               className="btn btn-sm btn-primary"
               onClick={() => onGo(go("connect", { client: "cursor" }))}
             >
-              前往全新 Cursor 接入页 ›
+              去接入 ›
             </button>
           }
         />

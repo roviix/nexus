@@ -659,7 +659,9 @@ impl StateDb {
 
         let ai_settings = root
             .as_object_mut()
-            .ok_or_else(|| AppError::new(ErrorCode::Database, "applicationUser 不是有效的 JSON 对象"))?
+            .ok_or_else(|| {
+                AppError::new(ErrorCode::Database, "applicationUser 不是有效的 JSON 对象")
+            })?
             .entry("aiSettings")
             .or_insert_with(|| serde_json::json!({}));
 
@@ -693,7 +695,10 @@ impl StateDb {
         }
 
         // 2. availableDefaultModels2 (用于 Cursor 3.x+ React ModelPicker 显式渲染)
-        if let Some(models) = root.get_mut("availableDefaultModels2").and_then(|v| v.as_array_mut()) {
+        if let Some(models) = root
+            .get_mut("availableDefaultModels2")
+            .and_then(|v| v.as_array_mut())
+        {
             let already_exists = models.iter().any(|m| {
                 m.get("name").and_then(|n| n.as_str()) == Some(model)
                     || m.get("clientDisplayName").and_then(|n| n.as_str()) == Some(model)
@@ -713,9 +718,9 @@ impl StateDb {
                             .unwrap_or(false)
                     })
                     .or_else(|| {
-                        models.iter().find(|m| {
-                            m.get("name").and_then(|n| n.as_str()) != Some("default")
-                        })
+                        models
+                            .iter()
+                            .find(|m| m.get("name").and_then(|n| n.as_str()) != Some("default"))
                     })
                     .cloned();
 
@@ -738,7 +743,10 @@ impl StateDb {
                     };
 
                     if let Some(obj) = new_model.as_object_mut() {
-                        obj.insert("name".to_string(), serde_json::Value::String(model.to_string()));
+                        obj.insert(
+                            "name".to_string(),
+                            serde_json::Value::String(model.to_string()),
+                        );
                         obj.insert(
                             "clientDisplayName".to_string(),
                             serde_json::Value::String(display_title.clone()),
@@ -749,24 +757,37 @@ impl StateDb {
                             serde_json::json!([model.replace(' ', "-").to_ascii_lowercase()]),
                         );
 
-                        if let Some(variants) = obj.get_mut("variants").and_then(|v| v.as_array_mut()) {
+                        if let Some(variants) =
+                            obj.get_mut("variants").and_then(|v| v.as_array_mut())
+                        {
                             for var in variants {
                                 if let Some(var_obj) = var.as_object_mut() {
-                                    if let Some(d) = var_obj.get("displayName").and_then(|v| v.as_str()) {
+                                    if let Some(d) =
+                                        var_obj.get("displayName").and_then(|v| v.as_str())
+                                    {
                                         var_obj.insert(
                                             "displayName".to_string(),
                                             serde_json::Value::String(format!(
                                                 "{display_title} {}",
-                                                d.split_whitespace().skip(2).collect::<Vec<_>>().join(" ")
+                                                d.split_whitespace()
+                                                    .skip(2)
+                                                    .collect::<Vec<_>>()
+                                                    .join(" ")
                                             )),
                                         );
                                     }
-                                    if let Some(d) = var_obj.get("displayNameOutsidePicker").and_then(|v| v.as_str()) {
+                                    if let Some(d) = var_obj
+                                        .get("displayNameOutsidePicker")
+                                        .and_then(|v| v.as_str())
+                                    {
                                         var_obj.insert(
                                             "displayNameOutsidePicker".to_string(),
                                             serde_json::Value::String(format!(
                                                 "{display_title} {}",
-                                                d.split_whitespace().skip(2).collect::<Vec<_>>().join(" ")
+                                                d.split_whitespace()
+                                                    .skip(2)
+                                                    .collect::<Vec<_>>()
+                                                    .join(" ")
                                             )),
                                         );
                                     }
@@ -827,10 +848,15 @@ impl StateDb {
             })
             .unwrap_or_default();
 
-        if let Some(models) = root.get("availableDefaultModels2").and_then(|v| v.as_array()) {
+        if let Some(models) = root
+            .get("availableDefaultModels2")
+            .and_then(|v| v.as_array())
+        {
             for m in models {
                 if let Some(name) = m.get("name").and_then(|n| n.as_str()) {
-                    if (name.contains("(Nexus)") || name.contains("[Nexus]")) && !list.contains(&name.to_string()) {
+                    if (name.contains("(Nexus)") || name.contains("[Nexus]"))
+                        && !list.contains(&name.to_string())
+                    {
                         list.push(name.to_string());
                     }
                 }

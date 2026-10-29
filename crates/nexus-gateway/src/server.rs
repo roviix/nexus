@@ -13,7 +13,9 @@
 use crate::channel::{qualify, Capability, Channel, ChannelRegistry, Resolved};
 use crate::error::{UpstreamError, UpstreamKind};
 use crate::images::{self, GeneratedImage, ImageRequest};
-use crate::inbound::{parse_request, protocol_error, Dialect, Serializer, SseFrame};
+use crate::inbound::{
+    parse_request, protocol_error, responses_failed_event, Dialect, Serializer, SseFrame,
+};
 use crate::inference::STATIC_MODELS;
 use crate::lane::{Credential, Lane, Outcome};
 use crate::ledger::{Ledger, RequestRecord};
@@ -185,9 +187,10 @@ pub fn pick_passthrough_headers(headers: &HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
-/// 等上游响应头最多这么久：ChatGPT 通道要把会话状态印 / 额度头挂到客户端响应上，只能在
-/// 首字节之前。上游一般一两秒内给头；超过就不等了，正文照常流。
-const UPSTREAM_HEADERS_PATIENCE: std::time::Duration = std::time::Duration::from_secs(8);
+/// 流式请求在回响应头之前最多等这么久，看是开始出字还是一个字没出就失败了：前者开流，
+/// 后者能用真实 HTTP 状态回（限流 / 请求问题）。ChatGPT 通道顺带要把会话状态印 / 额度头挂到
+/// 客户端响应上，也只能在首字节之前。上游一般一两秒内有结果；超过就不等了，照常开流。
+const FIRST_BYTE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(8);
 
 fn dialect_name(d: Dialect) -> &'static str {
     match d {
@@ -461,9 +464,10 @@ fn raw_error_frames(dialect: Dialect, e: &UpstreamError) -> Vec<SseFrame> {
             SseFrame::json(None, &protocol_error(dialect, e.status, &e.message)),
             SseFrame::data("[DONE]"),
         ],
+        // Codex 只认 `response.failed` 这个终结事件，裸 `error` 它会跳过、再当成断流去盲目重试。
         Dialect::OpenAiResponses => vec![SseFrame::json(
-            Some("error"),
-            &json!({ "type": "error", "code": e.kind.as_str(), "message": e.message, "status": e.status }),
+            Some("response.failed"),
+            &responses_failed_event(e.status, &e.message),
         )],
     }
 }
@@ -563,34 +567,51 @@ async fn handle(
                 attach_headers(&mut res, &relayed);
                 res
             }
-            Err(e) => err_json(dialect, e.status, &e.message),
+            Err(e) => error_response(dialect, e.status, &e),
         };
     }
 
     let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, std::convert::Infallible>>();
-    // ChatGPT 通道：上游响应头（会话状态印、额度）要挂到客户端响应上，而响应头只能在首字节
-    // 之前定——所以等一下上游的头再开始回。Cursor 通道不等：它没有这种头。
-    let (hdr_tx, hdr_rx) = tokio::sync::oneshot::channel::<Vec<(String, String)>>();
+    // 流出第一个字之前的结局。响应头只能在首字节之前定，所以 handler 先等这一声：
+    // 开始出字了就照常回 200 + SSE（透传通道顺带挂上上游的响应头）；一个字没出就失败了，
+    // 该用真实 HTTP 状态说的（见 `early_http_status`）就不开流。
+    let (early_tx, early_rx) = tokio::sync::oneshot::channel::<Early>();
     tokio::spawn(async move {
         // 首字节之前先发一条注释保活：上游 TTFT 动辄两三秒、带思考的模型更久，
         // 有客户端等不了那么久的空白。SSE 解析器会忽略注释行。
         let _ = tx.send(Ok(Bytes::from(SseFrame::comment("keepalive"))));
+        // 客户端断开（Claude Code / Codex 里按 Esc、或连接被掐）时，axum 丢弃 `rx`，这个克隆的
+        // `closed()` 随之完成。拿它和 relay 赛跑：一断开就丢掉 relay future，在途的上游连接随之
+        // 关闭，不再空转一整轮、白耗订阅额度。
+        let disconnect = tx.clone();
         let push = |tx: &mpsc::UnboundedSender<_>, frames: Vec<SseFrame>| {
             for f in frames {
                 let _ = tx.send(Ok(Bytes::from(f.to_wire())));
             }
         };
-        let mut hdr_tx = Some(hdr_tx);
+        let mut early_tx = Some(early_tx);
+        // 上游最近一次给的响应头（会话状态印、额度）。换号重来时以真正出字的那个号为准。
+        let mut upstream_headers: Vec<(String, String)> = Vec::new();
         // 透传帧到过一次，收尾就不再用序列化器：上游已经把 response.completed 原样发出去了。
         let mut raw_mode = false;
+        // 上游自己的终结事件（completed / failed / message_stop / [DONE]）已经原样发出去了：
+        // 之后再出错也不能再补一个终结事件，客户端只认第一个。
+        let mut raw_terminal = false;
         let mut on_delta = |d: Delta| {
             let frames = match d {
+                Delta::Headers(h) => {
+                    upstream_headers = h;
+                    return;
+                }
                 Delta::Text(t) => ser.text(&t),
                 Delta::Thinking(t) => ser.thinking(&t),
                 Delta::ThinkingSignature(sig) => ser.note_thinking_signature(&sig),
                 Delta::RedactedThinking(data) => ser.redacted_thinking(&data),
                 Delta::Raw { event, data } => {
                     raw_mode = true;
+                    if is_terminal_raw_event(&event, &data) {
+                        raw_terminal = true;
+                    }
                     // OpenAI Chat 的帧没有 event 行，原样就是只有 data。
                     vec![if event.is_empty() {
                         SseFrame::data(data)
@@ -598,41 +619,117 @@ async fn handle(
                         SseFrame::event(event, data)
                     }]
                 }
-                Delta::Headers(h) => {
-                    if let Some(tx) = hdr_tx.take() {
-                        let _ = tx.send(h);
-                    }
-                    Vec::new()
-                }
             };
+            if !frames.is_empty() {
+                if let Some(signal) = early_tx.take() {
+                    let _ = signal.send(Early::Started(std::mem::take(&mut upstream_headers)));
+                }
+            }
             push(&tx, frames);
         };
-        let result = relay(&gw, &ctx, &request, &mut on_delta).await;
-        // 上游没给头（换号失败、Cursor 通道）：放行等头的那一侧，别让客户端白等。
-        drop(hdr_tx.take());
-        let frames = match &result {
-            Ok(c) if raw_mode => {
-                let _ = c;
-                Vec::new()
+        let result = tokio::select! {
+            r = relay(&gw, &ctx, &request, &mut on_delta) => r,
+            // 客户端已经走了：丢弃 relay（连同上游连接），收尾帧也没人收，直接退出。
+            _ = disconnect.closed() => return,
+        };
+        if let Some(signal) = early_tx.take() {
+            // 一个字都还没出。
+            match &result {
+                Err(e) if early_http_status(dialect, e) => {
+                    // 交给 handler 回真实状态。它要是已经等不及先开了流，就落回下面在流里报。
+                    if signal.send(Early::Failed(e.clone())).is_ok() {
+                        return;
+                    }
+                }
+                _ => {
+                    let _ = signal.send(Early::Started(std::mem::take(&mut upstream_headers)));
+                }
             }
+        }
+        let frames = match &result {
+            Ok(_) if raw_mode => Vec::new(),
             Ok(c) => ser.finish(c),
+            Err(_) if raw_terminal => Vec::new(),
             Err(e) if raw_mode => raw_error_frames(dialect, e),
             Err(e) => ser.error(&e.message, e.status),
         };
         push(&tx, frames);
         // tx 在这里 drop，流随之结束。
     });
-    let relayed = if passthrough_route {
-        match tokio::time::timeout(UPSTREAM_HEADERS_PATIENCE, hdr_rx).await {
-            Ok(Ok(h)) => h,
-            _ => Vec::new(),
+    match tokio::time::timeout(FIRST_BYTE_PATIENCE, early_rx).await {
+        Ok(Ok(Early::Failed(e))) => error_response(dialect, early_status(&e), &e),
+        Ok(Ok(Early::Started(headers))) => {
+            let mut res = sse_response(rx);
+            // ChatGPT / Grok 透传：上游响应头要原样挂到客户端响应上，Codex 靠它续会话、读额度。
+            if passthrough_route {
+                attach_headers(&mut res, &headers);
+            }
+            res
         }
-    } else {
-        Vec::new()
-    };
-    let mut res = sse_response(rx);
-    attach_headers(&mut res, &relayed);
+        // 首字太慢等不及，或任务没留话就走了：照常开流，结局在流里说。
+        _ => sse_response(rx),
+    }
+}
+
+/// 流式请求出第一个字之前的结局。
+enum Early {
+    /// 开始出字了，带着上游的响应头（透传通道要挂上）。
+    Started(Vec<(String, String)>),
+    /// 一个字没出就失败了，而且这种失败该用真实 HTTP 状态回。
+    Failed(UpstreamError),
+}
+
+/// 限流的恢复时刻在这之内，就回 429 + `Retry-After` 让客户端自己退避重试；再远就在流里直接说，
+/// 别让客户端对着一个几小时后才恢复的号池傻等。
+const SHORT_RETRY_SECS: u64 = 120;
+
+/// 一个字都还没出就失败了：要不要用真实 HTTP 状态回，而不是先开 200 再在流里报错。
+///
+/// 照官方 API 的习惯：限流和「这轮请求本身有问题」，官方都在流开始之前回 HTTP 状态。客户端的
+/// 退避重试（Claude Code、Codex 读 429 + `Retry-After`）和上下文压缩（Claude Code 认 400
+/// `prompt is too long`）都挂在这上面。其余的留在流里让客户端立刻看到原因：号池空、通道停用、
+/// 鉴权失效是配置问题，回 5xx 只会让客户端当成服务端抖动，自动重试十来次白等几分钟。
+/// Responses 的上下文超长也留在流里：ChatGPT 官方就是在流里用 `response.failed` 报它，
+/// Codex 只在那里认 `context_length_exceeded`。
+fn early_http_status(dialect: Dialect, e: &UpstreamError) -> bool {
+    let soon = || e.retry_after_secs().is_none_or(|s| s <= SHORT_RETRY_SECS);
+    match e.kind {
+        UpstreamKind::RateLimit => soon(),
+        // 529 是 Anthropic 的「整体过载」：官方也在流开始前回它，Claude Code 认它退避重试。
+        UpstreamKind::Provider | UpstreamKind::Upstream => matches!(e.status, 429 | 529) && soon(),
+        UpstreamKind::BadRequest => {
+            !(dialect == Dialect::OpenAiResponses && crate::error::is_context_overflow(&e.message))
+        }
+        _ => false,
+    }
+}
+
+/// 提前失败时回给客户端的状态码。限流统一成 429（有的上游拿 400 报降载），请求问题保持 4xx。
+fn early_status(e: &UpstreamError) -> u16 {
+    match e.kind {
+        UpstreamKind::RateLimit => 429,
+        UpstreamKind::BadRequest if !(400..500).contains(&e.status) => 400,
+        _ => e.status,
+    }
+}
+
+/// 方言形状的错误响应。上游说了几点恢复就带上 `Retry-After`，客户端按它退避。
+fn error_response(dialect: Dialect, status: u16, e: &UpstreamError) -> Response {
+    let mut res = err_json(dialect, status, &e.message);
+    if let Some(secs) = e.retry_after_secs() {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+            res.headers_mut().insert(axum::http::header::RETRY_AFTER, v);
+        }
+    }
     res
+}
+
+/// 透传帧是不是上游自己的终结事件。
+fn is_terminal_raw_event(event: &str, data: &str) -> bool {
+    matches!(
+        event,
+        "response.completed" | "response.failed" | "response.incomplete" | "message_stop"
+    ) || data.trim() == "[DONE]"
 }
 
 fn attach_headers(res: &mut Response, extra: &[(String, String)]) {
@@ -934,21 +1031,30 @@ async fn count_tokens(
     Json(json!({ "input_tokens": estimate_tokens(&count_source(&body)) })).into_response()
 }
 
+/// `count_tokens` 问 `api.anthropic.com` 本身，问不到就回本地估算。
+///
+/// 它只是给客户端估上下文用的：Claude Code 调得很勤，回一个错误会打断它的上下文管理，
+/// 一个近似值则不会。也不回报 lane——计数成功不代表这个号能出推理（会清掉限流冷却），
+/// 计数失败也不该罚一个推理正常的号。
 async fn count_on_claude(
     channel: &Channel,
     model_label: &str,
     body: Value,
     headers: &HeaderMap,
 ) -> Response {
-    let dialect = Dialect::AnthropicMessages;
+    let estimate = estimate_tokens(&count_source(&body));
+    let fallback = move || Json(json!({ "input_tokens": estimate })).into_response();
     let credential = match channel.lane.acquire(model_label).await {
         Ok(c) => c,
-        Err(e) => return err_json(dialect, e.status, &e.message),
+        Err(e) => {
+            tracing::debug!(kind = e.kind.as_str(), "count_tokens 拿不到号，回本地估算");
+            return fallback();
+        }
     };
     let request = ChatRequest {
         model: model_label.to_string(),
         raw_inbound: Some(RawInbound {
-            dialect,
+            dialect: Dialect::AnthropicMessages,
             body: Arc::new(body),
             stream: false,
             headers: pick_passthrough_headers(headers),
@@ -956,21 +1062,13 @@ async fn count_on_claude(
         ..ChatRequest::default()
     };
     match channel.upstream.count_tokens(&credential, &request).await {
-        Ok(n) => {
-            let usage = Usage {
-                input_tokens: u32::try_from(n).unwrap_or(u32::MAX),
-                ..Usage::default()
-            };
-            channel
-                .lane
-                .report(&credential, model_label, Outcome::Ok(&usage));
-            Json(json!({ "input_tokens": n })).into_response()
-        }
+        Ok(n) => Json(json!({ "input_tokens": n })).into_response(),
         Err(e) => {
-            channel
-                .lane
-                .report(&credential, model_label, Outcome::Err(&e));
-            err_json(dialect, e.status, &e.message)
+            tracing::info!(
+                account = %credential.label, kind = e.kind.as_str(), status = e.status,
+                "count_tokens 上游失败，回本地估算"
+            );
+            fallback()
         }
     }
 }
@@ -2306,6 +2404,181 @@ mod tests {
         let body: Value = res.json().await.unwrap();
         assert_eq!(body["error"]["type"], "authentication_error");
         assert_eq!(body["error"]["message"], "token dead");
+    }
+
+    #[tokio::test]
+    async fn web_pages_cannot_reach_the_cursor_routes_but_cursor_can() {
+        let (base, _) = spawn(
+            failing(UpstreamError::new(UpstreamKind::Auth, 401, "x")),
+            None,
+        )
+        .await;
+        // 这些请求都在门口就被处理掉，不会摸到 api2.cursor.sh。
+        let url = format!("{base}/cursor/route/aiserver.v1.AiService/GetDefaultModel");
+        let preflight = |origin: &'static str| {
+            http()
+                .request(reqwest::Method::OPTIONS, &url)
+                .header("origin", origin)
+                .header("access-control-request-method", "POST")
+                .header(
+                    "access-control-request-headers",
+                    "authorization, x-ghost-mode, traceparent",
+                )
+        };
+
+        let res = preflight("https://evil.example").send().await.unwrap();
+        assert_eq!(res.status(), 403, "陌生网页的预检");
+        let res = http()
+            .post(&url)
+            .header("origin", "https://evil.example")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "陌生网页的正式请求");
+        let res = http()
+            .post(&url)
+            .header("sec-fetch-site", "cross-site")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "没带 Origin 但浏览器标了跨站");
+
+        let res = preflight("vscode-file://vscode-app").send().await.unwrap();
+        assert_eq!(res.status(), 204);
+        assert_eq!(
+            res.headers()["access-control-allow-origin"],
+            "vscode-file://vscode-app"
+        );
+        assert_eq!(
+            res.headers()["access-control-allow-headers"],
+            "authorization, x-ghost-mode, traceparent",
+            "Cursor 的自定义头随版本变，预检按浏览器报的清单放行"
+        );
+    }
+
+    fn failing(result: UpstreamError) -> FakeUpstream {
+        FakeUpstream {
+            deltas: vec![],
+            result: Err(result),
+            seen: Mutex::new(vec![]),
+            images: Mutex::new(vec![]),
+            seen_images: Mutex::new(vec![]),
+        }
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_is_rate_limited_before_any_output_gets_a_real_429_with_retry_after() {
+        let soon = UpstreamError::new(UpstreamKind::RateLimit, 429, "slow down")
+            .with_reset_at_ms(now_ms() + 20_000);
+        let (base, _) = spawn(failing(soon), None).await;
+        let res = http()
+            .post(format!("{base}/v1/messages"))
+            .json(&json!({ "model": "m", "stream": true, "max_tokens": 5,
+                           "messages": [{ "role": "user", "content": "x" }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            429,
+            "官方 API 也是在流开始前回 429，客户端据此退避"
+        );
+        let after: u64 = res.headers()["retry-after"]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((15..=21).contains(&after), "{after}");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["type"], "rate_limit_error");
+    }
+
+    #[tokio::test]
+    async fn a_context_overflow_before_any_output_is_a_400_claude_code_recognises() {
+        let overflow = UpstreamError::new(UpstreamKind::BadRequest, 400, "Input is too long.");
+        let (base, _) = spawn(failing(overflow), None).await;
+        let res = http()
+            .post(format!("{base}/v1/messages"))
+            .json(&json!({ "model": "m", "stream": true, "max_tokens": 5,
+                           "messages": [{ "role": "user", "content": "x" }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400);
+        let body: Value = res.json().await.unwrap();
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("prompt is too long"));
+    }
+
+    #[tokio::test]
+    async fn long_waits_and_configuration_problems_stay_in_the_stream() {
+        // 几小时后才恢复的限流：直接在流里说，别让客户端对着 Retry-After 干等。
+        let later = UpstreamError::new(UpstreamKind::RateLimit, 429, "window used up")
+            .with_reset_at_ms(now_ms() + 3 * 3_600_000);
+        let (base, _) = spawn(failing(later), None).await;
+        let res = http()
+            .post(format!("{base}/v1/chat/completions"))
+            .json(&json!({ "model": "m", "stream": true,
+                           "messages": [{ "role": "user", "content": "x" }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let text = res.text().await.unwrap();
+        assert!(text.contains("window used up"), "{text}");
+        assert!(text.contains(r#""code":"rate_limit_exceeded""#), "{text}");
+        assert!(text.trim_end().ends_with("data: [DONE]"));
+
+        // 号池空 / 通道停用这类配置问题：回 5xx 只会招来客户端的自动重试。
+        let empty = UpstreamError::new(UpstreamKind::Upstream, 503, "号池是空的");
+        let (base, _) = spawn(failing(empty), None).await;
+        let res = http()
+            .post(format!("{base}/v1/messages"))
+            .json(&json!({ "model": "m", "stream": true, "max_tokens": 5,
+                           "messages": [{ "role": "user", "content": "x" }] }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let text = res.text().await.unwrap();
+        assert!(text.contains("号池是空的"));
+        assert!(text.contains("message_stop"));
+    }
+
+    #[tokio::test]
+    async fn codex_gets_context_overflow_in_the_stream_where_it_looks_for_it() {
+        let overflow = UpstreamError::new(
+            UpstreamKind::BadRequest,
+            400,
+            "Your input exceeds the context window of this model.",
+        );
+        let (base, _) = spawn(failing(overflow), None).await;
+        let res = http()
+            .post(format!("{base}/v1/responses"))
+            .json(&json!({ "model": "m", "stream": true, "input": "x" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "Codex 只在 response.failed 里认 context_length_exceeded"
+        );
+        let text = res.text().await.unwrap();
+        assert!(text.contains("response.failed"), "{text}");
+        assert!(
+            text.contains(r#""code":"context_length_exceeded""#),
+            "{text}"
+        );
     }
 
     #[tokio::test]

@@ -20,13 +20,21 @@ pub struct EmbeddedBroker {
     next_stream_id: AtomicU64,
 }
 
+type PendingConnects = Arc<RwLock<HashMap<StreamId, oneshot::Sender<Result<(), String>>>>>;
+
 struct ProviderSession {
     device_name: Option<String>,
     outbound_tx: mpsc::Sender<TunnelFrame>,
-    pending_connects: Arc<RwLock<HashMap<StreamId, oneshot::Sender<Result<(), String>>>>>,
+    pending_connects: PendingConnects,
     active_stream_txs: Arc<RwLock<HashMap<StreamId, mpsc::Sender<Bytes>>>>,
     active_invoke_txs: Arc<RwLock<HashMap<StreamId, mpsc::Sender<TunnelFrame>>>>,
     leases: Vec<SessionLease>,
+}
+
+impl Default for EmbeddedBroker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EmbeddedBroker {
@@ -89,7 +97,8 @@ impl EmbeddedBroker {
     ) where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        self.accept_provider_with_meta(node_id, None, stream, initial_leases).await;
+        self.accept_provider_with_meta(node_id, None, stream, initial_leases)
+            .await;
     }
 
     /// 附带设备名称注册 Provider 反向隧道。
@@ -149,9 +158,15 @@ impl EmbeddedBroker {
                 while let Ok(Some(frame)) = TunnelFrame::decode(&mut read_buf) {
                     match frame {
                         TunnelFrame::Ping { timestamp } => {
-                            let _ = outbound_tx_clone.send(TunnelFrame::Pong { timestamp }).await;
+                            let _ = outbound_tx_clone
+                                .send(TunnelFrame::Pong { timestamp })
+                                .await;
                         }
-                        TunnelFrame::Connected { stream_id, success, error } => {
+                        TunnelFrame::Connected {
+                            stream_id,
+                            success,
+                            error,
+                        } => {
                             let mut pend = pending_clone.write().await;
                             if let Some(tx) = pend.remove(&stream_id) {
                                 let res = if success {
@@ -181,7 +196,10 @@ impl EmbeddedBroker {
                         TunnelFrame::Delta { stream_id, .. }
                         | TunnelFrame::Finish { stream_id, .. }
                         | TunnelFrame::Error { stream_id, .. } => {
-                            let is_end = matches!(frame, TunnelFrame::Finish { .. } | TunnelFrame::Error { .. });
+                            let is_end = matches!(
+                                frame,
+                                TunnelFrame::Finish { .. } | TunnelFrame::Error { .. }
+                            );
                             let mut invokes = active_invoke_clone.write().await;
                             if let Some(tx) = invokes.get(&stream_id) {
                                 let _ = tx.send(frame).await;
@@ -195,7 +213,12 @@ impl EmbeddedBroker {
                 }
 
                 // 45 秒心跳保活检测：若超期未收到任何帧（客户端应每 15 秒发送 Ping），主动断开清理死链
-                match tokio::time::timeout(std::time::Duration::from_secs(45), reader.read(&mut temp_buf)).await {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(45),
+                    reader.read(&mut temp_buf),
+                )
+                .await
+                {
                     Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
                     Ok(Ok(n)) => read_buf.extend_from_slice(&temp_buf[..n]),
                 }
@@ -229,7 +252,10 @@ impl EmbeddedBroker {
             let session = providers
                 .get(node_id)
                 .ok_or_else(|| format!("Provider 节点 {node_id} 当前不在线"))?;
-            (session.outbound_tx.clone(), Arc::clone(&session.active_invoke_txs))
+            (
+                session.outbound_tx.clone(),
+                Arc::clone(&session.active_invoke_txs),
+            )
         };
 
         let (resp_tx, resp_rx) = mpsc::channel::<TunnelFrame>(64);

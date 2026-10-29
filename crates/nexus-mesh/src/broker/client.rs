@@ -82,7 +82,10 @@ impl MeshConsumerClient {
         channels: Vec<String>,
         models: Vec<String>,
     ) -> Result<(), String> {
-        let url = format!("{}/v1/mesh/pair/register", self.broker_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/mesh/pair/register",
+            self.broker_url.trim_end_matches('/')
+        );
         let body = serde_json::json!({
             "code": code,
             "node_id": node_id,
@@ -112,7 +115,10 @@ impl MeshConsumerClient {
 
     /// 向云端 Broker 解析配对码并获取对端设备信息。
     pub async fn resolve_pairing_code(&self, code: &str) -> Result<ResolvedPairingInfo, String> {
-        let url = format!("{}/v1/mesh/pair/resolve", self.broker_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/mesh/pair/resolve",
+            self.broker_url.trim_end_matches('/')
+        );
         let body = serde_json::json!({ "code": code });
 
         match self
@@ -138,7 +144,10 @@ impl MeshConsumerClient {
 
     /// 向 Mesh 节点发起真实流式推理中继请求。
     pub async fn chat_stream(&self, body: &serde_json::Value) -> Result<reqwest::Response, String> {
-        let url = format!("{}/v1/chat/completions", self.broker_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.broker_url.trim_end_matches('/')
+        );
         self.http_client
             .post(&url)
             .json(body)

@@ -8,8 +8,8 @@ use crate::error::{UpstreamError, UpstreamKind};
 use crate::inference::{DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_TURN};
 use crate::lane::{BoxFuture, Credential};
 use crate::normalized::{
-    estimate_tokens, ChatRequest, Completion, Delta, FinishReason, ImageInput, Message, Role,
-    ToolCall, ToolChoice, Usage, InputBasis,
+    estimate_tokens, ChatRequest, Completion, Delta, FinishReason, ImageInput, InputBasis, Message,
+    Role, ToolCall, ToolChoice, Usage,
 };
 use crate::upstream::{DeltaSink, Upstream};
 use nexus_kiro::protocol::{self, chat_headers, Q_ENDPOINT};
@@ -81,9 +81,13 @@ impl KiroUpstream {
         let thinking_on = thinking_dir(request).is_on();
         let tool_policy = tool_policy(request, &names);
         let cache_prefix_tokens = estimate_cacheable_prefix(request);
-        let is_multi_turn =
-            request.messages.iter().filter(|m| m.role == Role::User).count() > 1
-                || request.messages.len() > 2;
+        let is_multi_turn = request
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .count()
+            > 1
+            || request.messages.len() > 2;
         let payload = serde_json::to_vec(&body).map_err(|e| {
             UpstreamError::new(
                 UpstreamKind::BadRequest,
@@ -554,8 +558,12 @@ fn extract_session_id(user_id: &str) -> Option<String> {
     }
     if let Some(pos) = user_id.find("session_") {
         let session_part = &user_id[pos + "session_".len()..];
-        if session_part.len() >= 36 && is_uuid(&session_part[..36]) {
-            return Some(session_part[..36].to_string());
+        // `user_id` 来自客户端，可能是任意 UTF-8；`[..36]` 在多字节字符中间切会 panic。
+        // `.get(..36)` 落不到字符边界时直接给 None，交给下面当没有会话号处理。
+        if let Some(cand) = session_part.get(..36) {
+            if is_uuid(cand) {
+                return Some(cand.to_string());
+            }
         }
     }
     None
@@ -1292,6 +1300,15 @@ fn classify_kiro(status: u16, text: &str) -> UpstreamError {
             format!("Kiro 账号被临时限制：{head}"),
         );
     }
+    if is_context_too_long(text) {
+        // 措辞里保留上游原话（Input is too long）：入站层据此按客户端方言说「上下文超长」，
+        // Claude Code / Codex 靠它提示压缩，而不是当成一个看不懂的 400。
+        return UpstreamError::new(
+            UpstreamKind::BadRequest,
+            400,
+            format!("Kiro 上下文超长：{head}"),
+        );
+    }
     if is_client_validation(text) {
         return UpstreamError::new(
             UpstreamKind::BadRequest,
@@ -1304,6 +1321,33 @@ fn classify_kiro(status: u16, text: &str) -> UpstreamError {
             UpstreamKind::Provider,
             504,
             format!("Kiro 网关超时：{head}"),
+        );
+    }
+    // AWS 的异常类型名：HTTP 体里是 `__type`，流里的异常帧我们拼成「类型: 原因」。
+    if text.contains("ThrottlingException") || text.contains("TooManyRequests") {
+        return UpstreamError::new(UpstreamKind::RateLimit, 429, format!("Kiro 限流：{head}"));
+    }
+    if text.contains("ServiceQuotaExceededException") {
+        return UpstreamError::new(UpstreamKind::Quota, 402, format!("Kiro 额度用尽：{head}"));
+    }
+    if text.contains("ExpiredTokenException")
+        || text.contains("UnrecognizedClientException")
+        || text.contains("InvalidTokenException")
+    {
+        return UpstreamError::new(UpstreamKind::Auth, 401, format!("Kiro 登录失效：{head}"));
+    }
+    if text.contains("AccessDeniedException") {
+        return UpstreamError::new(
+            UpstreamKind::Forbidden,
+            403,
+            format!("Kiro 拒绝访问：{head}"),
+        );
+    }
+    if text.contains("ValidationException") {
+        return UpstreamError::new(
+            UpstreamKind::BadRequest,
+            400,
+            format!("Kiro 拒绝了这轮请求：{head}"),
         );
     }
     let kind = match status {
@@ -1343,6 +1387,12 @@ fn is_quota_exhausted(body: &str) -> bool {
             .any(|r| REASONS.contains(&r));
     }
     true
+}
+
+/// Kiro 的「上下文超长」：`reason: CONTENT_LENGTH_EXCEEDS_THRESHOLD`，原话是 `Input is too long.`
+fn is_context_too_long(body: &str) -> bool {
+    body.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+        || body.to_ascii_lowercase().contains("input is too long")
 }
 
 fn is_account_suspended(body: &str) -> bool {
@@ -1571,8 +1621,13 @@ fn finish(c: Collected, started: Instant) -> Completion {
     out.ttft_ms = c.ttft;
     if c.saw_token_usage {
         if let Some(mut usage) = c.usage {
-            if usage.cache_read_tokens == 0 && usage.cache_write_tokens == 0 && c.cache_prefix_tokens > 0 {
-                let prefix = c.cache_prefix_tokens.min(usage.input_tokens.saturating_sub(1));
+            if usage.cache_read_tokens == 0
+                && usage.cache_write_tokens == 0
+                && c.cache_prefix_tokens > 0
+            {
+                let prefix = c
+                    .cache_prefix_tokens
+                    .min(usage.input_tokens.saturating_sub(1));
                 if prefix > 0 {
                     if c.is_multi_turn {
                         usage.cache_read_tokens = prefix;
@@ -1960,14 +2015,19 @@ fn handle_event(ev: &Event, c: &mut Collected, started: Instant, on_delta: Delta
                 }
             }
         }
-        // 上游的异常帧：`message` 里是原因。
+        // 上游的异常帧：`message` 里是原因，类型名（ThrottlingException 之类）决定处置，
+        // 两样都得留着——只留 message 的话限流会被当成普通 502，既不换号也不退避。
         k if k.ends_with("Exception") || k == "errorEvent" || k == "error" => {
-            let msg = body
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or(k)
-                .to_string();
-            c.error = Some(msg);
+            let msg = body.get("message").and_then(Value::as_str).unwrap_or("");
+            let reason = body.get("reason").and_then(Value::as_str).unwrap_or("");
+            let mut full = k.to_string();
+            for part in [reason, msg] {
+                if !part.is_empty() {
+                    full.push_str(": ");
+                    full.push_str(part);
+                }
+            }
+            c.error = Some(full);
         }
         // messageMetadataEvent / followupPromptEvent / codeReferenceEvent / supplementaryWebLinksEvent：不关心。
         _ => {}
@@ -2049,7 +2109,11 @@ const THINK_OPEN: &str = "<thinking>";
 const THINK_CLOSE: &str = "</thinking>";
 
 fn feed_assistant_text(c: &mut Collected, piece: &str, started: Instant, on_delta: DeltaSink<'_>) {
-    if !c.thinking_on && !c.in_thinking && !piece.contains(THINK_OPEN) && !c.hold.contains(THINK_OPEN) {
+    if !c.thinking_on
+        && !c.in_thinking
+        && !piece.contains(THINK_OPEN)
+        && !c.hold.contains(THINK_OPEN)
+    {
         emit_text(c, piece, started, on_delta);
         return;
     }
@@ -2092,7 +2156,9 @@ fn feed_assistant_text(c: &mut Collected, piece: &str, started: Instant, on_delt
             }
             continue;
         }
-        let emit_len = split_keeping_tail(&c.hold, THINK_CLOSE.len() + 2);
+        // 标签后面还只有空白就从标签处留着，不能连标签一起当思考发出去：发出去就再也认不出收尾了。
+        let emit_len = undecided_thinking_end(&c.hold, c.in_fence)
+            .unwrap_or_else(|| split_keeping_tail(&c.hold, THINK_CLOSE.len() + 2));
         if emit_len > 0 {
             let text = c.hold[..emit_len].to_string();
             c.hold = c.hold[emit_len..].to_string();
@@ -2131,17 +2197,47 @@ fn flush_hold(c: &mut Collected, started: Instant, on_delta: DeltaSink<'_>, eof:
     drain_embedded(c, eof, started, on_delta);
 }
 
-/// 流里的 `</thinking>` 后面必须是空行。缓冲结束时，后面只剩空白也算收口。
+/// 找真正结束思考的那个 `</thinking>`（判据见 [`closes_thinking`]）。
 fn find_thinking_end(buf: &str, in_fence: bool, at_end: bool) -> Option<usize> {
     let mut search_from = 0;
     while let Some(pos) = find_real_tag_from(buf, THINK_CLOSE, in_fence, search_from) {
         let rest = &buf[pos + THINK_CLOSE.len()..];
-        if rest.starts_with("\n\n") || (at_end && rest.trim().is_empty()) {
+        if closes_thinking(rest, at_end) {
             return Some(pos);
         }
         search_from = pos + 1;
     }
     None
+}
+
+/// `</thinking>` 后面跟着什么才算思考真的结束。
+///
+/// 模型在思考里提到这个标签时多半会用引号或代码包起来（[`find_real_tag_from`] 已经排除），
+/// 剩下的看后文：空一行再接正文最常见；只换一行就接正文也常见——以前只认空行，这种回答会被
+/// 整段当成思考吞掉，客户端只看到一个 max_tokens 的空回答。缓冲结束时后面只剩空白也算。
+fn closes_thinking(rest: &str, at_end: bool) -> bool {
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let after = rest
+        .strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'));
+    if let Some(next_line) = after {
+        let next_line = next_line.trim_start_matches([' ', '\t']);
+        // 下一行是空行（只有空格、制表符也算），或者直接接上正文。
+        if next_line.starts_with('\n')
+            || next_line.starts_with("\r\n")
+            || next_line.chars().next().is_some_and(|c| !c.is_whitespace())
+        {
+            return true;
+        }
+    }
+    at_end && rest.trim().is_empty()
+}
+
+/// 缓冲末尾那个真的 `</thinking>`，后面还只有空白——还判断不了是不是收尾，得留到下一截。
+fn undecided_thinking_end(buf: &str, in_fence: bool) -> Option<usize> {
+    let pos = buf.rfind(THINK_CLOSE)?;
+    let real = find_real_tag_from(buf, THINK_CLOSE, in_fence, pos) == Some(pos);
+    (real && buf[pos + THINK_CLOSE.len()..].trim().is_empty()).then_some(pos)
 }
 
 fn find_real_tag_from(
@@ -2598,6 +2694,118 @@ fn done(text: String, started: Instant) -> Completion {
 mod tests {
     use super::*;
     use crate::normalized::Message;
+
+    #[test]
+    fn non_ascii_session_metadata_does_not_panic() {
+        // metadata.user_id 来自客户端，可能是任意 UTF-8；在 session_ 之后按字节切 36 位，
+        // 若第 36 字节落在多字节字符中间，旧实现会 panic。这里让它正好切进一个汉字。
+        let padded = format!("x_session_{}模型", "a".repeat(34));
+        assert_eq!(extract_session_id(&padded), None);
+        let real = "user_a_account_b_session_00000000-0000-4000-8000-000000000000";
+        assert_eq!(
+            extract_session_id(real).as_deref(),
+            Some("00000000-0000-4000-8000-000000000000")
+        );
+    }
+
+    fn collected(thinking_on: bool) -> Collected {
+        Collected {
+            thinking_on,
+            known_tools: HashSet::new(),
+            ..Collected::default()
+        }
+    }
+
+    /// 思考之后只换一行就接正文：以前只认空行，整段回答会被当成思考吞掉，
+    /// 客户端只看到一个 max_tokens 的空回答。
+    #[test]
+    fn a_single_newline_after_the_thinking_tag_still_ends_thinking() {
+        let mut c = collected(true);
+        let started = Instant::now();
+        let mut deltas = Vec::new();
+        for piece in ["<thinking>plan it</thinking>\n", "Here is the answer."] {
+            feed_assistant_text(&mut c, piece, started, &mut |d| deltas.push(d));
+        }
+        flush_hold(&mut c, started, &mut |d| deltas.push(d), true);
+        assert_eq!(c.thinking, "plan it");
+        assert_eq!(c.text, "Here is the answer.");
+    }
+
+    /// 标签后面一截只有空白：要等下一截才知道是不是收尾，标签不能先当思考发出去。
+    #[test]
+    fn a_closing_tag_followed_only_by_whitespace_waits_for_the_next_chunk() {
+        let mut c = collected(true);
+        let started = Instant::now();
+        let mut deltas = Vec::new();
+        for piece in ["<thinking>deep thought</thinking>   ", "\n\nAnswer"] {
+            feed_assistant_text(&mut c, piece, started, &mut |d| deltas.push(d));
+        }
+        flush_hold(&mut c, started, &mut |d| deltas.push(d), true);
+        assert_eq!(c.thinking, "deep thought");
+        assert_eq!(c.text, "Answer");
+    }
+
+    /// 思考里顺嘴提到标签（后面紧跟正文、没换行）不算收尾。
+    #[test]
+    fn a_tag_mentioned_mid_sentence_does_not_end_thinking() {
+        assert!(!closes_thinking(" tags should be balanced", false));
+        assert!(closes_thinking("\n\nDone", false));
+        assert!(closes_thinking("\nDone", false));
+        assert!(closes_thinking("  \r\nDone", false));
+        assert!(
+            closes_thinking("\n \nDone", false),
+            "空行里只有空格也是空行"
+        );
+        assert!(closes_thinking("\r\n\t\r\nDone", false));
+        assert!(!closes_thinking("\n", false), "还没看到后文");
+        assert!(!closes_thinking("\n  ", false), "还没看到后文");
+        assert!(closes_thinking("\n", true), "流结束了，后面只剩空白");
+    }
+
+    #[test]
+    fn a_whitespace_only_line_after_the_thinking_tag_still_ends_thinking() {
+        let mut c = collected(true);
+        let started = Instant::now();
+        let mut deltas = Vec::new();
+        for piece in ["<thinking>plan it</thinking>\n ", "\nHere is the answer."] {
+            feed_assistant_text(&mut c, piece, started, &mut |d| deltas.push(d));
+        }
+        flush_hold(&mut c, started, &mut |d| deltas.push(d), true);
+        assert_eq!(c.thinking, "plan it");
+        assert_eq!(c.text, "Here is the answer.");
+    }
+
+    #[test]
+    fn in_stream_exceptions_keep_their_type_and_overflow_is_recognised() {
+        let throttled = classify_kiro(502, "ThrottlingException: Too many requests");
+        assert_eq!(throttled.kind, UpstreamKind::RateLimit);
+        assert_eq!(throttled.status, 429);
+        let overflow = classify_kiro(
+            400,
+            r#"{"message":"Input is too long.","reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}"#,
+        );
+        assert_eq!(overflow.kind, UpstreamKind::BadRequest);
+        assert!(crate::error::is_context_overflow(&overflow.message));
+        let expired = classify_kiro(502, "ExpiredTokenException: token expired");
+        assert_eq!(expired.kind, UpstreamKind::Auth);
+
+        // 流里的异常帧：类型名和原因都进消息。
+        let mut c = collected(false);
+        handle_event(
+            &Event {
+                event_type: "throttlingException".into(),
+                payload: br#"{"message":"slow down"}"#.to_vec(),
+            },
+            &mut c,
+            Instant::now(),
+            &mut |_| {},
+        );
+        let msg = c.error.unwrap();
+        assert!(
+            msg.contains("throttlingException") && msg.contains("slow down"),
+            "{msg}"
+        );
+    }
 
     #[test]
     fn last_user_is_current_and_history_keeps_the_rest() {

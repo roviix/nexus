@@ -335,7 +335,13 @@ pub struct KiroService {
     refresh_locks: Mutex<HashMap<KiroAccountId, Arc<tokio::sync::Mutex<()>>>>,
     /// 已经问过 `ListAvailableProfiles`、上游确认没有企业 profile 的账号。
     profile_attempts: Mutex<HashSet<String>>,
+    /// 问 `ListAvailableProfiles` 出错的账号和时刻。歇一阵再问：每个请求都问的话，
+    /// 两个区域各 30 秒的超时会全加到推理请求的首字延迟上。
+    profile_failures: Mutex<HashMap<String, Instant>>,
 }
+
+/// 问 profile 出错之后，多久之内不再问。
+const PROFILE_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -354,6 +360,7 @@ impl KiroService {
             social_logins: Mutex::new(HashMap::new()),
             refresh_locks: Mutex::new(HashMap::new()),
             profile_attempts: Mutex::new(HashSet::new()),
+            profile_failures: Mutex::new(HashMap::new()),
         }
     }
 
@@ -429,6 +436,15 @@ impl KiroService {
         {
             return current;
         }
+        if self
+            .profile_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .is_some_and(|at| at.elapsed() < PROFILE_RETRY_AFTER)
+        {
+            return current;
+        }
         match self
             .tokens
             .list_profiles(access_token, outbound.token_type.as_deref())
@@ -452,7 +468,11 @@ impl KiroService {
                 current
             }
             Err(err) => {
-                tracing::warn!(%err, "解析 Kiro profileArn 失败，这次先用占位符");
+                tracing::warn!(%err, "解析 Kiro profileArn 失败，先用占位符，10 分钟后再问");
+                self.profile_failures
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(id, Instant::now());
                 current
             }
         }
@@ -626,8 +646,7 @@ impl KiroService {
         let mut verifier_bytes = [0u8; 32];
         rand::rng().fill_bytes(&mut verifier_bytes);
         use base64::Engine;
-        let code_verifier =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_bytes);
+        let code_verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_bytes);
         let code_challenge = crate::protocol::code_challenge(&code_verifier);
         let authorize_url =
             crate::protocol::social_authorize_url(provider_name, &state, &code_challenge);
@@ -678,13 +697,17 @@ impl KiroService {
                         let key = logins.keys().next().cloned().unwrap();
                         logins.remove(&key).unwrap()
                     } else {
-                        return Err(AppError::invalid("社交登录会话已过期或不存在，请重新发起登录。"));
+                        return Err(AppError::invalid(
+                            "社交登录会话已过期或不存在，请重新发起登录。",
+                        ));
                     }
                 } else if logins.len() == 1 {
                     let key = logins.keys().next().cloned().unwrap();
                     logins.remove(&key).unwrap()
                 } else {
-                    return Err(AppError::invalid("社交登录会话已过期或不存在，请重新发起登录。"));
+                    return Err(AppError::invalid(
+                        "社交登录会话已过期或不存在，请重新发起登录。",
+                    ));
                 }
             } else if let Some(st) = state.as_deref() {
                 let found_key = logins
@@ -697,13 +720,17 @@ impl KiroService {
                     let key = logins.keys().next().cloned().unwrap();
                     logins.remove(&key).unwrap()
                 } else {
-                    return Err(AppError::invalid("社交登录会话已过期或不存在，请重新发起登录。"));
+                    return Err(AppError::invalid(
+                        "社交登录会话已过期或不存在，请重新发起登录。",
+                    ));
                 }
             } else if logins.len() == 1 {
                 let key = logins.keys().next().cloned().unwrap();
                 logins.remove(&key).unwrap()
             } else {
-                return Err(AppError::invalid("社交登录会话已过期或不存在，请重新发起登录。"));
+                return Err(AppError::invalid(
+                    "社交登录会话已过期或不存在，请重新发起登录。",
+                ));
             }
         };
 
@@ -716,8 +743,8 @@ impl KiroService {
             .exchange_social_code(&code, &session.code_verifier)
             .await?;
 
-        let fallback_profile = profile_arn
-            .or_else(|| Some(crate::protocol::SOCIAL_PROFILE_ARN.to_string()));
+        let fallback_profile =
+            profile_arn.or_else(|| Some(crate::protocol::SOCIAL_PROFILE_ARN.to_string()));
 
         let auth_method = if session.provider.eq_ignore_ascii_case("github") {
             "github"
@@ -1082,8 +1109,7 @@ impl KiroService {
             .profile_arn
             .as_deref()
             .or_else(|| (method == Some("social")).then_some(crate::protocol::SOCIAL_PROFILE_ARN));
-        self.add_tokens(tokens, note, method, fallback_arn)
-            .await
+        self.add_tokens(tokens, note, method, fallback_arn).await
     }
 
     async fn refresh_imported(
@@ -1119,16 +1145,13 @@ impl KiroService {
 
         // 确保拿到最新且未过期的 Access Token 和有效 Refresh Token
         let access_token = self.access_token(id).await?;
-        let refresh_token = self
-            .repo
-            .secret(id, KiroSecret::Refresh)?
-            .ok_or_else(|| {
-                AppError::new(
-                    ErrorCode::SecretMissing,
-                    "该 Kiro 账号没有 Refresh Token，无法切号到客户端。",
-                )
-                .with_hint("请在抽屉中点击「重新授权」一次。")
-            })?;
+        let refresh_token = self.repo.secret(id, KiroSecret::Refresh)?.ok_or_else(|| {
+            AppError::new(
+                ErrorCode::SecretMissing,
+                "该 Kiro 账号没有 Refresh Token，无法切号到客户端。",
+            )
+            .with_hint("请在抽屉中点击「重新授权」一次。")
+        })?;
 
         let client_id = self.repo.secret(id, KiroSecret::ClientId)?;
         let client_secret = self.repo.secret(id, KiroSecret::ClientSecret)?;
@@ -1289,9 +1312,18 @@ impl KiroService {
 
         let disk_rt = v.get("refreshToken").and_then(|x| x.as_str());
         let disk_at = v.get("accessToken").and_then(|x| x.as_str());
-        let disk_provider = v.get("provider").and_then(|x| x.as_str()).map(str::to_string);
-        let disk_auth_method = v.get("authMethod").and_then(|x| x.as_str()).map(str::to_string);
-        let disk_profile_arn = v.get("profileArn").and_then(|x| x.as_str()).map(str::to_string);
+        let disk_provider = v
+            .get("provider")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        let disk_auth_method = v
+            .get("authMethod")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        let disk_profile_arn = v
+            .get("profileArn")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
 
         // 尝试从本地账号库中比对 refresh token 或 access token
         let accounts = self.repo.list()?;
@@ -1492,7 +1524,11 @@ pub fn is_kiro_running() -> bool {
         std::process::Command::new("tasklist")
             .args(["/FI", "IMAGENAME eq Kiro.exe", "/FO", "CSV", "/NH"])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("kiro.exe"))
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .to_lowercase()
+                    .contains("kiro.exe")
+            })
             .unwrap_or(false)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

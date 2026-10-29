@@ -147,9 +147,7 @@ fn probe_app_management(product: &Path) -> (PermStatus, Option<String>) {
     }
     (
         PermStatus::Denied,
-        Some(
-            "系统未放行：请在系统设置 → 隐私与安全性 → App 管理 里允许 Nexus。".into(),
-        ),
+        Some("系统未放行：请在系统设置 → 隐私与安全性 → App 管理 里允许 Nexus。".into()),
     )
 }
 
@@ -388,7 +386,7 @@ pub fn perms_check(state: State<'_, AppState>) -> Result<PermReport> {
 /// 申请：把会弹窗的探针真跑一遍（用户点了才跑）。`id` 为空 = 全部。
 #[tauri::command(async)]
 pub fn perms_request(state: State<'_, AppState>, id: Option<String>) -> Result<PermReport> {
-    let probe_all = id.as_deref().map_or(true, |s| s.is_empty());
+    let probe_all = id.as_deref().is_none_or(|s| s.is_empty());
     let target = id.as_deref().unwrap_or("");
     let probe_cursor_app = probe_all || target == "cursor_app";
     let probe_cursor_automation = probe_all || target == "cursor_automation";

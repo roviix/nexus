@@ -114,5 +114,3 @@ pub fn crsr_get_custom_models(state: State<'_, AppState>) -> Result<Vec<String>>
     let state_db = nexus_cursor::StateDb::new(&state.switcher.cursor().paths.state_db);
     state_db.read_custom_models()
 }
-
-

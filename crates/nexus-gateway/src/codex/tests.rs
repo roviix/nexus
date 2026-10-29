@@ -992,8 +992,40 @@ async fn in_stream_errors_become_gateway_errors_in_the_clients_dialect() {
     assert!(events
         .iter()
         .any(|(e, _)| e == "response.output_text.delta"));
+    // 上游自己的 response.failed 原样交给 Codex（它认的就是这一帧和里面的 code），
+    // 而且只发这一个终结事件，后面不再补一个网关自己的。
     let (last_ev, last) = events.last().unwrap();
-    assert_eq!(last_ev, "error");
-    assert_eq!(last["code"], "bad_request");
-    assert!(last["message"].as_str().unwrap().contains("too long"));
+    assert_eq!(last_ev, "response.failed");
+    assert_eq!(last["response"]["error"]["code"], "invalid_prompt");
+    assert!(last["response"]["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("too long"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(e, _)| e == "response.failed" || e == "error")
+            .count(),
+        1
+    );
+
+    // 透传里传输层半路断掉（上游没给终结事件）：补一个 Codex 认得的 response.failed，
+    // code 是字符串，不是一个它会跳过的裸 error 事件。
+    h.fake.queue.lock().unwrap().push(Plan::ok(vec![
+        json!({ "type": "response.created", "response": { "id": "r", "model": "gpt-5.4" } }),
+        json!({ "type": "response.output_text.delta", "delta": "half" }),
+    ]));
+    let text = http()
+        .post(format!("{}/v1/responses", h.base))
+        .json(&json!({ "model": "gpt-5.4", "input": "x", "stream": true }))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let events = sse_events(&text);
+    let (last_ev, last) = events.last().unwrap();
+    assert_eq!(last_ev, "response.failed");
+    assert!(last["response"]["error"]["code"].is_string());
 }

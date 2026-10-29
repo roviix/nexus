@@ -10,8 +10,8 @@
 use crate::channel::{self, Capability, ChannelId, ChannelRegistry};
 use crate::inference::StreamConfig;
 use crate::lane::{
-    CursorLoginSource, Lane, LaneSnapshot, LoginReader, RelayLane, Roster, Source, StoredAccountsSource,
-    SubscriptionAccounts,
+    CursorLoginSource, Lane, LaneSnapshot, LoginReader, RelayLane, Roster, Source,
+    StoredAccountsSource, SubscriptionAccounts,
 };
 use crate::ledger::{Ledger, UsageSummary};
 use crate::media::{MediaJob, MediaJobs};
@@ -203,90 +203,134 @@ pub struct GatewayService {
 }
 
 impl GatewayService {
-    fn parse_mesh_fallback_request(parsed: &serde_json::Value, effective_model: &str) -> crate::normalized::ChatRequest {
+    fn parse_mesh_fallback_request(
+        parsed: &serde_json::Value,
+        effective_model: &str,
+    ) -> crate::normalized::ChatRequest {
         let messages = if let Some(arr) = parsed.get("messages").and_then(|v| v.as_array()) {
-            arr.iter().filter_map(|m| {
-                let role_str = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
-                let role = match role_str {
-                    "system" => crate::normalized::Role::System,
-                    "assistant" => crate::normalized::Role::Assistant,
-                    "tool" => crate::normalized::Role::Tool,
-                    _ => crate::normalized::Role::User,
-                };
-                let text = if let Some(s) = m.get("content").and_then(|c| c.as_str()) {
-                    s.to_string()
-                } else if let Some(blocks) = m.get("content").and_then(|c| c.as_array()) {
-                    blocks.iter().filter_map(|b| {
-                        if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                            b.get("text").and_then(|t| t.as_str())
-                        } else {
-                            None
-                        }
-                    }).collect::<Vec<_>>().join("\n")
-                } else {
-                    String::new()
-                };
+            arr.iter()
+                .map(|m| {
+                    let role_str = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+                    let role = match role_str {
+                        "system" => crate::normalized::Role::System,
+                        "assistant" => crate::normalized::Role::Assistant,
+                        "tool" => crate::normalized::Role::Tool,
+                        _ => crate::normalized::Role::User,
+                    };
+                    let text = if let Some(s) = m.get("content").and_then(|c| c.as_str()) {
+                        s.to_string()
+                    } else if let Some(blocks) = m.get("content").and_then(|c| c.as_array()) {
+                        blocks
+                            .iter()
+                            .filter_map(|b| {
+                                if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                    b.get("text").and_then(|t| t.as_str())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    } else {
+                        String::new()
+                    };
 
-                let mut tool_calls = Vec::new();
-                if let Some(calls) = m.get("tool_calls").and_then(|v| v.as_array()) {
-                    for tc in calls {
-                        let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("call_0").to_string();
-                        let name = tc.pointer("/function/name").and_then(|v| v.as_str())
-                            .or_else(|| tc.get("name").and_then(|v| v.as_str()))
-                            .unwrap_or("").to_string();
-                        let arguments = tc.pointer("/function/arguments").and_then(|v| v.as_str())
-                            .or_else(|| tc.get("arguments").and_then(|v| v.as_str()))
-                            .unwrap_or("{}").to_string();
-                        if !name.is_empty() {
-                            tool_calls.push(crate::normalized::ToolCall { id, name, arguments });
+                    let mut tool_calls = Vec::new();
+                    if let Some(calls) = m.get("tool_calls").and_then(|v| v.as_array()) {
+                        for tc in calls {
+                            let id = tc
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("call_0")
+                                .to_string();
+                            let name = tc
+                                .pointer("/function/name")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| tc.get("name").and_then(|v| v.as_str()))
+                                .unwrap_or("")
+                                .to_string();
+                            let arguments = tc
+                                .pointer("/function/arguments")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| tc.get("arguments").and_then(|v| v.as_str()))
+                                .unwrap_or("{}")
+                                .to_string();
+                            if !name.is_empty() {
+                                tool_calls.push(crate::normalized::ToolCall {
+                                    id,
+                                    name,
+                                    arguments,
+                                });
+                            }
                         }
                     }
-                }
 
-                let mut tool_results = Vec::new();
-                if role == crate::normalized::Role::Tool {
-                    let tool_call_id = m.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let tool_name = m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    tool_results.push(crate::normalized::ToolResult {
-                        tool_call_id,
-                        tool_name,
-                        text: text.clone(),
-                        is_error: false,
+                    let mut tool_results = Vec::new();
+                    if role == crate::normalized::Role::Tool {
+                        let tool_call_id = m
+                            .get("tool_call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let tool_name = m
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        tool_results.push(crate::normalized::ToolResult {
+                            tool_call_id,
+                            tool_name,
+                            text: text.clone(),
+                            is_error: false,
+                            images: Vec::new(),
+                        });
+                    }
+
+                    crate::normalized::Message {
+                        role,
+                        text: if role == crate::normalized::Role::Tool {
+                            String::new()
+                        } else {
+                            text
+                        },
                         images: Vec::new(),
-                    });
-                }
-
-                Some(crate::normalized::Message {
-                    role,
-                    text: if role == crate::normalized::Role::Tool { String::new() } else { text },
-                    images: Vec::new(),
-                    tool_calls,
-                    tool_results,
-                    reasoning: Vec::new(),
+                        tool_calls,
+                        tool_results,
+                        reasoning: Vec::new(),
+                    }
                 })
-            }).collect()
+                .collect()
         } else {
             vec![]
         };
 
         let tools = if let Some(arr) = parsed.get("tools").and_then(|v| v.as_array()) {
-            arr.iter().filter_map(|t| {
-                let name = t.pointer("/function/name").and_then(|v| v.as_str())
-                    .or_else(|| t.get("name").and_then(|v| v.as_str()))?;
-                let description = t.pointer("/function/description").and_then(|v| v.as_str())
-                    .or_else(|| t.get("description").and_then(|v| v.as_str()))
-                    .unwrap_or("").to_string();
-                let parameters = t.pointer("/function/parameters").cloned()
-                    .or_else(|| t.get("parameters").cloned())
-                    .unwrap_or(serde_json::json!({}));
-                Some(crate::normalized::ToolDef {
-                    name: name.to_string(),
-                    description,
-                    parameters,
-                    grammar: false,
-                    namespace: None,
+            arr.iter()
+                .filter_map(|t| {
+                    let name = t
+                        .pointer("/function/name")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| t.get("name").and_then(|v| v.as_str()))?;
+                    let description = t
+                        .pointer("/function/description")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| t.get("description").and_then(|v| v.as_str()))
+                        .unwrap_or("")
+                        .to_string();
+                    let parameters = t
+                        .pointer("/function/parameters")
+                        .cloned()
+                        .or_else(|| t.get("parameters").cloned())
+                        .unwrap_or(serde_json::json!({}));
+                    Some(crate::normalized::ToolDef {
+                        name: name.to_string(),
+                        description,
+                        parameters,
+                        grammar: false,
+                        namespace: None,
+                    })
                 })
-            }).collect()
+                .collect()
         } else {
             vec![]
         };
@@ -452,185 +496,239 @@ impl GatewayService {
         );
 
         let mesh_for_hook = mesh.clone();
-        let mesh_invoke_hook: nexus_mesh::tunnel::client::MeshInvokeHook = Arc::new(move |channel_id, model, payload_json, outbound_tx, stream_id| {
-            let claude = claude_srv.clone();
-            let chatgpt = chatgpt_srv.clone();
-            let antigravity = antigravity_srv.clone();
-            let grok = grok_srv.clone();
-            let kiro = kiro_srv.clone();
-            let zcode = zcode_srv.clone();
-            let qoder = qoder_srv.clone();
-            let mesh_inst = mesh_for_hook.clone();
-            let lanes_map = channel_lanes_map.clone();
+        let mesh_invoke_hook: nexus_mesh::tunnel::client::MeshInvokeHook = Arc::new(
+            move |channel_id, model, payload_json, outbound_tx, stream_id| {
+                let claude = claude_srv.clone();
+                let chatgpt = chatgpt_srv.clone();
+                let antigravity = antigravity_srv.clone();
+                let grok = grok_srv.clone();
+                let kiro = kiro_srv.clone();
+                let zcode = zcode_srv.clone();
+                let qoder = qoder_srv.clone();
+                let mesh_inst = mesh_for_hook.clone();
+                let lanes_map = channel_lanes_map.clone();
 
-            Box::pin(async move {
-                let run_impl = async {
-                    // 1. 严格检查本地 Host 开放配置与模型共享白名单
-                    mesh_inst
-                        .is_channel_and_model_allowed(&channel_id, &model)
-                        .await
-                        .map_err(|e| format!("Mesh 外部调用鉴权拒绝: {e}"))?;
+                Box::pin(async move {
+                    let run_impl = async {
+                        // 1. 严格检查本地 Host 开放配置与模型共享白名单
+                        mesh_inst
+                            .is_channel_and_model_allowed(&channel_id, &model)
+                            .await
+                            .map_err(|e| format!("Mesh 外部调用鉴权拒绝: {e}"))?;
 
-                    // 2. 清洗模型前缀 (去除 peer_id/ 或 channel_id/ 嵌套前缀)
-                    let effective_model = if let Some((_, stripped)) = model.split_once('/') {
-                        stripped.to_string()
-                    } else {
-                        model.clone()
-                    };
+                        // 2. 清洗模型前缀 (去除 peer_id/ 或 channel_id/ 嵌套前缀)
+                        let effective_model = if let Some((_, stripped)) = model.split_once('/') {
+                            stripped.to_string()
+                        } else {
+                            model.clone()
+                        };
 
-                    let parsed: serde_json::Value = serde_json::from_str(&payload_json)
-                        .map_err(|e| format!("解析请求体失败: {e}"))?;
+                        let parsed: serde_json::Value = serde_json::from_str(&payload_json)
+                            .map_err(|e| format!("解析请求体失败: {e}"))?;
 
-                    // 优先识别方言并恢复完整的 ChatRequest (包含 messages、tools 等高级调用)
-                    let is_anthropic_flavor = parsed.get("anthropic_version").is_some()
-                        || parsed.pointer("/tools/0/input_schema").is_some()
-                        || parsed.get("system").is_some();
+                        // 优先识别方言并恢复完整的 ChatRequest (包含 messages、tools 等高级调用)
+                        let is_anthropic_flavor = parsed.get("anthropic_version").is_some()
+                            || parsed.pointer("/tools/0/input_schema").is_some()
+                            || parsed.get("system").is_some();
 
-                    let mut chat_req = if is_anthropic_flavor {
-                        if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::AnthropicMessages, &parsed, None) {
+                        let mut chat_req = if is_anthropic_flavor {
+                            if let Ok(pr) = crate::inbound::parse::parse_request(
+                                crate::inbound::Dialect::AnthropicMessages,
+                                &parsed,
+                                None,
+                            ) {
+                                pr.request
+                            } else if let Ok(pr) = crate::inbound::parse::parse_request(
+                                crate::inbound::Dialect::OpenAiChat,
+                                &parsed,
+                                None,
+                            ) {
+                                pr.request
+                            } else {
+                                Self::parse_mesh_fallback_request(&parsed, &effective_model)
+                            }
+                        } else if let Ok(pr) = crate::inbound::parse::parse_request(
+                            crate::inbound::Dialect::OpenAiChat,
+                            &parsed,
+                            None,
+                        ) {
                             pr.request
-                        } else if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::OpenAiChat, &parsed, None) {
+                        } else if let Ok(pr) = crate::inbound::parse::parse_request(
+                            crate::inbound::Dialect::AnthropicMessages,
+                            &parsed,
+                            None,
+                        ) {
                             pr.request
                         } else {
                             Self::parse_mesh_fallback_request(&parsed, &effective_model)
-                        }
-                    } else if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::OpenAiChat, &parsed, None) {
-                        pr.request
-                    } else if let Ok(pr) = crate::inbound::parse::parse_request(crate::inbound::Dialect::AnthropicMessages, &parsed, None) {
-                        pr.request
-                    } else {
-                        Self::parse_mesh_fallback_request(&parsed, &effective_model)
-                    };
-                    chat_req.model = effective_model.clone();
+                        };
+                        chat_req.model = effective_model.clone();
 
-                    let lane: Arc<dyn Lane> = lanes_map
-                        .get(channel_id.as_str())
-                        .cloned()
-                        .map(|l| l as Arc<dyn Lane>)
-                        .ok_or_else(|| format!("本地 Provider 未配置该通道: {channel_id}"))?;
+                        let lane: Arc<dyn Lane> = lanes_map
+                            .get(channel_id.as_str())
+                            .cloned()
+                            .map(|l| l as Arc<dyn Lane>)
+                            .ok_or_else(|| format!("本地 Provider 未配置该通道: {channel_id}"))?;
 
-                    let upstream: Arc<dyn crate::upstream::Upstream> = match channel_id.as_str() {
-                        channel::CLAUDE => subscriptions::claude_channel(lane.clone(), claude).upstream,
-                        channel::CHATGPT => subscriptions::chatgpt_channel(lane.clone(), chatgpt).upstream,
-                        channel::ANTIGRAVITY => subscriptions::antigravity_channel(lane.clone(), antigravity).upstream,
-                        channel::GROK => subscriptions::grok_channel(lane.clone(), grok).upstream,
-                        channel::KIRO => subscriptions::kiro_channel(lane.clone(), kiro).upstream,
-                        channel::ZCODE => subscriptions::zcode_channel(lane.clone(), zcode).upstream,
-                        channel::QODER => subscriptions::qoder_channel(lane.clone(), qoder).upstream,
-                        other => return Err(format!("本地 Provider 不支持该通道: {other}")),
-                    };
-
-                    let mut last_err: Option<String> = None;
-                    let switch_on_upstream = lane.switch_helps_on_upstream_error();
-
-                    for attempt in 1..=3 {
-                        let cred = match lane.acquire(&effective_model).await {
-                            Ok(c) => c,
-                            Err(e) => {
-                                let err_msg = format!("获取本地通道凭据失败: {e}");
-                                return Err(last_err.unwrap_or(err_msg));
+                        let upstream: Arc<dyn crate::upstream::Upstream> = match channel_id.as_str()
+                        {
+                            channel::CLAUDE => {
+                                subscriptions::claude_channel(lane.clone(), claude).upstream
                             }
+                            channel::CHATGPT => {
+                                subscriptions::chatgpt_channel(lane.clone(), chatgpt).upstream
+                            }
+                            channel::ANTIGRAVITY => {
+                                subscriptions::antigravity_channel(lane.clone(), antigravity)
+                                    .upstream
+                            }
+                            channel::GROK => {
+                                subscriptions::grok_channel(lane.clone(), grok).upstream
+                            }
+                            channel::KIRO => {
+                                subscriptions::kiro_channel(lane.clone(), kiro).upstream
+                            }
+                            channel::ZCODE => {
+                                subscriptions::zcode_channel(lane.clone(), zcode).upstream
+                            }
+                            channel::QODER => {
+                                subscriptions::qoder_channel(lane.clone(), qoder).upstream
+                            }
+                            other => return Err(format!("本地 Provider 不支持该通道: {other}")),
                         };
 
-                        let tx = outbound_tx.clone();
-                        let emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                        let emitted_clone = emitted.clone();
-                        let mut sink = move |d: crate::normalized::Delta| {
-                            if !matches!(d, crate::normalized::Delta::Headers(_) | crate::normalized::Delta::ThinkingSignature(_)) {
-                                emitted_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            match d {
-                                crate::normalized::Delta::Text(t) => {
-                                    let _ = tx.try_send(nexus_mesh::protocol::TunnelFrame::Delta {
-                                        stream_id,
-                                        text: t,
-                                        is_thinking: false,
-                                    });
-                                }
-                                crate::normalized::Delta::Thinking(t) => {
-                                    let _ = tx.try_send(nexus_mesh::protocol::TunnelFrame::Delta {
-                                        stream_id,
-                                        text: t,
-                                        is_thinking: true,
-                                    });
-                                }
-                                _ => {}
-                            }
-                        };
+                        let mut last_err: Option<String> = None;
+                        let switch_on_upstream = lane.switch_helps_on_upstream_error();
 
-                        let result = upstream.stream(&cred, &chat_req, &mut sink).await;
-                        match &result {
-                            Ok(res) => {
-                                lane.report(&cred, &effective_model, crate::lane::Outcome::Ok(&res.usage));
-                                let tool_calls_wire = if res.tool_calls.is_empty() {
-                                    None
-                                } else {
-                                    Some(
-                                        res.tool_calls
-                                            .iter()
-                                            .map(|tc| nexus_mesh::protocol::ToolCallWire {
-                                                id: tc.id.clone(),
-                                                name: tc.name.clone(),
-                                                arguments: tc.arguments.clone(),
-                                            })
-                                            .collect(),
-                                    )
-                                };
-                                let finish_reason_str = if !res.tool_calls.is_empty() {
-                                    "tool_use".to_string()
-                                } else {
-                                    res.finish_reason.as_str().to_string()
-                                };
-                                let _ = outbound_tx.send(nexus_mesh::protocol::TunnelFrame::Finish {
-                                    stream_id,
-                                    total_tokens: Some(res.usage.output_tokens as u32),
-                                    finish_reason: Some(finish_reason_str),
-                                    tool_calls: tool_calls_wire,
-                                    thinking_signature: res.thinking_signature.clone(),
-                                }).await;
-                                return Ok(());
-                            }
-                            Err(e) => {
-                                lane.report(&cred, &effective_model, crate::lane::Outcome::Err(e));
-                                if !emitted.load(std::sync::atomic::Ordering::Relaxed)
-                                    && attempt < 3
-                                    && (e.kind.blames_account()
-                                        || (switch_on_upstream
-                                            && matches!(
-                                                e.kind,
-                                                crate::error::UpstreamKind::Upstream | crate::error::UpstreamKind::Timeout
-                                            )))
-                                {
-                                    tracing::info!(
-                                        account = %cred.label,
-                                        model = %effective_model,
-                                        status = e.status,
-                                        attempt,
-                                        "Mesh 本地回环调用的通道账号报错，换号重试 (第 {attempt} 次)"
+                        for attempt in 1..=3 {
+                            let cred = match lane.acquire(&effective_model).await {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    let err_msg = format!("获取本地通道凭据失败: {e}");
+                                    return Err(last_err.unwrap_or(err_msg));
+                                }
+                            };
+
+                            let tx = outbound_tx.clone();
+                            let emitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                            let emitted_clone = emitted.clone();
+                            let mut sink = move |d: crate::normalized::Delta| {
+                                if !matches!(
+                                    d,
+                                    crate::normalized::Delta::Headers(_)
+                                        | crate::normalized::Delta::ThinkingSignature(_)
+                                ) {
+                                    emitted_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                match d {
+                                    crate::normalized::Delta::Text(t) => {
+                                        let _ =
+                                            tx.try_send(nexus_mesh::protocol::TunnelFrame::Delta {
+                                                stream_id,
+                                                text: t,
+                                                is_thinking: false,
+                                            });
+                                    }
+                                    crate::normalized::Delta::Thinking(t) => {
+                                        let _ =
+                                            tx.try_send(nexus_mesh::protocol::TunnelFrame::Delta {
+                                                stream_id,
+                                                text: t,
+                                                is_thinking: true,
+                                            });
+                                    }
+                                    _ => {}
+                                }
+                            };
+
+                            let result = upstream.stream(&cred, &chat_req, &mut sink).await;
+                            match &result {
+                                Ok(res) => {
+                                    lane.report(
+                                        &cred,
+                                        &effective_model,
+                                        crate::lane::Outcome::Ok(&res.usage),
                                     );
-                                    last_err = Some(format!("本地通道上游执行错误: {}", e.message));
-                                    continue;
+                                    let tool_calls_wire = if res.tool_calls.is_empty() {
+                                        None
+                                    } else {
+                                        Some(
+                                            res.tool_calls
+                                                .iter()
+                                                .map(|tc| nexus_mesh::protocol::ToolCallWire {
+                                                    id: tc.id.clone(),
+                                                    name: tc.name.clone(),
+                                                    arguments: tc.arguments.clone(),
+                                                })
+                                                .collect(),
+                                        )
+                                    };
+                                    let finish_reason_str = if !res.tool_calls.is_empty() {
+                                        "tool_use".to_string()
+                                    } else {
+                                        res.finish_reason.as_str().to_string()
+                                    };
+                                    let _ = outbound_tx
+                                        .send(nexus_mesh::protocol::TunnelFrame::Finish {
+                                            stream_id,
+                                            total_tokens: Some(res.usage.output_tokens),
+                                            finish_reason: Some(finish_reason_str),
+                                            tool_calls: tool_calls_wire,
+                                            thinking_signature: res.thinking_signature.clone(),
+                                        })
+                                        .await;
+                                    return Ok(());
                                 }
-                                return Err(format!("本地通道上游执行错误: {}", e.message));
+                                Err(e) => {
+                                    lane.report(
+                                        &cred,
+                                        &effective_model,
+                                        crate::lane::Outcome::Err(e),
+                                    );
+                                    if !emitted.load(std::sync::atomic::Ordering::Relaxed)
+                                        && attempt < 3
+                                        && (e.kind.blames_account()
+                                            || (switch_on_upstream
+                                                && matches!(
+                                                    e.kind,
+                                                    crate::error::UpstreamKind::Upstream
+                                                        | crate::error::UpstreamKind::Timeout
+                                                )))
+                                    {
+                                        tracing::info!(
+                                            account = %cred.label,
+                                            model = %effective_model,
+                                            status = e.status,
+                                            attempt,
+                                            "Mesh 本地回环调用的通道账号报错，换号重试 (第 {attempt} 次)"
+                                        );
+                                        last_err =
+                                            Some(format!("本地通道上游执行错误: {}", e.message));
+                                        continue;
+                                    }
+                                    return Err(format!("本地通道上游执行错误: {}", e.message));
+                                }
                             }
                         }
+
+                        Err(last_err.unwrap_or_else(|| "所有账号重试均失败".to_string()))
+                    };
+
+                    let res: std::result::Result<(), String> = run_impl.await;
+                    if let Err(ref err_msg) = res {
+                        tracing::error!(%err_msg, "Mesh 本地调用执行失败");
+                        let _ = outbound_tx
+                            .send(nexus_mesh::protocol::TunnelFrame::Error {
+                                stream_id,
+                                code: "500".to_string(),
+                                message: err_msg.clone(),
+                            })
+                            .await;
                     }
-
-                    Err(last_err.unwrap_or_else(|| "所有账号重试均失败".to_string()))
-                };
-
-                let res: std::result::Result<(), String> = run_impl.await;
-                if let Err(ref err_msg) = res {
-                    tracing::error!(%err_msg, "Mesh 本地调用执行失败");
-                    let _ = outbound_tx.send(nexus_mesh::protocol::TunnelFrame::Error {
-                        stream_id,
-                        code: "500".to_string(),
-                        message: err_msg.clone(),
-                    }).await;
-                }
-                res
-            })
-        });
+                    res
+                })
+            },
+        );
 
         mesh.set_invoke_hook(Some(mesh_invoke_hook));
 

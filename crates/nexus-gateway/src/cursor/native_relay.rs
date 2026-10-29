@@ -101,10 +101,7 @@ fn build_outbound_request(
     out_req
 }
 
-async fn execute_outbound_request(
-    out_req: reqwest::RequestBuilder,
-    target_url: &str,
-) -> Response {
+async fn execute_outbound_request(out_req: reqwest::RequestBuilder, target_url: &str) -> Response {
     match out_req.send().await {
         Ok(upstream_res) => {
             let status = StatusCode::from_u16(upstream_res.status().as_u16())
@@ -173,4 +170,3 @@ pub async fn handle_native_relay_body(
     let out_req = build_outbound_request(&client, &target_url, &headers).body(reqwest_body);
     execute_outbound_request(out_req, &target_url).await
 }
-

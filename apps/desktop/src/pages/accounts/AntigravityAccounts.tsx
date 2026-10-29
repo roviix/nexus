@@ -246,7 +246,7 @@ export function AntigravityAccounts({
             </button>
           }
         >
-          通过 Google 官方 OAuth 授权登录，安全获取 Gemini 与 Claude 配额。
+          用 Google 账号授权登录。
         </Empty>
       ) : filtered.length === 0 ? (
         <div className="faint tiny" style={{ padding: 32, textAlign: "center" }}>

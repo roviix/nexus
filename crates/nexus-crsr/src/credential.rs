@@ -83,7 +83,9 @@ impl CrsrCredential {
             return Err(AppError::invalid("accessToken 不是 JWT。"));
         }
         if self.api_key.is_empty() && self.access_token.is_empty() && self.gateway_url.is_none() {
-            return Err(AppError::invalid("凭证既无 API Key，也无 Access Token 或网关地址。"));
+            return Err(AppError::invalid(
+                "凭证既无 API Key，也无 Access Token 或网关地址。",
+            ));
         }
         Ok(())
     }

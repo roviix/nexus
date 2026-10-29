@@ -259,8 +259,7 @@ impl AntigravityService {
 
         // 0. 支持 go-keyring-base64 编码的凭证字符串（macOS Keychain / 官方 Antigravity 格式）
         let decoded_storage;
-        let candidate_text = if trimmed.starts_with("go-keyring-base64:") {
-            let b64 = &trimmed["go-keyring-base64:".len()..];
+        let candidate_text = if let Some(b64) = trimmed.strip_prefix("go-keyring-base64:") {
             if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
                 if let Ok(s) = String::from_utf8(bytes) {
                     decoded_storage = s;
@@ -597,6 +596,21 @@ impl AntigravityService {
                         AntigravityStatus::NeedsLogin,
                         Some(err.message.clone()),
                     );
+                    return Err(err);
+                }
+                // 暂时续不上（网络 / Google 抖动）：提前 5 分钟换票，旧 token 多半还没真过期，先顶着用。
+                let still_valid = account
+                    .access_expires_at
+                    .as_deref()
+                    .and_then(|exp| OffsetDateTime::parse(exp, &Rfc3339).ok())
+                    .is_some_and(|exp| {
+                        exp > OffsetDateTime::now_utc() + time::Duration::seconds(60)
+                    });
+                if still_valid {
+                    if let Some(access) = self.accounts.get_access_token(&account_id)? {
+                        tracing::warn!(%err, "Antigravity 续期暂时失败，先用还没过期的旧 access token");
+                        return Ok(access);
+                    }
                 }
                 Err(err)
             }
@@ -770,8 +784,7 @@ impl AntigravityService {
                     {
                         let trimmed = text.trim();
                         let decoded_str;
-                        let cand = if trimmed.starts_with("go-keyring-base64:") {
-                            let b64 = &trimmed["go-keyring-base64:".len()..];
+                        let cand = if let Some(b64) = trimmed.strip_prefix("go-keyring-base64:") {
                             if let Ok(bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(b64.trim())
                             {
@@ -788,12 +801,33 @@ impl AntigravityService {
                             trimmed
                         };
                         if let Ok(val) = serde_json::from_str::<Value>(cand) {
-                            let rt = val
-                                .get("refresh_token")
-                                .or_else(|| val.get("refreshToken"))
-                                .or_else(|| val.get("token").and_then(|t| t.get("refresh_token")))
-                                .and_then(|v| v.as_str());
-                            if let Some(rt_str) = rt {
+                            let field = |names: &[&str]| -> Option<String> {
+                                names.iter().find_map(|n| {
+                                    val.get(*n)
+                                        .or_else(|| val.get("token").and_then(|t| t.get(*n)))
+                                        .and_then(|v| v.as_str())
+                                        .map(str::to_string)
+                                })
+                            };
+                            let rt = field(&["refresh_token", "refreshToken"]);
+                            // 钥匙串里是本机官方客户端此刻登着的那个人。只有确认是同一个号（同一把
+                            // access token，或同一个邮箱）才补，否则会把别人的 refresh token 挂到
+                            // 这个号上，之后它的请求全以另一个人的身份发出去。
+                            let same_session = field(&["access_token", "accessToken"])
+                                .is_some_and(|at| at == token.expose());
+                            let same_email = field(&["email"]).is_some_and(|e| {
+                                acc.email
+                                    .as_deref()
+                                    .is_some_and(|mine| mine.eq_ignore_ascii_case(e.trim()))
+                            });
+                            if !(same_session || same_email) {
+                                tracing::info!(
+                                    "本机钥匙串里的 Antigravity 登录不是这个号，不补 refresh token"
+                                );
+                            }
+                            if let Some(rt_str) =
+                                rt.as_deref().filter(|_| same_session || same_email)
+                            {
                                 let _ = self.accounts.save_tokens(
                                     &aid,
                                     token.expose(),

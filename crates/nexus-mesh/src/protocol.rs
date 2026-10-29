@@ -121,8 +121,8 @@ mod base64_payload {
 impl TunnelFrame {
     /// 序列化为带有 [NXMS 魔数 (4B)][版本 (1B)][载荷长度 (4B)] 前缀的安全字节流。
     pub fn encode(&self) -> io::Result<Bytes> {
-        let json_bytes = serde_json::to_vec(self)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let json_bytes =
+            serde_json::to_vec(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let len = json_bytes.len() as u32;
         let mut buf = BytesMut::with_capacity(9 + json_bytes.len());
         buf.put_slice(&MAGIC);
@@ -140,7 +140,7 @@ impl TunnelFrame {
         }
 
         // 校验 Magic 4 字节
-        if &src[0..4] != &MAGIC {
+        if src[0..4] != MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("非法协议魔数: {:?}", &src[0..4]),
@@ -192,7 +192,9 @@ mod tests {
         let encoded = frame.encode().unwrap();
         let mut buf = BytesMut::from(encoded.as_ref());
 
-        let decoded = TunnelFrame::decode(&mut buf).unwrap().expect("frame decoded");
+        let decoded = TunnelFrame::decode(&mut buf)
+            .unwrap()
+            .expect("frame decoded");
         assert_eq!(frame, decoded);
     }
 
@@ -214,7 +216,9 @@ mod tests {
         let encoded = frame.encode().unwrap();
         let mut buf = BytesMut::from(encoded.as_ref());
 
-        let decoded = TunnelFrame::decode(&mut buf).unwrap().expect("frame decoded");
+        let decoded = TunnelFrame::decode(&mut buf)
+            .unwrap()
+            .expect("frame decoded");
         if let TunnelFrame::Data { stream_id, data: d } = decoded {
             assert_eq!(stream_id, 101);
             assert_eq!(d, data);

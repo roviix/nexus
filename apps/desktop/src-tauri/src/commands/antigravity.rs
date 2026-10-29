@@ -26,7 +26,12 @@ pub async fn antigravity_login_start(
 ) -> Result<LoginStart> {
     let note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
     let started = state.antigravity.start_login(note).await?;
-    activity::info(&state.db, "antigravity", None, "发起 Google Antigravity 授权");
+    activity::info(
+        &state.db,
+        "antigravity",
+        None,
+        "发起 Google Antigravity 授权",
+    );
     if started.callback_listening {
         let antigravity = state.antigravity.clone();
         let db = state.db.clone();

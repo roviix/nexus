@@ -224,7 +224,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
           </button>
         }
       >
-        {status?.settings.defaultChannel === "cursor" ? "不带通道前缀的请求走这里的号。" : "写成 cursor/模型 的请求走这里的号。"}加进来的号会被 Claude Code、Codex 这类客户端一直用到额度到线，再接力下一个。
+        {status?.settings.defaultChannel === "cursor" ? "不带通道前缀的请求走这里的号。" : "写成 cursor/模型 的请求走这里的号。"}一个号用到额度上限，再接力下一个。
       </Empty>
     ) : (
       <div className="accts">
@@ -310,7 +310,7 @@ export function GatewayPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
           </button>
         }
       >
-        授权登录或导入 Google 反重力账号后，会自动进入网关号池参与 Gemini 与 Claude 模型的接力调度。
+        登录或导入反重力账号后自动进入号池。
       </Empty>
     ) : (
       <div className="accts">
@@ -809,7 +809,7 @@ export function EnrollModal({
             </button>
           }
         >
-          网关只能用授权过（有 refresh_token）的号，或者 Cursor 里正登着的那个。号池里其余的要先去「账号」授权。
+          网关只用授权过（有 refresh_token）的号和 Cursor 当前登录的号。其余的号先去「账号」授权。
         </Empty>
       ) : (
         <div className="stack" style={{ gap: 10 }}>

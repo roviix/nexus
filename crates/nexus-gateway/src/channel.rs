@@ -314,7 +314,11 @@ impl ChannelRegistry {
         if !model.is_empty() && cap == Capability::Chat {
             // Mesh 明确匹配了对端节点指纹/设备名的请求，无论默认通道是否停用都应当直接放行并路由至 Mesh，
             // 避免被默认通道的墓碑误杀拦截。
-            if let Some(mesh_ch) = self.channels.iter().find(|ch| ch.id == MESH && ch.gate.claims_bare(model)) {
+            if let Some(mesh_ch) = self
+                .channels
+                .iter()
+                .find(|ch| ch.id == MESH && ch.gate.claims_bare(model))
+            {
                 return Resolved {
                     channel: mesh_ch,
                     base_model: model.to_string(),

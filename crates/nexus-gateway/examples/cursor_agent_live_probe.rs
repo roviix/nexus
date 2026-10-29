@@ -14,7 +14,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Nexus Cursor Agent 真实端到端协议探针 ===");
 
     let port = std::env::var("NEXUS_PORT").unwrap_or_else(|_| "8694".to_string());
-    let model = std::env::var("NEXUS_MODEL").unwrap_or_else(|_| "kiro-claude-opus-5.5-thinking (Nexus)".to_string());
+    let model = std::env::var("NEXUS_MODEL")
+        .unwrap_or_else(|_| "kiro-claude-opus-5.5-thinking (Nexus)".to_string());
     let base_url = format!("http://127.0.0.1:{port}/cursor/route");
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -24,7 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conv_id = format!("live-probe-{}", uuid::Uuid::new_v4());
     let req_id = format!("live-req-{}", uuid::Uuid::new_v4());
 
-    println!("1. 构造 AgentRunRequest (conv_id: {}, model: {})", conv_id, model);
+    println!(
+        "1. 构造 AgentRunRequest (conv_id: {}, model: {})",
+        conv_id, model
+    );
     let run_req = agent::AgentRunRequest {
         requested_model: Some(agent::RequestedModel {
             model_id: model,
@@ -110,11 +114,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             agent::agent_server_message::Message::InteractionUpdate(u) => {
                                 if let Some(update) = u.message {
                                     match update {
-                                        agent::interaction_update::Message::ToolCallStarted(started) => {
+                                        agent::interaction_update::Message::ToolCallStarted(
+                                            started,
+                                        ) => {
                                             println!("\n[UI 轨] 🛠️ ToolCallStarted 收到！");
-                                            println!("   ToolCall: {:?}", started.tool_call.is_some());
+                                            println!(
+                                                "   ToolCall: {:?}",
+                                                started.tool_call.is_some()
+                                            );
                                         }
-                                        agent::interaction_update::Message::ToolCallCompleted(completed) => {
+                                        agent::interaction_update::Message::ToolCallCompleted(
+                                            completed,
+                                        ) => {
                                             println!("\n[UI 轨] ✅ ToolCallCompleted 收到！ToolCall: {:?}", completed.tool_call.is_some());
                                         }
                                         agent::interaction_update::Message::ThinkingDelta(td) => {
@@ -122,7 +133,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             use std::io::Write;
                                             let _ = std::io::stdout().flush();
                                         }
-                                        agent::interaction_update::Message::ThinkingCompleted(_) => {
+                                        agent::interaction_update::Message::ThinkingCompleted(
+                                            _,
+                                        ) => {
                                             println!("\n[UI 轨] 💡 ThinkingCompleted 思考链完成！");
                                         }
                                         agent::interaction_update::Message::TextDelta(t) => {
@@ -135,19 +148,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 te.input_tokens, te.output_tokens, te.reasoning_tokens);
                                         }
                                         other => {
-                                            println!("[UI 轨] 收到其他 InteractionUpdate: {:?}", std::mem::discriminant(&other));
+                                            println!(
+                                                "[UI 轨] 收到其他 InteractionUpdate: {:?}",
+                                                std::mem::discriminant(&other)
+                                            );
                                         }
                                     }
                                 }
                             }
                             agent::agent_server_message::Message::ExecServerMessage(exec_msg) => {
-                                println!("\n[执行轨] ⚡ ExecServerMessage 触发！id={}", exec_msg.id);
+                                println!(
+                                    "\n[执行轨] ⚡ ExecServerMessage 触发！id={}",
+                                    exec_msg.id
+                                );
                                 let exec_id = exec_msg.id;
                                 if let Some(exec_payload) = exec_msg.message {
                                     match exec_payload {
-                                        agent::exec_server_message::Message::ShellArgs(shell_args) => {
-                                            println!("   [本地终端执行] 命令: {:?}", shell_args.command);
-                                            println!("   [本地终端执行] 工作目录: {:?}", shell_args.working_directory);
+                                        agent::exec_server_message::Message::ShellArgs(
+                                            shell_args,
+                                        ) => {
+                                            println!(
+                                                "   [本地终端执行] 命令: {:?}",
+                                                shell_args.command
+                                            );
+                                            println!(
+                                                "   [本地终端执行] 工作目录: {:?}",
+                                                shell_args.working_directory
+                                            );
 
                                             // 本地实际执行 git status --short
                                             let output = std::process::Command::new("sh")
@@ -157,8 +184,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                             let (stdout, stderr, exit_code) = match output {
                                                 Ok(out) => (
-                                                    String::from_utf8_lossy(&out.stdout).to_string(),
-                                                    String::from_utf8_lossy(&out.stderr).to_string(),
+                                                    String::from_utf8_lossy(&out.stdout)
+                                                        .to_string(),
+                                                    String::from_utf8_lossy(&out.stderr)
+                                                        .to_string(),
                                                     out.status.code().unwrap_or(0),
                                                 ),
                                                 Err(e) => ("".into(), e.to_string(), 1),
@@ -206,7 +235,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                             let mut rep_buf = Vec::new();
                                             client_reply_msg.encode(&mut rep_buf)?;
-                                            let hex_data: String = rep_buf.iter().map(|b| format!("{:02x}", b)).collect();
+                                            let hex_data: String = rep_buf
+                                                .iter()
+                                                .map(|b| format!("{:02x}", b))
+                                                .collect();
 
                                             let bidi_req = aiserver::BidiAppendRequest {
                                                 data: hex_data,
@@ -222,24 +254,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let bidi_env = Envelope::message(bidi_buf).encode();
 
                                             let b_client = bidi_client.clone();
-                                            let b_url = format!("{}/aiserver.v1.BidiService/BidiAppend", base_url_str);
+                                            let b_url = format!(
+                                                "{}/aiserver.v1.BidiService/BidiAppend",
+                                                base_url_str
+                                            );
                                             tokio::spawn(async move {
                                                 println!("   --> 正在投递 ExecClientMessage 至 BidiAppend...");
                                                 let r = b_client
                                                     .post(b_url)
-                                                    .header("content-type", "application/connect+proto")
+                                                    .header(
+                                                        "content-type",
+                                                        "application/connect+proto",
+                                                    )
                                                     .header("connect-protocol-version", "1")
                                                     .body(bidi_env)
                                                     .send()
                                                     .await;
                                                 match r {
-                                                    Ok(res) => println!("   <-- BidiAppend 投递成功，状态: {}", res.status()),
-                                                    Err(err) => eprintln!("   <-- BidiAppend 投递出错: {}", err),
+                                                    Ok(res) => println!(
+                                                        "   <-- BidiAppend 投递成功，状态: {}",
+                                                        res.status()
+                                                    ),
+                                                    Err(err) => eprintln!(
+                                                        "   <-- BidiAppend 投递出错: {}",
+                                                        err
+                                                    ),
                                                 }
                                             });
                                         }
                                         other => {
-                                            println!("   [执行轨] 收到其他 Exec: {:?}", std::mem::discriminant(&other));
+                                            println!(
+                                                "   [执行轨] 收到其他 Exec: {:?}",
+                                                std::mem::discriminant(&other)
+                                            );
                                         }
                                     }
                                 }

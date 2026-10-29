@@ -85,7 +85,10 @@ impl ChannelGate for MeshGate {
         for peer in &peers {
             let peer_clean = peer.device_name.trim().to_ascii_lowercase();
             for rm in &peer.remote_models {
-                let scoped = if rm.to_ascii_lowercase().starts_with(&format!("{peer_clean}/")) {
+                let scoped = if rm
+                    .to_ascii_lowercase()
+                    .starts_with(&format!("{peer_clean}/"))
+                {
                     rm.clone()
                 } else {
                     format!("{}/{}", peer_clean, rm)
@@ -102,7 +105,10 @@ impl ChannelGate for MeshGate {
     }
 }
 
-pub fn serialize_chat_request_to_mesh_payload(request: &ChatRequest, model: &str) -> serde_json::Value {
+pub fn serialize_chat_request_to_mesh_payload(
+    request: &ChatRequest,
+    model: &str,
+) -> serde_json::Value {
     let mut messages_json = Vec::new();
     for m in &request.messages {
         match m.role {
@@ -124,16 +130,20 @@ pub fn serialize_chat_request_to_mesh_payload(request: &ChatRequest, model: &str
                     "content": m.text,
                 });
                 if !m.tool_calls.is_empty() {
-                    asst["tool_calls"] = serde_json::json!(m.tool_calls.iter().map(|tc| {
-                        serde_json::json!({
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": tc.arguments,
-                            }
+                    asst["tool_calls"] = serde_json::json!(m
+                        .tool_calls
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                }
+                            })
                         })
-                    }).collect::<Vec<_>>());
+                        .collect::<Vec<_>>());
                 }
                 messages_json.push(asst);
             }
@@ -164,16 +174,20 @@ pub fn serialize_chat_request_to_mesh_payload(request: &ChatRequest, model: &str
     });
 
     if !request.tools.is_empty() {
-        body["tools"] = serde_json::json!(request.tools.iter().map(|t| {
-            serde_json::json!({
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                }
+        body["tools"] = serde_json::json!(request
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
             })
-        }).collect::<Vec<_>>());
+            .collect::<Vec<_>>());
     }
 
     body
@@ -265,7 +279,10 @@ impl Upstream for MeshUpstream {
                         } else if m_sub_lower.contains("qwen") || m_sub_lower.contains("deepseek") {
                             "qoder".to_string()
                         } else {
-                            peer.shared_channels.first().cloned().unwrap_or_else(|| "kiro".to_string())
+                            peer.shared_channels
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "kiro".to_string())
                         };
 
                         let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel(1024);
@@ -274,7 +291,10 @@ impl Upstream for MeshUpstream {
                         let payload_str = if let Some(raw) = &request.raw_inbound {
                             let mut v = (*raw.body).clone();
                             if let Some(obj) = v.as_object_mut() {
-                                obj.insert("model".to_string(), serde_json::Value::String(sub_model.clone()));
+                                obj.insert(
+                                    "model".to_string(),
+                                    serde_json::Value::String(sub_model.clone()),
+                                );
                             }
                             v.to_string()
                         } else {
@@ -303,7 +323,9 @@ impl Upstream for MeshUpstream {
 
                         while let Some(frame) = frame_rx.recv().await {
                             match frame {
-                                TunnelFrame::Delta { text, is_thinking, .. } => {
+                                TunnelFrame::Delta {
+                                    text, is_thinking, ..
+                                } => {
                                     if is_thinking {
                                         on_delta(Delta::Thinking(text.clone()));
                                     } else {
@@ -311,7 +333,13 @@ impl Upstream for MeshUpstream {
                                         full_text.push_str(&text);
                                     }
                                 }
-                                TunnelFrame::Finish { total_tokens, finish_reason: fr, tool_calls: tc, thinking_signature: ts, .. } => {
+                                TunnelFrame::Finish {
+                                    total_tokens,
+                                    finish_reason: fr,
+                                    tool_calls: tc,
+                                    thinking_signature: ts,
+                                    ..
+                                } => {
                                     if let Some(t) = total_tokens {
                                         output_tokens = t;
                                     }
@@ -320,19 +348,28 @@ impl Upstream for MeshUpstream {
                                         thinking_signature = Some(sig.clone());
                                     }
                                     if let Some(tcs) = tc {
-                                        tool_calls = tcs.into_iter().map(|w| crate::normalized::ToolCall {
-                                            id: w.id,
-                                            name: w.name,
-                                            arguments: w.arguments,
-                                        }).collect();
+                                        tool_calls = tcs
+                                            .into_iter()
+                                            .map(|w| crate::normalized::ToolCall {
+                                                id: w.id,
+                                                name: w.name,
+                                                arguments: w.arguments,
+                                            })
+                                            .collect();
                                     }
                                     if !tool_calls.is_empty() {
                                         finish_reason = crate::normalized::FinishReason::ToolCalls;
                                     } else if let Some(r) = fr {
                                         finish_reason = match r.as_str() {
-                                            "tool_calls" | "tool_use" => crate::normalized::FinishReason::ToolCalls,
-                                            "length" | "max_tokens" => crate::normalized::FinishReason::Length,
-                                            "content_filter" => crate::normalized::FinishReason::ContentFilter,
+                                            "tool_calls" | "tool_use" => {
+                                                crate::normalized::FinishReason::ToolCalls
+                                            }
+                                            "length" | "max_tokens" => {
+                                                crate::normalized::FinishReason::Length
+                                            }
+                                            "content_filter" => {
+                                                crate::normalized::FinishReason::ContentFilter
+                                            }
                                             _ => crate::normalized::FinishReason::Stop,
                                         };
                                     }
@@ -490,10 +527,9 @@ impl Upstream for MeshUpstream {
                                 .and_then(|c| c.as_array())
                             {
                                 for call_val in delta_calls {
-                                    let idx = call_val
-                                        .get("index")
-                                        .and_then(|i| i.as_u64())
-                                        .unwrap_or(0) as usize;
+                                    let idx =
+                                        call_val.get("index").and_then(|i| i.as_u64()).unwrap_or(0)
+                                            as usize;
                                     while tool_calls.len() <= idx {
                                         tool_calls.push(crate::normalized::ToolCall {
                                             id: String::new(),
@@ -504,9 +540,8 @@ impl Upstream for MeshUpstream {
                                     if let Some(id) = call_val.get("id").and_then(|s| s.as_str()) {
                                         tool_calls[idx].id.push_str(id);
                                     }
-                                    if let Some(name) = call_val
-                                        .pointer("/function/name")
-                                        .and_then(|s| s.as_str())
+                                    if let Some(name) =
+                                        call_val.pointer("/function/name").and_then(|s| s.as_str())
                                     {
                                         tool_calls[idx].name.push_str(name);
                                     }
@@ -523,9 +558,15 @@ impl Upstream for MeshUpstream {
                                 .and_then(|s| s.as_str())
                             {
                                 finish_reason = match fr {
-                                    "tool_calls" | "tool_use" => crate::normalized::FinishReason::ToolCalls,
-                                    "length" | "max_tokens" => crate::normalized::FinishReason::Length,
-                                    "content_filter" => crate::normalized::FinishReason::ContentFilter,
+                                    "tool_calls" | "tool_use" => {
+                                        crate::normalized::FinishReason::ToolCalls
+                                    }
+                                    "length" | "max_tokens" => {
+                                        crate::normalized::FinishReason::Length
+                                    }
+                                    "content_filter" => {
+                                        crate::normalized::FinishReason::ContentFilter
+                                    }
                                     _ => crate::normalized::FinishReason::Stop,
                                 };
                             }
@@ -591,6 +632,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     #[tokio::test]
+    #[allow(clippy::field_reassign_with_default)]
     async fn test_mesh_gate_owns_and_claims_bare() {
         let mut config = MeshConfig::default();
         config.peers = vec![
@@ -673,8 +715,8 @@ mod tests {
         // 模拟本地 hook
         let hook_called = Arc::new(AtomicUsize::new(0));
         let hook_called_clone = hook_called.clone();
-        let hook: nexus_mesh::tunnel::client::MeshInvokeHook = Arc::new(
-            move |channel_id, model, _payload, outbound_tx, stream_id| {
+        let hook: nexus_mesh::tunnel::client::MeshInvokeHook =
+            Arc::new(move |channel_id, model, _payload, outbound_tx, stream_id| {
                 let called = hook_called_clone.clone();
                 Box::pin(async move {
                     assert_eq!(channel_id, "kiro");
@@ -699,8 +741,7 @@ mod tests {
                         .await;
                     Ok(())
                 })
-            },
-        );
+            });
 
         service.set_invoke_hook(Some(hook));
 
@@ -728,7 +769,10 @@ mod tests {
 
         let result = upstream.stream(&cred, &req, &mut sink).await.unwrap();
         assert_eq!(result.text, "hello from local loopback");
-        assert_eq!(received_deltas, vec!["hello from local loopback".to_string()]);
+        assert_eq!(
+            received_deltas,
+            vec!["hello from local loopback".to_string()]
+        );
         assert_eq!(hook_called.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -816,10 +860,16 @@ mod tests {
         let result = upstream.stream(&cred, &req, &mut sink).await.unwrap();
         assert_eq!(received_thinking, vec!["thinking step 1...".to_string()]);
         assert_eq!(received_sigs, vec!["sig_valid_123".to_string()]);
-        assert_eq!(result.finish_reason, crate::normalized::FinishReason::ToolCalls);
+        assert_eq!(
+            result.finish_reason,
+            crate::normalized::FinishReason::ToolCalls
+        );
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "bash");
-        assert_eq!(result.tool_calls[0].arguments, r#"{"command":"git status"}"#);
+        assert_eq!(
+            result.tool_calls[0].arguments,
+            r#"{"command":"git status"}"#
+        );
         assert_eq!(result.thinking_signature.as_deref(), Some("sig_valid_123"));
     }
 }

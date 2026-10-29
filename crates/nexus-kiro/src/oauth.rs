@@ -246,7 +246,10 @@ impl TokenClient {
         if !(200..300).contains(&status) {
             return Err(oauth_err(&v, status == 401 || status == 403));
         }
-        let profile_arn = v.get("profileArn").and_then(|x| x.as_str()).map(str::to_string);
+        let profile_arn = v
+            .get("profileArn")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
         let tokens = tokens_from(&v, None, None)?;
         Ok((tokens, profile_arn))
     }

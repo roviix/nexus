@@ -37,8 +37,7 @@ impl WhitelistChecker {
         // 匹配域名白名单 (支持前缀泛匹配与精确匹配)
         let matched = self.allowed_domains.iter().any(|rule| {
             let rule = rule.trim().to_ascii_lowercase();
-            if rule.starts_with("*.") {
-                let suffix = &rule[2..];
+            if let Some(suffix) = rule.strip_prefix("*.") {
                 host_trimmed == suffix || host_trimmed.ends_with(&format!(".{}", suffix))
             } else {
                 host_trimmed == rule

@@ -38,21 +38,111 @@ pub struct ModelSpec {
 }
 
 pub const MODELS: &[ModelSpec] = &[
-    ModelSpec { id: "gemini-3.6-flash", hex: HEX_FLASH_36, mode: 1, thinking: false, tool: 0 },
-    ModelSpec { id: "gemini-3.5-flash-lite", hex: HEX_FLASH_LITE, mode: 6, thinking: false, tool: 0 },
-    ModelSpec { id: "gemini-3.1-pro", hex: HEX_PRO_31, mode: 3, thinking: false, tool: 0 },
-    ModelSpec { id: "gemini-3.8-flash", hex: HEX_FLASH_38, mode: 1, thinking: false, tool: 0 },
-    ModelSpec { id: "gemini-3.7-flash", hex: HEX_FLASH_38, mode: 1, thinking: false, tool: 0 },
-    ModelSpec { id: "gemini-4-argon", hex: HEX_ARGON_4, mode: 8, thinking: false, tool: 0 },
-    ModelSpec { id: "gemini-3.6-flash-thinking", hex: HEX_FLASH_36, mode: 1, thinking: true, tool: 0 },
-    ModelSpec { id: "gemini-3.5-flash-lite-thinking", hex: HEX_FLASH_LITE, mode: 6, thinking: true, tool: 0 },
-    ModelSpec { id: "gemini-3.1-pro-thinking", hex: HEX_PRO_31, mode: 3, thinking: true, tool: 0 },
-    ModelSpec { id: "gemini-3.8-flash-thinking", hex: HEX_FLASH_38, mode: 1, thinking: true, tool: 0 },
-    ModelSpec { id: "gemini-4-argon-thinking", hex: HEX_ARGON_4, mode: 8, thinking: true, tool: 0 },
-    ModelSpec { id: "gemini-image", hex: HEX_FLASH_36, mode: 1, thinking: false, tool: TOOL_IMAGE },
-    ModelSpec { id: "gemini-music", hex: HEX_FLASH_36, mode: 1, thinking: false, tool: TOOL_MUSIC },
-    ModelSpec { id: "gemini-video", hex: HEX_FLASH_36, mode: 1, thinking: false, tool: TOOL_VIDEO },
-    ModelSpec { id: "gemini-canvas", hex: HEX_FLASH_36, mode: 1, thinking: false, tool: TOOL_CANVAS },
+    ModelSpec {
+        id: "gemini-3.6-flash",
+        hex: HEX_FLASH_36,
+        mode: 1,
+        thinking: false,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.5-flash-lite",
+        hex: HEX_FLASH_LITE,
+        mode: 6,
+        thinking: false,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.1-pro",
+        hex: HEX_PRO_31,
+        mode: 3,
+        thinking: false,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.8-flash",
+        hex: HEX_FLASH_38,
+        mode: 1,
+        thinking: false,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.7-flash",
+        hex: HEX_FLASH_38,
+        mode: 1,
+        thinking: false,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-4-argon",
+        hex: HEX_ARGON_4,
+        mode: 8,
+        thinking: false,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.6-flash-thinking",
+        hex: HEX_FLASH_36,
+        mode: 1,
+        thinking: true,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.5-flash-lite-thinking",
+        hex: HEX_FLASH_LITE,
+        mode: 6,
+        thinking: true,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.1-pro-thinking",
+        hex: HEX_PRO_31,
+        mode: 3,
+        thinking: true,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-3.8-flash-thinking",
+        hex: HEX_FLASH_38,
+        mode: 1,
+        thinking: true,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-4-argon-thinking",
+        hex: HEX_ARGON_4,
+        mode: 8,
+        thinking: true,
+        tool: 0,
+    },
+    ModelSpec {
+        id: "gemini-image",
+        hex: HEX_FLASH_36,
+        mode: 1,
+        thinking: false,
+        tool: TOOL_IMAGE,
+    },
+    ModelSpec {
+        id: "gemini-music",
+        hex: HEX_FLASH_36,
+        mode: 1,
+        thinking: false,
+        tool: TOOL_MUSIC,
+    },
+    ModelSpec {
+        id: "gemini-video",
+        hex: HEX_FLASH_36,
+        mode: 1,
+        thinking: false,
+        tool: TOOL_VIDEO,
+    },
+    ModelSpec {
+        id: "gemini-canvas",
+        hex: HEX_FLASH_36,
+        mode: 1,
+        thinking: false,
+        tool: TOOL_CANVAS,
+    },
 ];
 
 pub fn owns_model(model: &str) -> bool {
@@ -118,7 +208,13 @@ pub struct PreparedRequest {
     pub model_id: String,
 }
 
-pub fn prepare_request(prompt: &str, model: &str, cookie: &str, xsrf: &str, bl: &str) -> PreparedRequest {
+pub fn prepare_request(
+    prompt: &str,
+    model: &str,
+    cookie: &str,
+    xsrf: &str,
+    bl: &str,
+) -> PreparedRequest {
     prepare_follow(prompt, model, cookie, xsrf, bl, None)
 }
 
@@ -143,7 +239,11 @@ pub fn prepare_follow(
     let spec = resolve_model(model);
     let req_uuid = uuid::Uuid::new_v4().to_string();
     let header_uuid = uuid::Uuid::new_v4().to_string();
-    let think = if spec.thinking { THINK_EXTENDED } else { THINK_NORMAL };
+    let think = if spec.thinking {
+        THINK_EXTENDED
+    } else {
+        THINK_NORMAL
+    };
     let inner = build_inner(prompt, &spec, &req_uuid, think, follow);
     let outer = json!([Value::Null, inner.to_string()]);
     let mut body = format!("f.req={}", urlencoding(&outer.to_string()));
@@ -162,11 +262,17 @@ pub fn prepare_follow(
     let mut headers = vec![
         ("Accept".into(), "*/*".into()),
         ("Accept-Language".into(), "en-US,en;q=0.9".into()),
-        ("Content-Type".into(), "application/x-www-form-urlencoded;charset=UTF-8".into()),
+        (
+            "Content-Type".into(),
+            "application/x-www-form-urlencoded;charset=UTF-8".into(),
+        ),
         ("Origin".into(), "https://gemini.google.com".into()),
         ("Referer".into(), "https://gemini.google.com/app".into()),
         ("User-Agent".into(), CHROME_UA.into()),
-        ("Sec-CH-UA".into(), "\"Chromium\";v=\"146\", \"Google Chrome\";v=\"146\", \"Not?A_Brand\";v=\"24\"".into()),
+        (
+            "Sec-CH-UA".into(),
+            "\"Chromium\";v=\"146\", \"Google Chrome\";v=\"146\", \"Not?A_Brand\";v=\"24\"".into(),
+        ),
         ("Sec-CH-UA-Mobile".into(), "?0".into()),
         ("Sec-CH-UA-Platform".into(), "\"macOS\"".into()),
         ("Sec-Fetch-Dest".into(), "empty".into()),
@@ -183,7 +289,10 @@ pub fn prepare_follow(
                 spec.hex, spec.mode, think, header_uuid
             ),
         ),
-        ("x-goog-ext-525005358-jspb".into(), format!(r#"["{req_uuid}",1]"#)),
+        (
+            "x-goog-ext-525005358-jspb".into(),
+            format!(r#"["{req_uuid}",1]"#),
+        ),
     ];
     if !cookie.is_empty() {
         headers.push(("Cookie".into(), cookie.to_string()));
@@ -211,7 +320,15 @@ fn build_inner(
     follow: Option<&FollowUp>,
 ) -> Value {
     let mut inner = vec![Value::Null; INNER_SLOTS];
-    inner[0] = json!([prompt, 0, Value::Null, Value::Null, Value::Null, Value::Null, 0]);
+    inner[0] = json!([
+        prompt,
+        0,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        Value::Null,
+        0
+    ]);
     inner[1] = json!(["en"]);
     let turn = follow.map(|f| f.turn).unwrap_or(0);
     if let Some(follow) = follow.filter(|f| f.turn > 0 && !f.cid.is_empty()) {
@@ -228,7 +345,18 @@ fn build_inner(
             follow.tok26
         ]);
     } else {
-        inner[2] = json!(["", "", "", Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, ""]);
+        inner[2] = json!([
+            "",
+            "",
+            "",
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            ""
+        ]);
     }
     inner[6] = json!([0]);
     inner[7] = json!(1);
@@ -262,7 +390,11 @@ pub fn extract_xsrf(html: &str) -> Option<String> {
 
 pub fn extract_bl(html: &str) -> Option<String> {
     let value = capture(html, "\"cfb2h\":\"", 10, 120)?;
-    if value.starts_with("boq_") { Some(value) } else { None }
+    if value.starts_with("boq_") {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn capture(html: &str, marker: &str, min: usize, max: usize) -> Option<String> {
@@ -302,7 +434,11 @@ pub fn texts_in_line(line: &str) -> Vec<String> {
         let parts = inner.get(4)?.as_array()?;
         let mut texts = Vec::new();
         for part in parts {
-            let Some(list) = part.as_array().and_then(|p| p.get(1)).and_then(|v| v.as_array()) else {
+            let Some(list) = part
+                .as_array()
+                .and_then(|p| p.get(1))
+                .and_then(|v| v.as_array())
+            else {
                 continue;
             };
             for item in list {
@@ -320,14 +456,12 @@ pub fn texts_in_line(line: &str) -> Vec<String> {
 
 pub fn reasoning_in_line(line: &str) -> Option<String> {
     walk_frame(line, |inner| {
-        let text = inner
-            .get(4)?
-            .get(0)?
-            .get(37)?
-            .get(0)?
-            .get(0)?
-            .as_str()?;
-        if text.is_empty() { None } else { Some(text.to_string()) }
+        let text = inner.get(4)?.get(0)?.get(37)?.get(0)?.get(0)?.as_str()?;
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.to_string())
+        }
     })
 }
 
@@ -365,8 +499,14 @@ pub fn merge_set_cookie(cookie: &str, set_cookies: &[String]) -> String {
     let mut updates = std::collections::HashMap::new();
     for header in set_cookies {
         let first = header.split(';').next().unwrap_or("").trim();
-        let Some((name, value)) = first.split_once('=') else { continue };
-        if value.is_empty() && header.to_ascii_lowercase().contains("expires=thu, 01 jan 1970") {
+        let Some((name, value)) = first.split_once('=') else {
+            continue;
+        };
+        if value.is_empty()
+            && header
+                .to_ascii_lowercase()
+                .contains("expires=thu, 01 jan 1970")
+        {
             continue;
         }
         updates.insert(name.to_string(), value.to_string());
@@ -378,7 +518,9 @@ pub fn merge_set_cookie(cookie: &str, set_cookies: &[String]) -> String {
     let mut seen = std::collections::HashSet::new();
     for pair in cookie.split(';') {
         let pair = pair.trim();
-        let Some((name, value)) = pair.split_once('=') else { continue };
+        let Some((name, value)) = pair.split_once('=') else {
+            continue;
+        };
         seen.insert(name.to_string());
         if let Some(updated) = updates.get(name) {
             parts.push(format!("{name}={updated}"));
@@ -436,14 +578,20 @@ pub fn parse_follow(raw: &str, turn: i64) -> Option<FollowUp> {
         if !line.starts_with("[[") {
             continue;
         }
-        let Ok(arr) = serde_json::from_str::<Vec<Value>>(line) else { continue };
+        let Ok(arr) = serde_json::from_str::<Vec<Value>>(line) else {
+            continue;
+        };
         for item in arr {
             let Some(row) = item.as_array() else { continue };
             if row.first().and_then(|v| v.as_str()) != Some("wrb.fr") || row.len() < 3 {
                 continue;
             }
-            let Some(payload) = row.get(2).and_then(|v| v.as_str()) else { continue };
-            let Ok(frame) = serde_json::from_str::<Vec<Value>>(payload) else { continue };
+            let Some(payload) = row.get(2).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Ok(frame) = serde_json::from_str::<Vec<Value>>(payload) else {
+                continue;
+            };
             let mut follow = found.clone().unwrap_or(FollowUp {
                 cid: String::new(),
                 rid: String::new(),
@@ -474,7 +622,10 @@ pub fn parse_follow(raw: &str, turn: i64) -> Option<FollowUp> {
         return None;
     }
     if let Some(rcid) = raw.split("rc_").nth(1) {
-        let id: String = rcid.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+        let id: String = rcid
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .collect();
         if id.len() >= 6 {
             follow.rcid = format!("rc_{id}");
         }
@@ -493,7 +644,9 @@ pub fn extract_upstream_model(raw: &str) -> Option<String> {
             let hex_start = i + 2;
             let hex_end = hex_start + 16;
             if hex_end + needle.len() <= bytes.len()
-                && bytes[hex_start..hex_end].iter().all(|b| b.is_ascii_hexdigit())
+                && bytes[hex_start..hex_end]
+                    .iter()
+                    .all(|b| b.is_ascii_hexdigit())
                 && bytes[hex_end..hex_end + needle.len()] == *needle
             {
                 let name_start = hex_end + needle.len();
@@ -514,7 +667,9 @@ fn urlencoding(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }

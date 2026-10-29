@@ -368,10 +368,24 @@ impl ClaudeService {
                 let _ = self.store_tokens(tokens, Some(id), None).await?;
                 Ok(())
             }
-            Err(err) => {
+            // 换票端点说这把登录作废了：要用户重新授权，号先退出号池。
+            Err(err) if err.code == nexus_core::ErrorCode::Unauthorized => {
                 let _ = self
                     .accounts
                     .set_error(id, ClaudeStatus::NeedsLogin, &err.message);
+                Err(err)
+            }
+            // 暂时续不上（网络、5xx、限流）：别把号标成要重新授权——那会把一个好号踢出号池，
+            // 直到用户手动去点。提前 5 分钟换票，旧 token 多半还能用，先顶着。
+            Err(err) => {
+                let still_valid = !ClaudeAccounts::expires_soon(
+                    expires.as_deref(),
+                    unix_now() - REFRESH_GRACE_SECS,
+                ) && self.accounts.access(id)?.is_some();
+                if still_valid {
+                    tracing::warn!(account = %id, %err, "Claude 续期暂时失败，先用还没过期的旧 token");
+                    return Ok(());
+                }
                 Err(err)
             }
         }
@@ -383,6 +397,17 @@ impl ClaudeService {
         existing: Option<&ClaudeAccountId>,
         note: Option<&str>,
     ) -> Result<ClaudeAccount> {
+        let expires_at = rfc3339_in(tokens.expires_in);
+        // 续期换到的票先落库，再去查资料：refresh token 已经轮换，查资料卡住或进程退出，
+        // 新票也不能跟着丢。
+        if let Some(id) = existing {
+            self.accounts.store_access(
+                id,
+                &tokens.access_token,
+                tokens.refresh_token.as_deref(),
+                expires_at.as_deref(),
+            )?;
+        }
         let profile = oauth::profile(&tokens.access_token).await.ok();
         // 官方客户端换票后马上查角色。查不到不影响这次登录。
         if let Err(err) = oauth::roles(&tokens.access_token).await {
@@ -397,15 +422,7 @@ impl ClaudeService {
             .as_ref()
             .and_then(protocol::uuid_from_profile)
             .or(tokens.account_uuid);
-        let expires_at = rfc3339_in(tokens.expires_in);
         if let Some(id) = existing {
-            let refresh = tokens.refresh_token.clone();
-            self.accounts.store_access(
-                id,
-                &tokens.access_token,
-                refresh.as_deref(),
-                expires_at.as_deref(),
-            )?;
             self.accounts
                 .touch_profile(id, email.as_deref(), plan.as_deref())?;
             return self.accounts.get(id);
@@ -426,6 +443,10 @@ impl ClaudeService {
         self.accounts.access_expires_at(id)
     }
 }
+
+/// 续期暂时失败时，旧 token 离真正过期还剩至少一分钟才接着用。`expires_soon` 按提前
+/// `REFRESH_AHEAD_SECS` 算，往回挪这么多秒就是「还剩 60 秒以上」。
+const REFRESH_GRACE_SECS: i64 = protocol::REFRESH_AHEAD_SECS - 60;
 
 fn random_token(n: usize) -> String {
     let mut raw = vec![0u8; n];

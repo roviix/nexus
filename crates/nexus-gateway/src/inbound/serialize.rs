@@ -63,9 +63,90 @@ fn anthropic_stop_reason(reason: FinishReason, tool_calls: &[ToolCall]) -> &'sta
         "tool_use"
     } else if reason == FinishReason::Length {
         "max_tokens"
+    } else if reason == FinishReason::ContentFilter {
+        // 上游的安全拦截。写成 end_turn 的话客户端以为模型正常说完了，只是什么也没说。
+        "refusal"
     } else {
         "end_turn"
     }
+}
+
+/// Anthropic 的错误类型。客户端按它决定退避（`overloaded_error` / `rate_limit_error`）还是直接报错。
+fn anthropic_error_type(status: u16) -> &'static str {
+    match status {
+        401 => "authentication_error",
+        402 => "billing_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        413 => "request_too_large",
+        429 => "rate_limit_error",
+        504 => "timeout_error",
+        529 => "overloaded_error",
+        s if s >= 500 => "api_error",
+        _ => "invalid_request_error",
+    }
+}
+
+/// Claude Code 认「上下文超长」只看措辞里有没有 `prompt is too long`，据此提示压缩。
+/// 各通道的原话五花八门，这里补上这半句，原话照留。
+fn anthropic_message(status: u16, message: &str) -> String {
+    if matches!(status, 400 | 413)
+        && crate::error::is_context_overflow(message)
+        && !message.to_lowercase().contains("prompt is too long")
+    {
+        format!("prompt is too long: {message}")
+    } else {
+        message.to_string()
+    }
+}
+
+fn openai_error_type(status: u16) -> &'static str {
+    match status {
+        402 => "insufficient_quota",
+        429 => "rate_limit_error",
+        s if s >= 500 => "server_error",
+        _ => "invalid_request_error",
+    }
+}
+
+/// OpenAI 的 `error.code` 是字符串或 null。Codex 按它分流：`context_length_exceeded` 提示压缩，
+/// `insufficient_quota` 不再重试，`rate_limit_exceeded` 退避。写成数字的话它连这一帧都解析不了，
+/// 只会报「解析失败」然后盲目重试。
+fn openai_error_code(status: u16, message: &str) -> Value {
+    if matches!(status, 400 | 413) && crate::error::is_context_overflow(message) {
+        return json!("context_length_exceeded");
+    }
+    match status {
+        401 => json!("invalid_api_key"),
+        402 => json!("insufficient_quota"),
+        404 => json!("model_not_found"),
+        429 => json!("rate_limit_exceeded"),
+        s if s >= 500 => json!("server_error"),
+        _ => Value::Null,
+    }
+}
+
+fn openai_error_body(status: u16, message: &str) -> Value {
+    json!({
+        "message": message,
+        "type": openai_error_type(status),
+        "param": null,
+        "code": openai_error_code(status, message),
+    })
+}
+
+/// 透传的 Responses 流半路出错时补的终结事件。Codex 只认 `response.failed`：裸 `error` 事件它直接
+/// 跳过，接着报「流在 response.completed 之前断了」并盲目重试，真正的原因一个字都显示不出来。
+pub fn responses_failed_event(status: u16, message: &str) -> Value {
+    json!({
+        "type": "response.failed",
+        "response": {
+            "id": random_id("resp"),
+            "object": "response",
+            "status": "failed",
+            "error": openai_error_body(status, message),
+        },
+    })
 }
 
 fn openai_finish_reason(reason: FinishReason, tool_calls: &[ToolCall]) -> &'static str {
@@ -737,10 +818,12 @@ impl Serializer {
     /// 结束流。`completion.text` 是完整正文，这里只补发还没流出去的差额。
     pub fn finish(&mut self, c: &Completion) -> Vec<SseFrame> {
         let mut out = self.open();
+        // 收尾正文和已经流出去的对不上（上游收尾时改写了正文）就不补：整段再发一遍，
+        // 客户端会看到两份。以流出去的为准。
         let missing = c
             .text
             .strip_prefix(self.sent_text.as_str())
-            .unwrap_or(&c.text)
+            .unwrap_or("")
             .to_string();
         if !missing.is_empty() {
             out.extend(self.text(&missing));
@@ -845,7 +928,6 @@ impl Serializer {
     /// 地方），再补齐终结事件。
     pub fn error(&mut self, message: &str, status: u16) -> Vec<SseFrame> {
         let mut out = self.open();
-        let payload = json!({ "type": "error", "error": { "type": "upstream_error", "message": message, "code": status } });
         let note = format!("\n\n[网关错误] {message}");
         match self.dialect {
             Dialect::AnthropicMessages => {
@@ -864,7 +946,16 @@ impl Serializer {
                              "delta": { "type": "text_delta", "text": note } }),
                 ));
                 self.close_text(&mut out);
-                out.push(SseFrame::json(Some("error"), &payload));
+                // 类型照官方的写（overloaded_error / rate_limit_error …）：Claude Code 靠它决定
+                // 要不要退避重试。`code` 是额外带的 HTTP 状态，排障用，SDK 不看。
+                out.push(SseFrame::json(
+                    Some("error"),
+                    &json!({ "type": "error", "error": {
+                        "type": anthropic_error_type(status),
+                        "message": anthropic_message(status, message),
+                        "code": status,
+                    } }),
+                ));
                 out.push(SseFrame::json(
                     Some("message_delta"),
                     &json!({ "type": "message_delta",
@@ -886,7 +977,10 @@ impl Serializer {
                         Some(openai_usage(&Usage::default())),
                     ),
                 ));
-                out.push(SseFrame::json(None, &payload));
+                out.push(SseFrame::json(
+                    None,
+                    &json!({ "type": "error", "error": openai_error_body(status, message) }),
+                ));
                 out.push(SseFrame::data("[DONE]"));
             }
             Dialect::OpenAiResponses => {
@@ -900,8 +994,9 @@ impl Serializer {
                 out.push(SseFrame::json(
                     Some("response.failed"),
                     &json!({ "type": "response.failed", "sequence_number": seq,
-                             "response": { "id": self.response_id, "status": "failed",
-                                           "error": payload["error"].clone() } }),
+                             "response": { "id": self.response_id, "object": "response",
+                                           "status": "failed",
+                                           "error": openai_error_body(status, message) } }),
                 ));
             }
         }
@@ -986,27 +1081,13 @@ impl Serializer {
 /// 流还没开时的错误响应体。
 pub fn protocol_error(dialect: Dialect, status: u16, message: &str) -> Value {
     match dialect {
-        Dialect::AnthropicMessages => {
-            let t = match status {
-                401 => "authentication_error",
-                403 => "permission_error",
-                404 => "not_found_error",
-                413 => "request_too_large",
-                429 => "rate_limit_error",
-                s if s >= 500 => "api_error",
-                _ => "invalid_request_error",
-            };
-            json!({ "type": "error", "error": { "type": t, "message": message } })
-        }
+        Dialect::AnthropicMessages => json!({ "type": "error", "error": {
+            "type": anthropic_error_type(status),
+            "message": anthropic_message(status, message),
+        } }),
         // Responses 用的也是 OpenAI 那套错误分类——Codex 走的是官方 SDK，认的是这一形状。
         Dialect::OpenAiChat | Dialect::OpenAiResponses => {
-            let t = match status {
-                402 => "insufficient_quota",
-                429 => "rate_limit_error",
-                s if s >= 500 => "server_error",
-                _ => "invalid_request_error",
-            };
-            json!({ "error": { "message": message, "type": t, "code": status } })
+            json!({ "error": openai_error_body(status, message) })
         }
     }
 }
@@ -1359,14 +1440,102 @@ mod tests {
             "insufficient_quota"
         );
         assert_eq!(
-            protocol_error(Dialect::OpenAiChat, 400, "x")["error"]["code"],
-            400
+            protocol_error(Dialect::AnthropicMessages, 529, "x")["error"]["type"],
+            "overloaded_error",
+            "Claude Code 认 overloaded_error 退避重试"
         );
+        assert_eq!(
+            protocol_error(Dialect::AnthropicMessages, 402, "x")["error"]["type"],
+            "billing_error"
+        );
+        // OpenAI 的 code 是字符串或 null，不是数字：Codex 解析不了数字。
+        assert!(protocol_error(Dialect::OpenAiChat, 400, "x")["error"]["code"].is_null());
+        assert_eq!(
+            protocol_error(Dialect::OpenAiChat, 429, "x")["error"]["code"],
+            "rate_limit_exceeded"
+        );
+        assert_eq!(
+            protocol_error(Dialect::OpenAiResponses, 402, "x")["error"]["code"],
+            "insufficient_quota"
+        );
+        assert!(protocol_error(Dialect::OpenAiChat, 400, "x")["error"]
+            .as_object()
+            .unwrap()
+            .contains_key("param"));
         assert_eq!(
             protocol_error(Dialect::OpenAiResponses, 429, "x")["error"]["type"],
             "rate_limit_error",
             "Responses 用 OpenAI 那套错误分类"
         );
+    }
+
+    #[test]
+    fn context_overflow_is_said_in_each_clients_own_words() {
+        let kiro = "Kiro 上下文超长：Input is too long.";
+        // OpenAI 系：code 是 context_length_exceeded，原话不动。
+        let o = protocol_error(Dialect::OpenAiResponses, 400, kiro);
+        assert_eq!(o["error"]["code"], "context_length_exceeded");
+        assert_eq!(o["error"]["message"], kiro);
+        // Anthropic：Claude Code 只认措辞里的 prompt is too long。
+        let a = protocol_error(Dialect::AnthropicMessages, 400, kiro);
+        assert_eq!(a["error"]["type"], "invalid_request_error");
+        let msg = a["error"]["message"].as_str().unwrap();
+        assert!(msg.starts_with("prompt is too long: "), "{msg}");
+        assert!(msg.contains("Input is too long"));
+        // 已经这么说了就不再叠一层；限流说的 too many tokens 不算上下文超长。
+        let native = protocol_error(Dialect::AnthropicMessages, 400, "prompt is too long: 1 > 0");
+        assert_eq!(native["error"]["message"], "prompt is too long: 1 > 0");
+        let tpm = protocol_error(Dialect::OpenAiChat, 429, "too many tokens per minute");
+        assert_eq!(tpm["error"]["code"], "rate_limit_exceeded");
+    }
+
+    #[test]
+    fn in_stream_errors_use_each_dialects_real_error_types() {
+        let mut a = Serializer::new(Dialect::AnthropicMessages, "m", &[]);
+        let all = a.error("busy", 529);
+        let err = all
+            .iter()
+            .find(|f| f.event.as_deref() == Some("error"))
+            .map(parse)
+            .unwrap();
+        assert_eq!(err["error"]["type"], "overloaded_error");
+
+        let mut o = Serializer::new(Dialect::OpenAiChat, "m", &[]);
+        let all = o.error("slow", 429);
+        let err = all
+            .iter()
+            .filter(|f| f.data != "[DONE]")
+            .map(parse)
+            .find(|v| v.get("error").is_some())
+            .unwrap();
+        assert_eq!(err["error"]["code"], "rate_limit_exceeded");
+        assert_eq!(err["error"]["type"], "rate_limit_error");
+    }
+
+    #[test]
+    fn a_rewritten_final_text_is_not_sent_a_second_time() {
+        let mut s = Serializer::new(Dialect::OpenAiChat, "m", &[]);
+        let mut all = s.text("Hello");
+        // 收尾正文和流出去的对不上：不能把整段再补一遍。
+        all.extend(s.finish(&completion("Bye", vec![], FinishReason::Stop)));
+        let texts: Vec<String> = all
+            .iter()
+            .filter(|f| f.data != "[DONE]")
+            .filter_map(|f| {
+                parse(f)["choices"][0]["delta"]["content"]
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(texts, vec!["Hello".to_string()]);
+    }
+
+    #[test]
+    fn a_content_filter_stop_is_a_refusal_for_anthropic() {
+        let s = Serializer::new(Dialect::AnthropicMessages, "m", &[]);
+        let body = s.final_json(&completion("", vec![], FinishReason::ContentFilter));
+        assert_eq!(body["stop_reason"], "refusal");
     }
 
     #[test]
@@ -1539,7 +1708,8 @@ mod tests {
         let failed = parse(&all[3]);
         assert_eq!(failed["response"]["status"], "failed");
         assert_eq!(failed["response"]["error"]["message"], "upstream down");
-        assert_eq!(failed["response"]["error"]["code"], 502);
+        // Codex 按字符串解析 code，写成数字它连这一帧都读不出来。
+        assert_eq!(failed["response"]["error"]["code"], "server_error");
     }
 
     #[test]

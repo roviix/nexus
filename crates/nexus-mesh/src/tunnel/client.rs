@@ -14,12 +14,12 @@ use tracing::{debug, error, info, warn};
 
 pub type MeshInvokeHook = Arc<
     dyn Fn(
-        String, // channel_id
-        String, // model
-        String, // payload_json
-        mpsc::Sender<TunnelFrame>, // frame_tx
-        StreamId,
-    ) -> BoxFuture<'static, Result<(), String>>
+            String,                    // channel_id
+            String,                    // model
+            String,                    // payload_json
+            mpsc::Sender<TunnelFrame>, // frame_tx
+            StreamId,
+        ) -> BoxFuture<'static, Result<(), String>>
         + Send
         + Sync,
 >;
@@ -74,7 +74,11 @@ impl TunnelClient {
         }
     }
 
-    pub async fn register_stream_listener(&self, stream_id: StreamId, tx: mpsc::Sender<TunnelFrame>) {
+    pub async fn register_stream_listener(
+        &self,
+        stream_id: StreamId,
+        tx: mpsc::Sender<TunnelFrame>,
+    ) {
         let mut listeners = self.stream_listeners.write().await;
         listeners.insert(stream_id, tx);
     }
@@ -94,8 +98,11 @@ impl TunnelClient {
     }
 
     /// 附带初始握手帧启动会话。
-    pub async fn run_session_with_handshake<S>(&self, stream: S, initial_handshake: Option<TunnelFrame>)
-    where
+    pub async fn run_session_with_handshake<S>(
+        &self,
+        stream: S,
+        initial_handshake: Option<TunnelFrame>,
+    ) where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         self.is_running.store(true, Ordering::Relaxed);
@@ -207,18 +214,28 @@ impl TunnelClient {
         match frame {
             TunnelFrame::Handshake { node_id, .. } => {
                 debug!(%node_id, "收到对端 Handshake 帧，自动确认");
-                let _ = outbound_tx.send(TunnelFrame::HandshakeAck {
-                    success: true,
-                    node_id,
-                    error: None,
-                }).await;
+                let _ = outbound_tx
+                    .send(TunnelFrame::HandshakeAck {
+                        success: true,
+                        node_id,
+                        error: None,
+                    })
+                    .await;
             }
 
-            TunnelFrame::HandshakeAck { success, node_id, error } => {
+            TunnelFrame::HandshakeAck {
+                success,
+                node_id,
+                error,
+            } => {
                 info!(success, %node_id, ?error, "收到对端 HandshakeAck 回执");
             }
 
-            TunnelFrame::Connect { stream_id, host, port } => {
+            TunnelFrame::Connect {
+                stream_id,
+                host,
+                port,
+            } => {
                 debug!(stream_id, host = %host, port, "收到出站连接请求");
 
                 // 1. 本地优先策略与并发准入
@@ -335,16 +352,23 @@ impl TunnelClient {
                 debug!(timestamp, "收到对端 Pong 心跳回执");
             }
 
-            TunnelFrame::Invoke { stream_id, channel_id, model, payload_json } => {
+            TunnelFrame::Invoke {
+                stream_id,
+                channel_id,
+                model,
+                payload_json,
+            } => {
                 debug!(stream_id, channel = %channel_id, model = %model, "收到 Channel 调用请求");
                 let guard = match policy.try_acquire() {
                     Ok(g) => g,
                     Err(reason) => {
-                        let _ = outbound_tx.send(TunnelFrame::Error {
-                            stream_id,
-                            code: "PREEMPTION_ACTIVE".to_string(),
-                            message: reason.to_string(),
-                        }).await;
+                        let _ = outbound_tx
+                            .send(TunnelFrame::Error {
+                                stream_id,
+                                code: "PREEMPTION_ACTIVE".to_string(),
+                                message: reason.to_string(),
+                            })
+                            .await;
                         return;
                     }
                 };
@@ -355,12 +379,22 @@ impl TunnelClient {
                 if let Some(hook) = maybe_hook {
                     tokio::spawn(async move {
                         let _guard = guard;
-                        if let Err(e) = hook(channel_id, model, payload_json, outbound_tx.clone(), stream_id).await {
-                            let _ = outbound_tx.send(TunnelFrame::Error {
-                                stream_id,
-                                code: "INVOKE_FAILED".to_string(),
-                                message: e,
-                            }).await;
+                        if let Err(e) = hook(
+                            channel_id,
+                            model,
+                            payload_json,
+                            outbound_tx.clone(),
+                            stream_id,
+                        )
+                        .await
+                        {
+                            let _ = outbound_tx
+                                .send(TunnelFrame::Error {
+                                    stream_id,
+                                    code: "INVOKE_FAILED".to_string(),
+                                    message: e,
+                                })
+                                .await;
                         }
                     });
                 } else {
@@ -372,13 +406,15 @@ impl TunnelClient {
                             text: format!("【对等住宅节点在线响应 · 通道: {channel_id} / 模型: {model}】\n\n已成功连通对端设备并激活保护屏障。"),
                             is_thinking: false,
                         }).await;
-                        let _ = outbound_tx.send(TunnelFrame::Finish {
-                            stream_id,
-                            total_tokens: Some(36),
-                            finish_reason: Some("stop".to_string()),
-                            tool_calls: None,
-                            thinking_signature: None,
-                        }).await;
+                        let _ = outbound_tx
+                            .send(TunnelFrame::Finish {
+                                stream_id,
+                                total_tokens: Some(36),
+                                finish_reason: Some("stop".to_string()),
+                                tool_calls: None,
+                                thinking_signature: None,
+                            })
+                            .await;
                     });
                 }
             }

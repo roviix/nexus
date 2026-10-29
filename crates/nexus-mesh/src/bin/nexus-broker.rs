@@ -87,8 +87,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  ╔════════════════════════════════════════════════════════════════╗");
     println!("  ║           Nexus Mesh Coordinator · 云端协调中继服务            ║");
     println!("  ╠════════════════════════════════════════════════════════════════╣");
-    println!("  ║  HTTP / 配对接口:       http://{}                 ║", http_addr);
-    println!("  ║  盲中继加密隧道:        tcp://{}                  ║", tunnel_addr);
+    println!(
+        "  ║  HTTP / 配对接口:       http://{}                 ║",
+        http_addr
+    );
+    println!(
+        "  ║  盲中继加密隧道:        tcp://{}                  ║",
+        tunnel_addr
+    );
     println!("  ║  版本: 1.0.0 (RFC-001) · 握手鉴权 + 防爆破 + 真实端到端推理    ║");
     println!("  ╚════════════════════════════════════════════════════════════════╝");
     println!("\x1b[0m");
@@ -103,7 +109,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
         };
-        info!(port = tunnel_port, "对等安全反向隧道监听已启动 (已启用 Magic + 握手鉴权)");
+        info!(
+            port = tunnel_port,
+            "对等安全反向隧道监听已启动 (已启用 Magic + 握手鉴权)"
+        );
 
         while let Ok((mut socket, peer_addr)) = listener.accept().await {
             let broker = Arc::clone(&broker_tunnel);
@@ -115,15 +124,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut verified_device_name: Option<String> = None;
 
                 use tokio::io::AsyncReadExt;
-                let handshake_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                let handshake_deadline =
+                    tokio::time::Instant::now() + std::time::Duration::from_secs(5);
 
                 while tokio::time::Instant::now() < handshake_deadline {
-                    match tokio::time::timeout(std::time::Duration::from_millis(1500), socket.read(&mut temp_buf)).await {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(1500),
+                        socket.read(&mut temp_buf),
+                    )
+                    .await
+                    {
                         Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
                         Ok(Ok(n)) => {
                             read_buf.extend_from_slice(&temp_buf[..n]);
                             if let Ok(Some(frame)) = TunnelFrame::decode(&mut read_buf) {
-                                if let TunnelFrame::Handshake { node_id, token, device_name, .. } = frame {
+                                if let TunnelFrame::Handshake {
+                                    node_id,
+                                    token,
+                                    device_name,
+                                    ..
+                                } = frame
+                                {
                                     // 检查环境变量部署口令（若配置了 NEXUS_BROKER_SECRET）
                                     if let Ok(expected) = std::env::var("NEXUS_BROKER_SECRET") {
                                         if token.as_deref() != Some(&expected) {
@@ -183,7 +204,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     is_active: true,
                 }];
 
-                broker.accept_provider_with_meta(NodeId(node_id_str), verified_device_name, socket, leases).await;
+                broker
+                    .accept_provider_with_meta(
+                        NodeId(node_id_str),
+                        verified_device_name,
+                        socket,
+                        leases,
+                    )
+                    .await;
             });
         }
     });
@@ -241,7 +269,10 @@ async fn pair_register_handler(
     reg_guard.insert(reg.code.clone(), reg.clone());
     info!(code = %reg.code, node_id = %reg.node_id, "设备成功注册配对码");
 
-    (StatusCode::OK, Json(json!({ "success": true, "code": reg.code, "expires_at": reg.expires_at })))
+    (
+        StatusCode::OK,
+        Json(json!({ "success": true, "code": reg.code, "expires_at": reg.expires_at })),
+    )
 }
 
 async fn pair_resolve_handler(
@@ -348,29 +379,39 @@ async fn chat_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    let raw_model = body.get("model").and_then(|m| m.as_str()).unwrap_or("auto/smart");
-    let is_stream = body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let raw_model = body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or("auto/smart");
+    let is_stream = body
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
 
     // 解析目标节点与真实请求模型名
-    let (target_node, effective_model) = if let Some((prefix, sub_model)) = raw_model.split_once('/') {
-        let matched = state.broker.resolve_target_provider(prefix).await;
-        let matched = if matched.is_none() {
-            let regs = state.pairing_registry.read().await;
-            let clean_p = prefix.to_ascii_lowercase();
-            regs.values()
-                .find(|r| {
-                    r.device_name.to_ascii_lowercase() == clean_p
-                        || r.device_name.replace(' ', "-").to_ascii_lowercase() == clean_p
-                        || r.node_id.to_ascii_lowercase() == clean_p
-                })
-                .map(|r| NodeId(r.node_id.clone()))
+    let (target_node, effective_model) =
+        if let Some((prefix, sub_model)) = raw_model.split_once('/') {
+            let matched = state.broker.resolve_target_provider(prefix).await;
+            let matched = if matched.is_none() {
+                let regs = state.pairing_registry.read().await;
+                let clean_p = prefix.to_ascii_lowercase();
+                regs.values()
+                    .find(|r| {
+                        r.device_name.to_ascii_lowercase() == clean_p
+                            || r.device_name.replace(' ', "-").to_ascii_lowercase() == clean_p
+                            || r.node_id.to_ascii_lowercase() == clean_p
+                    })
+                    .map(|r| NodeId(r.node_id.clone()))
+            } else {
+                matched
+            };
+            (matched, sub_model)
         } else {
-            matched
+            (
+                state.broker.online_providers().await.first().cloned(),
+                raw_model,
+            )
         };
-        (matched, sub_model)
-    } else {
-        (state.broker.online_providers().await.first().cloned(), raw_model)
-    };
 
     let target_node = match target_node {
         Some(n) => n,
@@ -392,7 +433,11 @@ async fn chat_handler(
         "kiro"
     } else if m_lower.contains("claude") {
         "claude"
-    } else if m_lower.contains("gpt") || m_lower.starts_with("o1") || m_lower.starts_with("o3") || m_lower.starts_with("o4") {
+    } else if m_lower.contains("gpt")
+        || m_lower.starts_with("o1")
+        || m_lower.starts_with("o3")
+        || m_lower.starts_with("o4")
+    {
         "chatgpt"
     } else if m_lower.contains("gemini") {
         "antigravity"
@@ -418,7 +463,8 @@ async fn chat_handler(
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": { "message": e, "type": "invoke_error" } })),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
@@ -443,7 +489,10 @@ async fn chat_handler(
                                     "finish_reason": null
                                 }]
                             });
-                            let line = format!("data: {}\n\n", serde_json::to_string(&chunk).unwrap_or_default());
+                            let line = format!(
+                                "data: {}\n\n",
+                                serde_json::to_string(&chunk).unwrap_or_default()
+                            );
                             if out_tx.send(Ok(Bytes::from(line))).await.is_err() {
                                 break;
                             }
@@ -460,12 +509,23 @@ async fn chat_handler(
                                     "finish_reason": finish_reason.unwrap_or_else(|| "stop".to_string())
                                 }]
                             });
-                            let _ = out_tx.send(Ok(Bytes::from(format!("data: {}\n\ndata: [DONE]\n\n", serde_json::to_string(&finish_chunk).unwrap_or_default())))).await;
+                            let _ = out_tx
+                                .send(Ok(Bytes::from(format!(
+                                    "data: {}\n\ndata: [DONE]\n\n",
+                                    serde_json::to_string(&finish_chunk).unwrap_or_default()
+                                ))))
+                                .await;
                             break;
                         }
                         TunnelFrame::Error { message, code, .. } => {
-                            let err_chunk = json!({ "error": { "message": message, "code": code } });
-                            let _ = out_tx.send(Ok(Bytes::from(format!("data: {}\n\n", serde_json::to_string(&err_chunk).unwrap_or_default())))).await;
+                            let err_chunk =
+                                json!({ "error": { "message": message, "code": code } });
+                            let _ = out_tx
+                                .send(Ok(Bytes::from(format!(
+                                    "data: {}\n\n",
+                                    serde_json::to_string(&err_chunk).unwrap_or_default()
+                                ))))
+                                .await;
                             break;
                         }
                         _ => {}
@@ -473,7 +533,12 @@ async fn chat_handler(
                     Ok(None) => break,
                     Err(_) => {
                         let timeout_chunk = json!({ "error": { "message": "对等住宅节点响应超时 (45s 无数据回传)", "type": "timeout_error" } });
-                        let _ = out_tx.send(Ok(Bytes::from(format!("data: {}\n\n", serde_json::to_string(&timeout_chunk).unwrap_or_default())))).await;
+                        let _ = out_tx
+                            .send(Ok(Bytes::from(format!(
+                                "data: {}\n\n",
+                                serde_json::to_string(&timeout_chunk).unwrap_or_default()
+                            ))))
+                            .await;
                         break;
                     }
                 }
@@ -485,7 +550,9 @@ async fn chat_handler(
             .header(header::CACHE_CONTROL, "no-cache")
             .header(header::CONNECTION, "keep-alive")
             .body(axum::body::Body::from_stream(ReceiverStream::new(out_rx)))
-            .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "构建响应流失败").into_response())
+            .unwrap_or_else(|_| {
+                (StatusCode::INTERNAL_SERVER_ERROR, "构建响应流失败").into_response()
+            })
     } else {
         // 非流式等待完整响应 (带 60 秒超时熔断)
         let mut full_text = String::new();
@@ -497,7 +564,9 @@ async fn chat_handler(
                     TunnelFrame::Delta { text, .. } => {
                         full_text.push_str(&text);
                     }
-                    TunnelFrame::Finish { finish_reason: r, .. } => {
+                    TunnelFrame::Finish {
+                        finish_reason: r, ..
+                    } => {
                         if let Some(reason) = r {
                             finish_reason = reason;
                         }
@@ -539,7 +608,8 @@ async fn chat_handler(
                 "completion_tokens": 120,
                 "total_tokens": 160
             }
-        })).into_response()
+        }))
+        .into_response()
     }
 }
 

@@ -27,7 +27,12 @@ pub async fn exchange_code(code: &str, verifier: &str, state: &str) -> Result<To
         code_verifier: verifier,
         state,
     };
-    let value = post_token(&body, "交换 Claude 授权码").await?;
+    let value = post_token(
+        &body,
+        "交换 Claude 授权码",
+        "授权码只能用一次。过期了就重新打开授权页。",
+    )
+    .await?;
     token_set(&value)
 }
 
@@ -38,7 +43,7 @@ pub async fn refresh(refresh_token: &str) -> Result<TokenSet> {
         refresh_token,
         scope: &protocol::OAUTH_SCOPES.join(" "),
     };
-    let value = post_token(&body, "刷新 Claude 登录").await?;
+    let value = post_token(&body, "刷新 Claude 登录", "这把登录已失效，重新授权一次。").await?;
     token_set(&value)
 }
 
@@ -100,7 +105,11 @@ async fn api_get(url: &str, access_token: &str) -> Result<Response> {
         .map_err(|e| AppError::upstream(e.to_string()))
 }
 
-async fn post_token(body: &impl serde::Serialize, what: &str) -> Result<Value> {
+async fn post_token(
+    body: &impl serde::Serialize,
+    what: &str,
+    rejected_hint: &str,
+) -> Result<Value> {
     // 换票走 Claude Code 的 axios 客户端，不是推理那套 claude-cli 头。
     let bytes = serde_json::to_vec(body)
         .map_err(|e| AppError::upstream(format!("{what}失败：请求体编码失败：{e}")))?;
@@ -119,7 +128,18 @@ async fn post_token(body: &impl serde::Serialize, what: &str) -> Result<Value> {
     )
     .await
     .map_err(|e| AppError::upstream(format!("{what}失败：{e}")))?;
-    read_json(resp, what).await
+    let status = resp.status();
+    let value = read_json(resp, what).await;
+    // 换票端点回 400 / 401 是凭证本身作废了（invalid_grant 这类），这才该让号去重新授权。
+    // 连不上、5xx、限流都是暂时的，按上游错误报，调用方会先顶着旧 token 用。
+    match value {
+        Err(err) if matches!(status, 400 | 401) => Err(AppError::new(
+            nexus_core::ErrorCode::Unauthorized,
+            err.message,
+        )
+        .with_hint(rejected_hint)),
+        other => other,
+    }
 }
 
 async fn read_json(resp: Response, what: &str) -> Result<Value> {
@@ -127,10 +147,9 @@ async fn read_json(resp: Response, what: &str) -> Result<Value> {
     let text = resp.text().await.unwrap_or_default();
     if !(200..300).contains(&status) {
         let detail = text.chars().take(280).collect::<String>();
-        return Err(
-            AppError::upstream(format!("{what}失败：HTTP {status} {detail}"))
-                .with_hint("授权码只能用一次。过期了就重新打开授权页。"),
-        );
+        return Err(AppError::upstream(format!(
+            "{what}失败：HTTP {status} {detail}"
+        )));
     }
     serde_json::from_str(&text)
         .map_err(|e| AppError::upstream(format!("{what}的响应不是 JSON（{e}）")))

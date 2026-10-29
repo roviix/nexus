@@ -112,6 +112,10 @@ fn outbound(
             }
             h
         }
+    } else if wants_1m {
+        // Console API Key 也得靠这个 beta 才开 1M 上下文。模型名上的 `[1m]` 出站前已经剥掉了，
+        // 不补的话用户选了 1M、实际只有 200K，长会话提前爆上下文。
+        vec![("anthropic-beta".into(), fingerprint::BETA_CONTEXT_1M.into())]
     } else {
         Vec::new()
     };

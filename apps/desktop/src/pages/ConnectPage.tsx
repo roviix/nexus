@@ -79,8 +79,8 @@ const PREFERRED: Record<ClientId, string[]> = {
     "claude-sonnet-4-6",
     "claude-sonnet-5",
     "claude-3-7-sonnet",
-    "gemini-3.8-pro-high",
     "gemini-4-argon",
+    "gemini-3.8-flash-high",
     "claude-opus-4-6-thinking",
     "claude-opus-5-5",
     "claude-opus-5",
@@ -260,7 +260,7 @@ export function ConnectPage({ route, onGo }: { route: Route; onGo: (r: Route) =>
       {relay.gateway && !running ? (
         <Banner
           title="本地网关未开启"
-          hint="客户端的请求需经过本地网关 (127.0.0.1)。一键接入时会自动开启网关，并设为随应用启动。"
+          hint="请求经本机网关转发。一键接入会自动开启它，并设为随应用启动。"
           action={
             <button type="button" className="btn btn-sm btn-primary" disabled={starting} onClick={() => void startGateway()}>
               {starting ? <Spinner /> : null}
@@ -621,7 +621,7 @@ function ClientPanel({
   }
 
   async function revert() {
-    const ok = await confirm(`${meta.label} 的配置会还原成接入之前的样子；是我们建的文件就删掉。之后它不再经过本地网关。`, {
+    const ok = await confirm(`${meta.label} 的配置还原到接入前，Nexus 新建的文件会删掉。`, {
       title: `撤销 ${meta.label} 的接入？`,
       okLabel: "撤销",
       danger: true,
@@ -659,7 +659,7 @@ function ClientPanel({
       : health === "legacy"
         ? "升级接入"
         : live
-          ? (dirty ? "保存并即时生效" : null)
+          ? (dirty ? "保存" : null)
           : health === "other"
             ? "改接到 Nexus"
             : "一键接入";
@@ -682,14 +682,14 @@ function ClientPanel({
         return {
           tone: "bad",
           text: `配置端口与网关 (${gatewayPort}) 不符，请点击「修复接入」`,
-          full: `配置里的端口和网关现在的（${gatewayPort}）对不上，客户端连不上。点「修复接入」重写一遍。`,
+          full: `配置里的端口和网关的（${gatewayPort}）不一致，客户端连不上。点「修复接入」重写。`,
         };
       }
       if (state?.keyOk === false) {
         return {
           tone: "bad",
           text: "网关口令已失效，请点击「修复接入」",
-          full: "配置里的口令和网关现在的不一样，请求会 401。点「修复接入」重写一遍。",
+          full: "配置里的口令和网关的不一致，请求会 401。点「修复接入」重写。",
         };
       }
       return { tone: "bad", text: "配置已过时，请点击「修复接入」", full: "配置已过时，点「修复接入」重新同步。" };
@@ -698,7 +698,7 @@ function ClientPanel({
       return {
         tone: "warn",
         text: `旧版全局路由 (${channelLabel(defaultChannelId(gateway, channels))})，建议「升级接入」`,
-        full: "这是旧版接入：请求走全局默认通道，不看这里的路由。点「升级接入」改成按客户端路由。",
+        full: "旧版接入走全局默认通道，不按这里的路由。点「升级接入」改为按客户端路由。",
       };
     }
     if (health === "other") {
@@ -773,12 +773,10 @@ function ClientPanel({
             <span className={`pod-dot${test.ok ? " is-live" : ""}`} />
             {test.ok ? (
               <span>
-                ✓ 链路畅通 · 落点通道: [<b>{test.channel || channel}</b>] → 命中账号: <b>{test.account || "默认凭证"}</b> ({test.durationMs}ms)
+                ✓ 通了 · <b>{test.channel || channel}</b> → <b>{test.account || "默认凭证"}</b> · {test.durationMs}ms
               </span>
             ) : (
-              <span>
-                ▲ 链路探测失败: {test.error || "请求未能成功通过本地网关"}
-              </span>
+              <span>▲ 没通：{test.error || "请求没能经过本地网关"}</span>
             )}
           </div>
         ) : null}
@@ -925,7 +923,7 @@ function ClaudeRoles({
       </div>
 
       <div className="faint tiny" style={{ marginTop: 6, lineHeight: 1.5 }}>
-        提示：上游通道对 Opus 频控较为严格。日常编码建议以 Sonnet 为主，后台高频任务可搭配 Flash / Haiku 档位。
+        Opus 限流更严：日常用 Sonnet，后台任务用 Haiku / Flash。
       </div>
 
       {open ? (
@@ -1410,7 +1408,7 @@ function CursorClientPanel({
   const currentGatewayUrl = status?.credential?.gatewayUrl;
   const gatewayPort = gateway?.running
     ? Number(gateway.running.addr.split(":").pop())
-    : (gateway?.settings?.port ?? 15721);
+    : (gateway?.settings?.port ?? 8787);
 
   // 过滤可用异构通道
   const validChannels = useMemo(
@@ -1485,7 +1483,7 @@ function CursorClientPanel({
         } catch {}
       }
       await refreshCustomModels();
-      setNotice(`模型「${cursorDisplayName}」已成功注入 Cursor！若 Cursor 正在运行，按 Cmd+Shift+P 运行「Reload Window」或重启即可在下拉中看到。`);
+      setNotice(`「${cursorDisplayName}」已加入 Cursor，Reload Window 后可在模型列表里选。`);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -1503,7 +1501,7 @@ function CursorClientPanel({
       } catch {}
     }
     if (perm?.status === "denied") {
-      setError("接管需要「修改 Cursor 安装」系统权限：请先点击上方「打开系统设置」放行 Nexus 后重试。");
+      setError("需要「修改 Cursor 安装」权限：在上方「打开系统设置」里放行 Nexus 后重试。");
       return;
     }
     setBusy(true);
@@ -1538,7 +1536,7 @@ function CursorClientPanel({
       } else {
         await gatewayApi.setRoute("cursor", null);
       }
-      setNotice(isLive ? "双轨路由与算力已即时生效！无需重开 Cursor。" : "Cursor 路由已成功接管！双轨分流即刻生效。");
+      setNotice(isLive ? "已生效，无需重开 Cursor。" : "已接管 Cursor 路由。");
       await onChanged();
       void checkPerm();
     } catch (e) {
@@ -1549,8 +1547,8 @@ function CursorClientPanel({
   }
 
   async function handleRevert() {
-    const ok = await confirm("确定要还原 Cursor 为官方直连吗？之后请求将不再经过本地网关。", {
-      title: "还原 Cursor 官方默认配置？",
+    const ok = await confirm("Cursor 恢复官方直连，不再经过本地网关。", {
+      title: "还原 Cursor？",
       okLabel: "还原官方",
       danger: true,
     });
@@ -1563,7 +1561,7 @@ function CursorClientPanel({
       await crsrApi.setGatewayUrl(null);
       await crsrApi.uninstall(false);
       await gatewayApi.setRoute("cursor", null);
-      setNotice("已还原官方直连，Cursor 不再经过本地网关。");
+      setNotice("已还原官方直连。");
       await onChanged();
       void checkPerm();
     } catch (e) {
@@ -1581,7 +1579,7 @@ function CursorClientPanel({
       if (isLive) {
         await crsrApi.setGatewayUrl(targetGatewayUrl);
       }
-      setNotice("底座账号切换成功，凭证已即时同步！");
+      setNotice("已切换底座账号。");
       await onChanged();
     } catch (e) {
       setError(errorText(e));
@@ -1625,24 +1623,24 @@ function CursorClientPanel({
 
   const primaryBtn =
     !isLive
-      ? "一键接管 Cursor 路由"
+      ? "接管 Cursor"
       : dirty
-        ? "保存并即时生效"
+        ? "保存"
         : null;
 
   const statusHint = useMemo(() => {
     if (error) return { tone: "bad" as const, text: error, full: error };
     if (notice) return { tone: "ok" as const, text: notice, full: notice };
     if (status?.sandConflict) {
-      return { tone: "warn" as const, text: "检测到旧版独立补丁，建议一键升级接管", full: `盘上存在 ${status.sandConflict} 独立补丁，一键接管将统一纳入网关调度` };
+      return { tone: "warn" as const, text: "有旧版独立补丁，建议接管", full: `装着 ${status.sandConflict} 独立补丁，接管后统一走网关` };
     }
     if (!isLive) {
-      return { tone: "flat" as const, text: "未接管 · 当前为 Cursor 官方直连", full: "尚未注入本地网关挂点，Cursor 仍走官方直连" };
+      return { tone: "flat" as const, text: "未接管 · Cursor 官方直连", full: "Cursor 仍直连官方，没有经过本地网关" };
     }
     if (isSelectedMock) {
-      return { tone: "ok" as const, text: `双轨路由就绪 · 扩展模型 ${cursorDisplayName}`, full: `Cursor 官方模型直通底座；在 Cursor 中选用 ${cursorDisplayName} 时走 Nexus 跨协议转译` };
+      return { tone: "ok" as const, text: `已接管 · 扩展模型 ${cursorDisplayName}`, full: `官方模型照常直通；选 ${cursorDisplayName} 时由 Nexus 转译` };
     }
-    return { tone: "ok" as const, text: "原生直通已生效 · 零协议损耗", full: "100% 原生 Connect-RPC 二进制透传，由本地号池/Mesh提供算力" };
+    return { tone: "ok" as const, text: "原生直通已生效", full: "Connect-RPC 原样转发，算力来自本机号池或 Mesh" };
   }, [error, notice, status?.sandConflict, isLive, isSelectedMock, cursorDisplayName]);
 
   return (
@@ -1677,7 +1675,7 @@ function CursorClientPanel({
                 className="btn btn-sm btn-quiet"
                 disabled={busy}
                 onClick={() => void handleRevert()}
-                data-tip="撤销接管并还原 Cursor 官方默认直连"
+                data-tip="还原官方直连"
               >
                 还原默认
               </button>
@@ -1718,7 +1716,7 @@ function CursorClientPanel({
             <div className="row" style={{ gap: 8, alignItems: "center", flex: 1 }}>
               <Icon name="shield" size={15} />
               <span>
-                <b>未取得修改 Cursor 安装权限</b>：macOS 限制对应用程序包的写操作。请在「系统设置 → 隐私与安全性 → App 管理」允许 Nexus。
+                <b>没有修改 Cursor 的权限</b>：在「系统设置 → 隐私与安全性 → App 管理」里允许 Nexus。
               </span>
             </div>
             <div className="row" style={{ gap: 8, flex: "none" }}>
@@ -1757,12 +1755,10 @@ function CursorClientPanel({
             <span className={`pod-dot${testResult.ok ? " is-live" : ""}`} />
             {testResult.ok ? (
               <span>
-                ✓ 链路畅通 · 目标: [<b>{testResult.target}</b>] ({testResult.durationMs}ms)
+                ✓ 通了 · <b>{testResult.target}</b> · {testResult.durationMs}ms
               </span>
             ) : (
-              <span>
-                ▲ 链路探测失败: {testResult.error || "请求未能成功通过本地网关"}
-              </span>
+              <span>▲ 没通：{testResult.error || "请求没能经过本地网关"}</span>
             )}
           </div>
         ) : null}
@@ -1770,9 +1766,9 @@ function CursorClientPanel({
         {/* 旧版独立补丁冲突提示 */}
         {status?.sandConflict ? (
           <div className="cfg-notice-banner is-warn">
-            <span>检测到旧版独立文件补丁 ({status.sandConflict})，点击一键清理并升级为统一网关挂点</span>
+            <span>装着旧版独立补丁（{status.sandConflict}），接管时会一并清理。</span>
             <button type="button" className="btn btn-xs btn-primary" onClick={() => void handleApply()}>
-              一键升级并接管
+              清理并接管
             </button>
           </div>
         ) : null}
@@ -1780,10 +1776,10 @@ function CursorClientPanel({
         {/* 单栏清爽工作台布局 */}
         <div style={{ padding: "18px 20px 24px", maxWidth: 780 }}>
           <div className="croute-v-flow">
-            {/* 算力模型选择器 */}
+            {/* 模型选择器 */}
             <div className="croute-v-item">
               <div className="croute-v-head">
-                <span className="croute-v-title">算力模型</span>
+                <span className="croute-v-title">模型</span>
               </div>
               <div className="croute-v-control">
                 <select
@@ -1791,7 +1787,7 @@ function CursorClientPanel({
                   value={selectedSource}
                   onChange={(e) => setSelectedSource(e.target.value)}
                 >
-                  <optgroup label="Cursor 原生直通号源">
+                  <optgroup label="Cursor 原生直通">
                     <option value="cursor:local">
                       本机 Cursor 号池
                     </option>
@@ -1805,7 +1801,7 @@ function CursorClientPanel({
                     const mList = channelModels(local, channels, ch.id);
                     if (mList.length === 0) return null;
                     return (
-                      <optgroup key={ch.id} label={`Nexus 跨协议模型 · ${ch.label}`}>
+                      <optgroup key={ch.id} label={`${ch.label} 通道`}>
                         {mList.map((m) => (
                           <option key={m} value={`mock:${m}`}>
                             {splitModelId(m, channels).name} ({ch.label})
@@ -1833,7 +1829,7 @@ function CursorClientPanel({
                 {isSelectedMock && cursorDisplayName && (
                   <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10, fontSize: 12, flexWrap: "wrap" }}>
                     <span style={{ color: "var(--color-fg-muted)" }}>
-                      Cursor 接入模型名：<code className="mono" style={{ color: "var(--color-fg)", fontWeight: 600 }}>{cursorDisplayName}</code>
+                      在 Cursor 里选：<code className="mono" style={{ color: "var(--color-fg)", fontWeight: 600 }}>{cursorDisplayName}</code>
                     </span>
                     <button
                       type="button"
@@ -1848,7 +1844,7 @@ function CursorClientPanel({
                     </button>
                     {isModelSynced ? (
                       <span className="badge badge-ok" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                        ✓ 已同步至 Cursor 模型列表
+                        ✓ 已在 Cursor 模型列表
                       </span>
                     ) : (
                       <button
@@ -1857,7 +1853,7 @@ function CursorClientPanel({
                         disabled={syncingModel || busy}
                         onClick={() => void handleSyncCustomModel()}
                       >
-                        {syncingModel ? "写入中…" : "+ 一键同步至 Cursor"}
+                        {syncingModel ? "写入中…" : "+ 加入 Cursor"}
                       </button>
                     )}
                   </div>

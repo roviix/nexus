@@ -476,7 +476,7 @@ fn parse_responses_input(body: &Value) -> Result<Vec<Message>, ParseError> {
             for it in items {
                 out.extend(parse_responses_item(it)?);
             }
-            return Ok(out);
+            return Ok(merge_assistant_tool_runs(out));
         }
         _ => {}
     }
@@ -491,6 +491,50 @@ fn parse_responses_input(body: &Value) -> Result<Vec<Message>, ParseError> {
         return parse_chat_like_messages(&synthetic);
     }
     Ok(out)
+}
+
+/// 工具结果大多只认 id 不带工具名（Anthropic 的 `tool_result`、Responses 的
+/// `function_call_output`、OpenAI 的 `tool` 消息），而 Gemini 一类上游要求回执带上函数名，
+/// 空着就是 400。按 id 从前面的调用里补上。
+fn fill_tool_result_names(mut messages: Vec<Message>) -> Vec<Message> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    for m in &mut messages {
+        for c in &m.tool_calls {
+            if !c.id.is_empty() && !c.name.trim().is_empty() {
+                names.insert(c.id.clone(), c.name.clone());
+            }
+        }
+        for r in &mut m.tool_results {
+            if r.tool_name.trim().is_empty() {
+                if let Some(name) = names.get(&r.tool_call_id) {
+                    r.tool_name = name.clone();
+                }
+            }
+        }
+    }
+    messages
+}
+
+/// Responses 里并行的工具调用是一串相邻的 `function_call` item，各自解析成一条 assistant 消息。
+/// 并回同一条：OpenAI Chat 要求一条 assistant 消息带齐这一轮的全部 `tool_calls`，后面紧跟各自的
+/// tool 消息；拆成「调用 A、调用 B、结果 A、结果 B」会被整轮 400。正文后面紧跟的调用也并进去。
+fn merge_assistant_tool_runs(messages: Vec<Message>) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
+    for m in messages {
+        let pure_calls = m.role == Role::Assistant
+            && !m.tool_calls.is_empty()
+            && m.text.trim().is_empty()
+            && m.images.is_empty()
+            && m.reasoning.is_empty();
+        if pure_calls {
+            if let Some(prev) = out.last_mut().filter(|p| p.role == Role::Assistant) {
+                prev.tool_calls.extend(m.tool_calls);
+                continue;
+            }
+        }
+        out.push(m);
+    }
+    out
 }
 
 /// 一个 Responses input item → 零到一条统一消息。
@@ -868,6 +912,7 @@ fn parse_sampling(dialect: Dialect, body: &Value) -> Sampling {
 ///    缓存要到第三轮才接得上。assistant 之前的第二条 user 仍然要算：Claude Code 的第一条
 ///    user 经常是一段所有会话共用的 caveat，只哈希它会让不同会话撞车。
 /// **必须带上模型**：缓存按（账号 × 模型 × 对话）存，换了模型本来就命不中。
+#[allow(clippy::doc_lazy_continuation)]
 fn conversation_key(
     body: &Value,
     explicit: Option<&str>,
@@ -951,7 +996,7 @@ pub fn parse_request(
     if let Some(m) = missing_history_message(dialect, body) {
         return Err(ParseError::MissingHistory(m));
     }
-    let messages = parse_messages(dialect, body)?;
+    let messages = fill_tool_result_names(parse_messages(dialect, body)?);
     if !messages
         .iter()
         .any(|m| m.role != Role::System || !m.text.trim().is_empty())
@@ -992,6 +1037,72 @@ mod tests {
     }
     fn responses(body: Value) -> ParsedRequest {
         parse_request(Dialect::OpenAiResponses, &body, None).unwrap()
+    }
+
+    #[test]
+    fn tool_results_learn_their_tool_name_from_the_call() {
+        // Anthropic 的 tool_result 只带 id；Gemini 要求回执带函数名，空着就 400。
+        let p = anthropic(json!({
+            "model": "m",
+            "messages": [
+                { "role": "user", "content": "read it" },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_1", "name": "Read", "input": { "path": "a" } }
+                ] },
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": "file body" }
+                ] }
+            ]
+        }));
+        let result = p
+            .request
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_results.iter())
+            .next()
+            .unwrap();
+        assert_eq!(result.tool_name, "Read");
+
+        let r = responses(json!({
+            "model": "m",
+            "input": [
+                { "type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "ok" }
+            ]
+        }));
+        let result = r
+            .request
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_results.iter())
+            .next()
+            .unwrap();
+        assert_eq!(result.tool_name, "shell");
+    }
+
+    #[test]
+    fn parallel_responses_calls_become_one_assistant_turn() {
+        let r = responses(json!({
+            "model": "m",
+            "input": [
+                { "role": "user", "content": "check both" },
+                { "type": "message", "role": "assistant",
+                  "content": [{ "type": "output_text", "text": "on it" }] },
+                { "type": "function_call", "call_id": "a", "name": "read", "arguments": "{}" },
+                { "type": "function_call", "call_id": "b", "name": "read", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "a", "output": "A" },
+                { "type": "function_call_output", "call_id": "b", "output": "B" }
+            ]
+        }));
+        let roles: Vec<Role> = r.request.messages.iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            vec![Role::User, Role::Assistant, Role::Tool, Role::Tool]
+        );
+        let turn = &r.request.messages[1];
+        assert_eq!(turn.text, "on it");
+        let ids: Vec<&str> = turn.tool_calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"]);
     }
 
     #[test]

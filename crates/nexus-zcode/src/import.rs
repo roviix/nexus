@@ -485,7 +485,11 @@ mod tests {
         });
         let got = parse_credentials(&doc.to_string(), Some(SECRET)).unwrap();
 
-        assert_eq!(got.len(), 2, "已有不同 key 的 coding-plan，跳过多余的 start-plan jwt");
+        assert_eq!(
+            got.len(),
+            2,
+            "已有不同 key 的 coding-plan，跳过多余的 start-plan jwt"
+        );
         let coding: Vec<&ImportedAccount> = got
             .iter()
             .filter(|a| a.plan == ZcodePlan::CodingPlan)

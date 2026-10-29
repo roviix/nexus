@@ -50,12 +50,19 @@ pub(crate) fn timed_out(message: impl Into<String>) -> TransportError {
 /// 已经读完状态行的响应。正文按调用方要的粒度往外给。
 pub struct Response {
     status: u16,
+    /// 响应头（名字已小写）。429 的恢复时刻（`retry-after`、`anthropic-ratelimit-*-reset`）在这里。
+    headers: Vec<(String, String)>,
     body: HttpBody,
 }
 
 impl Response {
     pub fn status(&self) -> u16 {
         self.status
+    }
+
+    /// 按名字取一个响应头（不分大小写）。
+    pub fn header(&self, name: &str) -> Option<&str> {
+        header(&self.headers, &name.to_ascii_lowercase())
     }
 
     pub async fn chunk(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
@@ -135,6 +142,7 @@ pub(crate) async fn exchange(
     decoder.feed(&rest, false).map_err(fail)?;
     Ok(Response {
         status,
+        headers: resp_headers,
         body: HttpBody {
             stream,
             decoder,

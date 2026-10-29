@@ -74,16 +74,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
 
+            #[allow(clippy::collapsible_match)]
             if let Ok(server_msg) = agent::AgentServerMessage::decode(&env.data[..]) {
                 if let Some(msg) = server_msg.message {
                     if let agent::agent_server_message::Message::InteractionUpdate(u) = msg {
                         if let Some(update) = u.message {
                             match update {
                                 agent::interaction_update::Message::ToolCallStarted(started) => {
-                                    println!("\n[UI 轨] 🛠️ Subagent ToolCallStarted: has_call={}", started.tool_call.is_some());
+                                    println!(
+                                        "\n[UI 轨] 🛠️ Subagent ToolCallStarted: has_call={}",
+                                        started.tool_call.is_some()
+                                    );
                                 }
-                                agent::interaction_update::Message::ToolCallCompleted(completed) => {
-                                    println!("\n[UI 轨] ✅ Subagent ToolCallCompleted: has_call={}", completed.tool_call.is_some());
+                                agent::interaction_update::Message::ToolCallCompleted(
+                                    completed,
+                                ) => {
+                                    println!(
+                                        "\n[UI 轨] ✅ Subagent ToolCallCompleted: has_call={}",
+                                        completed.tool_call.is_some()
+                                    );
                                 }
                                 agent::interaction_update::Message::TextDelta(t) => {
                                     print!("{}", t.text);

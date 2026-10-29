@@ -22,7 +22,9 @@ mod tests;
 use crate::error::{UpstreamError, UpstreamKind};
 use crate::inference::{DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_TURN};
 use crate::lane::{BoxFuture, Credential};
-use crate::normalized::{ChatRequest, Completion, Delta, FinishReason, ToolCall, Usage};
+use crate::normalized::{
+    ChatRequest, Completion, Delta, FinishReason, InputBasis, ToolCall, Usage,
+};
 use crate::sse::{SseDecoder, SseEvent};
 use crate::upstream::{DeltaSink, Upstream};
 use nexus_chatgpt::{ChatGptService, CodexUsage, DEFAULT_BACKEND_URL};
@@ -605,6 +607,8 @@ struct StreamReader {
     completed: bool,
     raw_response: Option<Value>,
     ttft_ms: Option<u64>,
+    /// 透传时已经原样交给客户端至少一帧。
+    forwarded: bool,
 }
 
 impl StreamReader {
@@ -629,6 +633,7 @@ impl StreamReader {
             completed: false,
             raw_response: None,
             ttft_ms: None,
+            forwarded: false,
         }
     }
 
@@ -796,6 +801,19 @@ impl StreamReader {
                     .and_then(|m| m.as_str())
                     .unwrap_or("");
                 let v = protocol::classify_stream_error(code, message);
+                // 透传时已经交出过帧：客户端那边流已经开了，这一帧原样转给它——Codex 认的就是上游
+                // 自己的 `response.failed`（`context_length_exceeded` 据此提示压缩、
+                // `insufficient_quota` 不再重试）。还没交出过帧就不转，交给上层换号或回真实状态。
+                if self.passthrough && self.forwarded {
+                    on_delta(Delta::Raw {
+                        event: if ev.event.is_empty() {
+                            kind.clone()
+                        } else {
+                            ev.event.clone()
+                        },
+                        data: data.to_string(),
+                    });
+                }
                 return Err(UpstreamError::new(v.kind, status_for(v.kind), v.message));
             }
             "error" => {
@@ -816,6 +834,7 @@ impl StreamReader {
         }
 
         if self.passthrough {
+            self.forwarded = true;
             on_delta(Delta::Raw {
                 event: if ev.event.is_empty() { kind } else { ev.event },
                 data: data.to_string(),
@@ -897,6 +916,15 @@ impl StreamReader {
                 "上游流在 response.completed 之前结束",
             ));
         }
+        // 出过字但上游没发 response.completed 就断了：回答是半截的。当成功收尾的话客户端以为
+        // 模型说完了，账本也记一笔成功。官方客户端自己也把这种流当成错误。
+        if !self.completed {
+            return Err(UpstreamError::new(
+                UpstreamKind::Upstream,
+                502,
+                "上游流在 response.completed 之前断开，回答不完整",
+            ));
+        }
         let usage = self.usage.unwrap_or_default();
         let measured = self.usage.is_some();
         if !self.tool_calls.is_empty() && self.finish == FinishReason::Stop {
@@ -968,7 +996,9 @@ fn parse_usage(u: &Value) -> Usage {
         cache_read_tokens: n("/input_tokens_details/cached_tokens"),
         cache_write_tokens: 0,
         reasoning_tokens: n("/output_tokens_details/reasoning_tokens"),
-        ..Default::default()
+        // Responses 的 input_tokens 已含缓存读。不标基准，Anthropic 序列化层会把缓存再加一遍，
+        // Claude Code 的上下文显示翻倍、没到一半就自动压缩（Cursor / Antigravity 通道早已标）。
+        input_basis: InputBasis::IncludesCache,
     }
 }
 
@@ -1015,5 +1045,10 @@ mod unit {
         assert_eq!(u.input_tokens, 120);
         assert_eq!(u.cache_read_tokens, 100);
         assert_eq!(u.reasoning_tokens, 12);
+        // input_tokens 含缓存读：Anthropic 口径只报未命中那部分（120-100），别把 100 再加一遍；
+        // OpenAI 口径仍报含缓存的 120。
+        assert_eq!(u.input_basis, crate::normalized::InputBasis::IncludesCache);
+        assert_eq!(u.uncached_input(), 20);
+        assert_eq!(u.total_input(), 120);
     }
 }

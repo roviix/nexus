@@ -17,7 +17,9 @@ use super::proto::agent::v1 as agent;
 use super::proto::aiserver::v1 as ai;
 use crate::channel::Capability;
 use crate::lane::{Credential, Outcome};
-use crate::normalized::{ChatRequest, Delta, Message, Role, Sampling, ToolChoice, ToolDef, ToolResult};
+use crate::normalized::{
+    ChatRequest, Delta, Message, Role, Sampling, ToolChoice, ToolDef, ToolResult,
+};
 use crate::server::Gateway;
 use crate::upstream::Upstream;
 use axum::body::{Body, Bytes};
@@ -43,7 +45,8 @@ pub struct SessionHandle {
     pub exec_tx: mpsc::UnboundedSender<agent::ExecClientMessage>,
     pub exec_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<agent::ExecClientMessage>>>,
     pub interaction_tx: mpsc::UnboundedSender<agent::InteractionResponse>,
-    pub interaction_rx: std::sync::Mutex<Option<mpsc::UnboundedReceiver<agent::InteractionResponse>>>,
+    pub interaction_rx:
+        std::sync::Mutex<Option<mpsc::UnboundedReceiver<agent::InteractionResponse>>>,
     pub created_at: Instant,
 }
 
@@ -72,6 +75,12 @@ pub struct AgentSessionRegistry {
     sessions: RwLock<HashMap<String, Arc<SessionHandle>>>,
 }
 
+impl Default for AgentSessionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentSessionRegistry {
     pub fn new() -> Self {
         Self {
@@ -84,7 +93,7 @@ impl AgentSessionRegistry {
         &self,
         request_id: &str,
     ) -> mpsc::UnboundedSender<Result<Bytes, std::io::Error>> {
-        let mut map = self.sessions.write().unwrap();
+        let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         self.clean_expired(&mut map);
 
         if let Some(entry) = map.get(request_id) {
@@ -101,17 +110,22 @@ impl AgentSessionRegistry {
         &self,
         request_id: &str,
     ) -> mpsc::UnboundedReceiver<Result<Bytes, std::io::Error>> {
-        let mut map = self.sessions.write().unwrap();
+        let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         self.clean_expired(&mut map);
 
         if let Some(entry) = map.get(request_id) {
-            if let Some(rx) = entry.rx.lock().unwrap().take() {
+            if let Some(rx) = entry.rx.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 return rx;
             }
         }
 
         let (handle, _tx) = SessionHandle::new();
-        let rx = handle.rx.lock().unwrap().take().unwrap();
+        let rx = handle
+            .rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap();
         map.insert(request_id.to_string(), Arc::new(handle));
         rx
     }
@@ -120,7 +134,7 @@ impl AgentSessionRegistry {
     pub fn register_aliases(&self, request_id: &str, conv_id: Option<&str>) {
         if let Some(cid) = conv_id {
             if !cid.trim().is_empty() && cid != request_id {
-                let mut map = self.sessions.write().unwrap();
+                let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
                 if let Some(handle) = map.get(request_id).cloned() {
                     map.insert(cid.to_string(), handle);
                 }
@@ -134,7 +148,7 @@ impl AgentSessionRegistry {
         request_id: &str,
         conv_id: Option<&str>,
     ) -> mpsc::UnboundedReceiver<agent::ExecClientMessage> {
-        let mut map = self.sessions.write().unwrap();
+        let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         self.clean_expired(&mut map);
 
         let handle = if let Some(h) = map.get(request_id) {
@@ -153,7 +167,11 @@ impl AgentSessionRegistry {
             arc_h
         };
 
-        let rx_opt = handle.exec_rx.lock().unwrap().take();
+        let rx_opt = handle
+            .exec_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(rx) = rx_opt {
             rx
         } else {
@@ -168,7 +186,7 @@ impl AgentSessionRegistry {
         request_id: &str,
         conv_id: Option<&str>,
     ) -> mpsc::UnboundedReceiver<agent::InteractionResponse> {
-        let mut map = self.sessions.write().unwrap();
+        let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         self.clean_expired(&mut map);
 
         let handle = if let Some(h) = map.get(request_id) {
@@ -187,7 +205,11 @@ impl AgentSessionRegistry {
             arc_h
         };
 
-        let rx_opt = handle.interaction_rx.lock().unwrap().take();
+        let rx_opt = handle
+            .interaction_rx
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         if let Some(rx) = rx_opt {
             rx
         } else {
@@ -198,7 +220,7 @@ impl AgentSessionRegistry {
 
     /// 向对应会话分发客户端执行结果
     pub fn dispatch_exec(&self, key: &str, msg: agent::ExecClientMessage) {
-        let map = self.sessions.read().unwrap();
+        let map = self.sessions.read().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = map.get(key) {
             let _ = handle.exec_tx.send(msg);
         } else {
@@ -208,7 +230,7 @@ impl AgentSessionRegistry {
 
     /// 向对应会话分发交互式卡片响应
     pub fn dispatch_interaction(&self, key: &str, resp: agent::InteractionResponse) {
-        let map = self.sessions.read().unwrap();
+        let map = self.sessions.read().unwrap_or_else(|e| e.into_inner());
         if let Some(handle) = map.get(key) {
             let _ = handle.interaction_tx.send(resp);
         } else {
@@ -244,7 +266,14 @@ pub static GLOBAL_SESSIONS: LazyLock<AgentSessionRegistry> =
 pub struct SubagentSession {
     pub messages: Vec<Message>,
     pub conversation_steps: Vec<agent::ConversationStep>,
+    /// 最近一次写入的时刻，按它淘汰。
+    pub touched: Option<Instant>,
 }
+
+/// 内存里最多留这么多段对话 / 子代理会话，再多就丢最久没碰的。
+const MAX_CACHED_CONVERSATIONS: usize = 64;
+/// 一天没再碰过的对话就不留了。
+const HISTORY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// 全局子代理会话状态池（支持同一子代理多轮追问与上下文追加）
 pub static SUBAGENT_SESSIONS: LazyLock<std::sync::RwLock<HashMap<String, SubagentSession>>> =
@@ -258,8 +287,9 @@ pub struct ComposerConversationRecord {
     pub last_subagent_id: Option<String>,
 }
 
-pub static COMPOSER_CONVERSATION_HISTORY: LazyLock<std::sync::RwLock<HashMap<String, ComposerConversationRecord>>> =
-    LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
+pub static COMPOSER_CONVERSATION_HISTORY: LazyLock<
+    std::sync::RwLock<HashMap<String, ComposerConversationRecord>>,
+> = LazyLock::new(|| std::sync::RwLock::new(HashMap::new()));
 
 // ============================================================================
 // 编码与信封构造工具
@@ -321,9 +351,7 @@ pub fn wrap_interaction(msg: agent::interaction_update::Message) -> agent::Agent
     agent::AgentServerMessage {
         ttft_breakdown: None,
         message: Some(agent::agent_server_message::Message::InteractionUpdate(
-            agent::InteractionUpdate {
-                message: Some(msg),
-            },
+            agent::InteractionUpdate { message: Some(msg) },
         )),
     }
 }
@@ -340,7 +368,9 @@ pub fn wrap_exec_server_message(msg: agent::ExecServerMessage) -> agent::AgentSe
 pub fn wrap_interaction_query(query: agent::InteractionQuery) -> agent::AgentServerMessage {
     agent::AgentServerMessage {
         ttft_breakdown: None,
-        message: Some(agent::agent_server_message::Message::InteractionQuery(query)),
+        message: Some(agent::agent_server_message::Message::InteractionQuery(
+            query,
+        )),
     }
 }
 
@@ -487,7 +517,8 @@ pub async fn handle_run_sse(
 
     // 解析 BidiRequestId
     let request_id = match agent::BidiRequestId::decode(payload.as_slice())
-        .or_else(|_| agent::BidiRequestId::decode(&body[..])) {
+        .or_else(|_| agent::BidiRequestId::decode(&body[..]))
+    {
         Ok(req) if !req.request_id.trim().is_empty() => req.request_id,
         _ => {
             // 备用：从请求头获取
@@ -511,7 +542,7 @@ pub async fn handle_run_sse(
     }
 
     info!(request_id = %request_id, "建立 Cursor Agent RunSSE 下行事件流");
-    eprintln!("[NEXUS-AGENT] RunSSE connected: request_id={request_id}");
+    debug!("RunSSE connected: request_id={request_id}");
 
     let ct = headers
         .get("content-type")
@@ -555,12 +586,16 @@ pub async fn handle_agent_run_direct<S>(
 where
     S: tokio_stream::Stream<Item = Result<Bytes, axum::Error>> + Send + Unpin + 'static,
 {
+    // 没有请求号就现编一个独一无二的。共用一个固定键的话，同时跑的两轮会抢同一个会话：
+    // 执行结果送错轮，一轮收尾时还会把另一轮的会话删掉。
     let request_id = headers
         .get("x-request-id")
         .or_else(|| headers.get("x-cursor-request-id"))
         .and_then(|h| h.to_str().ok())
-        .unwrap_or("direct-run")
-        .to_string();
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("direct-{}", uuid::Uuid::new_v4().simple()));
 
     let conv_id = run_req.conversation_id.clone();
 
@@ -590,21 +625,33 @@ where
                             return;
                         }
                         let decompressed = decompress_if_needed(&env.data);
-                        let client_msg_opt = agent::AgentClientMessage::decode(decompressed.as_slice())
-                            .or_else(|_| agent::AgentClientMessage::decode(&env.data[..]));
+                        let client_msg_opt =
+                            agent::AgentClientMessage::decode(decompressed.as_slice())
+                                .or_else(|_| agent::AgentClientMessage::decode(&env.data[..]));
                         if let Ok(client_msg) = client_msg_opt {
                             if let Some(msg) = client_msg.message {
                                 match msg {
-                                    agent::agent_client_message::Message::ExecClientMessage(exec) => {
-                                        info!(exec_id = exec.id, "收到 Inbound Stream 的 ExecClientMessage");
+                                    agent::agent_client_message::Message::ExecClientMessage(
+                                        exec,
+                                    ) => {
+                                        info!(
+                                            exec_id = exec.id,
+                                            "收到 Inbound Stream 的 ExecClientMessage"
+                                        );
                                         GLOBAL_SESSIONS.dispatch_exec(&req_id_clone, exec.clone());
                                         if let Some(ref cid) = conv_id_clone {
                                             GLOBAL_SESSIONS.dispatch_exec(cid, exec);
                                         }
                                     }
-                                    agent::agent_client_message::Message::InteractionResponse(resp) => {
-                                        info!(resp_id = resp.id, "收到 Inbound Stream 的 InteractionResponse");
-                                        GLOBAL_SESSIONS.dispatch_interaction(&req_id_clone, resp.clone());
+                                    agent::agent_client_message::Message::InteractionResponse(
+                                        resp,
+                                    ) => {
+                                        info!(
+                                            resp_id = resp.id,
+                                            "收到 Inbound Stream 的 InteractionResponse"
+                                        );
+                                        GLOBAL_SESSIONS
+                                            .dispatch_interaction(&req_id_clone, resp.clone());
                                         if let Some(ref cid) = conv_id_clone {
                                             GLOBAL_SESSIONS.dispatch_interaction(cid, resp);
                                         }
@@ -752,27 +799,31 @@ pub async fn handle_bidi_append(
         return empty_bidi_append_response(&_headers);
     };
 
-    let client_msg = match agent::AgentClientMessage::decode(client_msg_bytes.as_slice())
-        .or_else(|_| agent::AgentClientMessage::decode(extract_connect_payload(&client_msg_bytes).as_slice()))
-    {
-        Ok(msg) => msg,
-        Err(err) => {
-            warn!(
-                error = %err,
-                len = client_msg_bytes.len(),
-                "解析 AgentClientMessage Protobuf 失败"
-            );
-            return (
-                StatusCode::BAD_REQUEST,
-                [("content-type", "text/plain")],
-                format!("invalid AgentClientMessage: {err}"),
-            )
-                .into_response();
-        }
-    };
+    let client_msg =
+        match agent::AgentClientMessage::decode(client_msg_bytes.as_slice()).or_else(|_| {
+            agent::AgentClientMessage::decode(extract_connect_payload(&client_msg_bytes).as_slice())
+        }) {
+            Ok(msg) => msg,
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    len = client_msg_bytes.len(),
+                    "解析 AgentClientMessage Protobuf 失败"
+                );
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [("content-type", "text/plain")],
+                    format!("invalid AgentClientMessage: {err}"),
+                )
+                    .into_response();
+            }
+        };
 
     let tx = GLOBAL_SESSIONS.get_or_create_tx(&request_id);
-    eprintln!("[NEXUS-AGENT] BidiAppend parsed: request_id={request_id}, bytes_len={}", client_msg_bytes.len());
+    debug!(
+        "BidiAppend parsed: request_id={request_id}, bytes_len={}",
+        client_msg_bytes.len()
+    );
 
     // 根据消息类型进行分发处理
     if let Some(msg) = client_msg.message {
@@ -865,10 +916,13 @@ async fn forward_official_agent_turn(
         headers.clone(),
         body,
         "/aiserver.v1.BidiService/BidiAppend",
-    ).await;
+    )
+    .await;
 
     // 2. 将 RunSSE 转发到官方并接入 tx（使用 Connect envelope 包装 BidiRequestId）
-    let bidi_id = ai::BidiRequestId { request_id: request_id.clone() };
+    let bidi_id = ai::BidiRequestId {
+        request_id: request_id.clone(),
+    };
     let payload = bidi_id.encode_to_vec();
     let mut sse_body = Vec::with_capacity(5 + payload.len());
     sse_body.push(0);
@@ -876,7 +930,10 @@ async fn forward_official_agent_turn(
     sse_body.extend_from_slice(&payload);
 
     let mut sse_headers = headers.clone();
-    sse_headers.insert("content-type", HeaderValue::from_static("application/connect+proto"));
+    sse_headers.insert(
+        "content-type",
+        HeaderValue::from_static("application/connect+proto"),
+    );
     sse_headers.insert("connect-protocol-version", HeaderValue::from_static("1"));
 
     let sse_resp = super::native_relay::handle_native_relay(
@@ -884,7 +941,8 @@ async fn forward_official_agent_turn(
         sse_headers,
         Bytes::from(sse_body),
         "/agent.v1.AgentService/RunSSE",
-    ).await;
+    )
+    .await;
 
     if sse_resp.status().is_success() {
         let mut stream = sse_resp.into_body().into_data_stream();
@@ -1015,7 +1073,7 @@ pub fn default_cursor_agent_tools() -> Vec<ToolDef> {
                     },
                     "old_string": {
                         "type": "string",
-                        "description": "Exact text in the existing file to be replaced"
+                        "description": "Exact text in the existing file to be replaced. Must match exactly once; include surrounding lines if needed"
                     },
                     "new_string": {
                         "type": "string",
@@ -1172,6 +1230,290 @@ pub fn default_cursor_agent_tools() -> Vec<ToolDef> {
     ]
 }
 
+/// 编辑前先读文件用的那次执行，id 和工具调用本身的执行分开（同一个计数器，高位置 1）。
+const READ_FOR_EDIT_BIT: u32 = 1 << 30;
+/// 子代理里的工具执行另占一段 id，不和主代理的撞。
+const SUBAGENT_EXEC_BIT: u32 = 1 << 29;
+/// 子代理只读、只搜：改文件、跑命令留给主代理（用户看得见、Cursor 管得着的那一路）。
+const SUBAGENT_TOOLS: &[&str] = &["read_file", "list_dir", "grep_search", "file_search"];
+
+/// 命令输出：有 Cursor 拼好的交错输出就用它（顺序和终端里一致），否则 stdout 接 stderr。
+fn shell_output_text(interleaved: Option<&str>, stdout: &str, stderr: &str) -> String {
+    if let Some(all) = interleaved.filter(|s| !s.trim().is_empty()) {
+        return all.to_string();
+    }
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (true, true) => String::new(),
+    }
+}
+
+/// 单引号包起来给 POSIX shell。模型给的参数里有引号也逃不出去。
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// 经 Cursor 读一个文件：路径按 Cursor 自己的工作区规则解析，读到的就是编辑器里的真内容。
+async fn read_file_via_client(
+    tx: &mpsc::UnboundedSender<Result<Bytes, std::io::Error>>,
+    exec_rx: &mut mpsc::UnboundedReceiver<agent::ExecClientMessage>,
+    exec_id: u32,
+    path: &str,
+) -> Result<String, String> {
+    let msg = agent::ExecServerMessage {
+        id: exec_id,
+        exec_id: exec_id.to_string(),
+        message: Some(agent::exec_server_message::Message::ReadArgs(
+            agent::ReadArgs {
+                path: path.to_string(),
+                tool_call_id: format!("nexus-edit-read-{exec_id}"),
+                offset: None,
+                limit: None,
+                encoding_hint: None,
+            },
+        )),
+        ..Default::default()
+    };
+    let _ = tx.send(Ok(encode_agent_server_message(&wrap_exec_server_message(
+        msg,
+    ))));
+    let reply = wait_for_exec_result(exec_rx, exec_id, Duration::from_secs(30)).await?;
+    let Some(agent::exec_client_message::Message::ReadResult(rr)) = reply.message else {
+        return Err(format!("Could not read {path} before editing it."));
+    };
+    match rr.result {
+        Some(agent::read_result::Result::Success(s)) => {
+            if s.truncated {
+                return Err(format!(
+                    "{path} is too large to edit by snippet. Pass content with the full new file instead."
+                ));
+            }
+            let text = match s.output {
+                Some(agent::read_success::Output::Content(c)) => c,
+                Some(agent::read_success::Output::Data(d)) => {
+                    String::from_utf8(d).map_err(|_| format!("{path} is not a text file."))?
+                }
+                None => String::new(),
+            };
+            if looks_line_numbered(&text) {
+                // 读回来的是带行号的展示稿：拿它替换再写回去会把行号写进文件。
+                return Err(format!(
+                    "Could not get the raw text of {path}. Pass content with the full new file instead."
+                ));
+            }
+            Ok(text)
+        }
+        Some(agent::read_result::Result::FileNotFound(_)) => Err(format!("File not found: {path}")),
+        Some(agent::read_result::Result::Rejected(r)) => {
+            Err(format!("Read rejected: {}", r.reason))
+        }
+        Some(agent::read_result::Result::PermissionDenied(_)) => {
+            Err(format!("Permission denied reading {path}"))
+        }
+        Some(agent::read_result::Result::Error(e)) => {
+            Err(format!("Error reading {path}: {}", e.error))
+        }
+        Some(agent::read_result::Result::InvalidFile(i)) => {
+            Err(format!("Invalid file {path}: {}", i.reason))
+        }
+        None => Err(format!("Could not read {path} before editing it.")),
+    }
+}
+
+/// 用 `find` 按文件名找（macOS / Linux）。参数来自模型，单引号包好，
+/// 带引号、分号的输入也只是一个文件名模式，拼不出第二条命令。
+async fn find_files_via_shell(
+    tx: &mpsc::UnboundedSender<Result<Bytes, std::io::Error>>,
+    exec_rx: &mut mpsc::UnboundedReceiver<agent::ExecClientMessage>,
+    exec_id: u32,
+    path: &str,
+    query: &str,
+    tool_call_id: &str,
+) -> Result<String, String> {
+    let cmd = find_command(path, query);
+    let shell_args = agent::ShellArgs {
+        command: cmd.clone(),
+        working_directory: String::new(),
+        timeout: 30,
+        tool_call_id: tool_call_id.to_string(),
+        simple_commands: vec!["find".to_string()],
+        parsing_result: Some(build_shell_command_parsing_result(&cmd)),
+        skip_approval: true,
+        description: Some(format!("Search files matching {query}")),
+        ..Default::default()
+    };
+    let msg = agent::ExecServerMessage {
+        id: exec_id,
+        exec_id: exec_id.to_string(),
+        message: Some(agent::exec_server_message::Message::ShellArgs(shell_args)),
+        ..Default::default()
+    };
+    let _ = tx.send(Ok(encode_agent_server_message(&wrap_exec_server_message(
+        msg,
+    ))));
+    let reply = wait_for_exec_result(exec_rx, exec_id, Duration::from_secs(30))
+        .await
+        .map_err(|e| format!("[Error] {e}"))?;
+    let Some(agent::exec_client_message::Message::ShellResult(sr)) = reply.message else {
+        return Err("[Error] Unexpected response for file_search".to_string());
+    };
+    match sr.result {
+        Some(agent::shell_result::Result::Success(s)) => Ok(s.stdout),
+        // 有目录没权限读时 find 退出码非零，已经找到的照样有效。
+        Some(agent::shell_result::Result::Failure(f)) if !f.stdout.trim().is_empty() => {
+            Ok(f.stdout)
+        }
+        _ => Err(format!("Search failed for '{query}'")),
+    }
+}
+
+/// 按文件名找的 `find` 命令。单引号挡住了第二条 shell 命令，但挡不住 `find` 自己的语法：
+/// GNU find 把 `-`、`(`、`!` 开头的参数当表达式，路径写成 `-delete` 就会删光工作区。
+/// 所以相对路径一律写成 `./…`，它只能是一个起点。
+fn find_command(path: &str, query: &str) -> String {
+    let start = if path.starts_with('/')
+        || path == "."
+        || path == ".."
+        || path.starts_with("./")
+        || path.starts_with("../")
+    {
+        path.to_string()
+    } else {
+        format!("./{path}")
+    };
+    format!(
+        "find {} -maxdepth 5 -name {} -not -path '*/.git/*' -not -path '*/node_modules/*'",
+        sh_quote(&start),
+        sh_quote(&format!("*{query}*"))
+    )
+}
+
+/// 经 Cursor 列目录树：路径按工作区解析，不经过终端。
+async fn list_tree_via_client(
+    tx: &mpsc::UnboundedSender<Result<Bytes, std::io::Error>>,
+    exec_rx: &mut mpsc::UnboundedReceiver<agent::ExecClientMessage>,
+    exec_id: u32,
+    path: &str,
+    tool_call_id: &str,
+) -> Result<agent::LsDirectoryTreeNode, String> {
+    let msg = agent::ExecServerMessage {
+        id: exec_id,
+        exec_id: exec_id.to_string(),
+        message: Some(agent::exec_server_message::Message::LsArgs(agent::LsArgs {
+            path: path.to_string(),
+            ignore: Vec::new(),
+            tool_call_id: tool_call_id.to_string(),
+            sandbox_policy: None,
+            timeout_ms: Some(10_000),
+        })),
+        ..Default::default()
+    };
+    let _ = tx.send(Ok(encode_agent_server_message(&wrap_exec_server_message(
+        msg,
+    ))));
+    let reply = wait_for_exec_result(exec_rx, exec_id, Duration::from_secs(20))
+        .await
+        .map_err(|e| format!("[Error] {e}"))?;
+    let Some(agent::exec_client_message::Message::LsResult(lr)) = reply.message else {
+        return Err("[Error] Unexpected response for file_search".to_string());
+    };
+    match lr.result {
+        Some(agent::ls_result::Result::Success(s)) => Ok(s.directory_tree_root.unwrap_or_default()),
+        Some(agent::ls_result::Result::Error(e)) => {
+            Err(format!("Error listing {path}: {}", e.error))
+        }
+        Some(agent::ls_result::Result::Timeout(_)) => Err(format!("Timeout listing {path}")),
+        Some(agent::ls_result::Result::Rejected(r)) => Err(format!("List rejected: {}", r.reason)),
+        None => Err(format!("Could not list {path}")),
+    }
+}
+
+/// 在目录树里按文件名找，和 `find -name '*query*'` 同样的规则：`*`、`?` 是通配符，
+/// 两头隐含 `*`；不分大小写（Windows 的文件名本来就不分）。最多收 500 个。
+fn collect_matching_files(node: &agent::LsDirectoryTreeNode, query: &str, out: &mut Vec<String>) {
+    const MAX_FILES: usize = 500;
+    let pattern: Vec<char> = format!("*{}*", query.trim().to_lowercase())
+        .chars()
+        .collect();
+    let dir = std::path::Path::new(&node.abs_path);
+    for f in &node.children_files {
+        if out.len() >= MAX_FILES {
+            return;
+        }
+        let name: Vec<char> = f.name.to_lowercase().chars().collect();
+        if wildcard_match(&name, &pattern) {
+            out.push(dir.join(&f.name).display().to_string());
+        }
+    }
+    for d in &node.children_dirs {
+        if out.len() >= MAX_FILES {
+            return;
+        }
+        collect_matching_files(d, query, out);
+    }
+}
+
+/// `*` 匹配任意一串、`?` 匹配任意一个字符。
+fn wildcard_match(text: &[char], pattern: &[char]) -> bool {
+    let (mut t, mut p) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == text[t]) {
+            t += 1;
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some((p, t));
+            p += 1;
+        } else if let Some((sp, st)) = star {
+            // 回到上一个 `*`，让它多吞一个字符再试。
+            p = sp + 1;
+            t = st + 1;
+            star = Some((sp, st + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == '*')
+}
+
+/// 每一行都以「行号 + 分隔符」开头：这是给人看的展示稿，不是文件原文。
+fn looks_line_numbered(text: &str) -> bool {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .take(5)
+        .collect();
+    lines.len() >= 2
+        && lines.iter().all(|line| {
+            let rest = line.trim_start();
+            let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+            digits > 0
+                && rest[digits..]
+                    .trim_start_matches(' ')
+                    .starts_with(['|', '→', '\t', ':'])
+        })
+}
+
+/// 只替换唯一的那一处。找不到或不止一处都不写：猜错的代价是把文件改坏。
+fn replace_exactly_once(
+    existing: &str,
+    old: &str,
+    new: &str,
+    path: &str,
+) -> Result<String, String> {
+    match existing.matches(old).count() {
+        1 => Ok(existing.replacen(old, new, 1)),
+        0 => Err(format!(
+            "old_string was not found in {path}. Read the file first and copy the exact text to replace."
+        )),
+        n => Err(format!(
+            "old_string appears {n} times in {path}. Include more surrounding lines so it matches exactly once."
+        )),
+    }
+}
+
 /// 等待客户端执行反馈 (ExecClientMessage)，带超时保护
 async fn wait_for_exec_result(
     exec_rx: &mut mpsc::UnboundedReceiver<agent::ExecClientMessage>,
@@ -1241,10 +1583,12 @@ pub fn build_shell_command_parsing_result(command: &str) -> agent::ShellCommandP
     let mut parts = command.split_whitespace();
     let name = parts.next().unwrap_or("").to_string();
     let args = parts
-        .map(|p| agent::shell_command_parsing_result::ExecutableCommandArg {
-            r#type: "word".to_string(),
-            value: p.to_string(),
-        })
+        .map(
+            |p| agent::shell_command_parsing_result::ExecutableCommandArg {
+                r#type: "word".to_string(),
+                value: p.to_string(),
+            },
+        )
         .collect();
 
     let has_redirects = command.contains('>') || command.contains('<');
@@ -1264,106 +1608,35 @@ pub fn build_shell_command_parsing_result(command: &str) -> agent::ShellCommandP
     }
 }
 
-/// 子代理独立执行工具调用（本地工作区直接执行，秒级反馈，保障子代理自主探索闭环）
-pub fn execute_subagent_tool_locally(tc: &crate::normalized::ToolCall) -> (String, bool) {
-    let args_val: serde_json::Value = serde_json::from_str(&tc.arguments)
-        .unwrap_or_else(|_| serde_json::json!({}));
-
-    eprintln!("[NEXUS-SUBAGENT-TOOL] Running tool: {} args: {}", tc.name, tc.arguments);
-
-    match tc.name.as_str() {
-        "run_terminal_command" => {
-            let command = args_val.get("command").and_then(|v| v.as_str()).unwrap_or("");
-            let working_directory = args_val.get("working_directory").and_then(|v| v.as_str()).unwrap_or("");
-            if command.trim().is_empty() {
-                return ("Empty command".to_string(), true);
-            }
-            let mut proc = std::process::Command::new("sh");
-            proc.arg("-c").arg(command);
-            if !working_directory.is_empty() {
-                proc.current_dir(working_directory);
-            }
-            match proc.output() {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                    let exit_code = out.status.code().unwrap_or(0);
-                    let res = if !stdout.is_empty() && !stderr.is_empty() {
-                        format!("{}\n{}", stdout, stderr)
-                    } else if !stdout.is_empty() {
-                        stdout
-                    } else if !stderr.is_empty() {
-                        stderr
-                    } else {
-                        format!("Process exited with code {}", exit_code)
-                    };
-                    eprintln!("[NEXUS-SUBAGENT-TOOL] command exit_code={exit_code}, out_len={}", res.len());
-                    (res, exit_code != 0)
-                }
-                Err(e) => (format!("Failed to execute command: {}", e), true),
-            }
-        }
-        "read_file" => {
-            let path = args_val.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            match std::fs::read_to_string(path) {
-                Ok(content) => {
-                    let lines: Vec<&str> = content.lines().collect();
-                    let start = args_val.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-                    let end = args_val.get("end_line").and_then(|v| v.as_u64()).unwrap_or(lines.len() as u64) as usize;
-                    let s = start.saturating_sub(1);
-                    let e = end.min(lines.len());
-                    if s < lines.len() {
-                        (lines[s..e].join("\n"), false)
-                    } else {
-                        (content, false)
-                    }
-                }
-                Err(e) => (format!("Failed to read {path}: {e}"), true),
-            }
-        }
-        "list_dir" => {
-            let path = args_val.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            match std::fs::read_dir(path) {
-                Ok(entries) => {
-                    let mut list = Vec::new();
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                        list.push(if is_dir { format!("{name}/") } else { name });
-                    }
-                    list.sort();
-                    (list.join("\n"), false)
-                }
-                Err(e) => (format!("Failed to list {path}: {e}"), true),
-            }
-        }
-        "file_search" => {
-            let query = args_val.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let path = args_val.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let cmd = format!("find {} -not -path '*/.*' -not -path './target*' -not -path './node_modules*' -name '*{}*' -maxdepth 5", path, query);
-            let mut proc = std::process::Command::new("sh");
-            proc.arg("-c").arg(&cmd);
-            match proc.output() {
-                Ok(out) => (String::from_utf8_lossy(&out.stdout).to_string(), false),
-                Err(e) => (format!("Search failed: {e}"), true),
-            }
-        }
-        "grep_search" => {
-            let pattern = args_val.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-            let path = args_val.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let cmd = format!("grep -rn --exclude-dir=target --exclude-dir=node_modules --exclude-dir=.git '{}' {}", pattern, path);
-            let mut proc = std::process::Command::new("sh");
-            proc.arg("-c").arg(&cmd);
-            match proc.output() {
-                Ok(out) => (String::from_utf8_lossy(&out.stdout).to_string(), false),
-                Err(e) => (format!("Grep failed: {e}"), true),
-            }
-        }
-        other => (format!("Subagent tool {} not supported in sub-loop", other), true),
-    }
+/// 子代理的工具调用回到 `execute_agent_tool_call` 自己。递归的 async fn 要装箱，
+/// 返回类型还得写明 `Send`：在函数体内部推断不出自己的 Send，会报 E0283。
+#[allow(clippy::too_many_arguments)]
+fn execute_subagent_tool_call<'a>(
+    upstream: &'a Arc<dyn Upstream>,
+    credential: &'a Credential,
+    target_model: &'a str,
+    conv_id: Option<&'a str>,
+    tx: &'a mpsc::UnboundedSender<Result<Bytes, std::io::Error>>,
+    exec_rx: &'a mut mpsc::UnboundedReceiver<agent::ExecClientMessage>,
+    interaction_rx: &'a mut mpsc::UnboundedReceiver<agent::InteractionResponse>,
+    tc: &'a crate::normalized::ToolCall,
+    exec_id: u32,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = (String, bool)> + Send + 'a>> {
+    Box::pin(execute_agent_tool_call(
+        upstream,
+        credential,
+        target_model,
+        conv_id,
+        tx,
+        exec_rx,
+        interaction_rx,
+        tc,
+        exec_id,
+    ))
 }
 
 /// 执行单个 Agent 工具调用（支持 Cursor 本地 ClientExecController 执行轨与 UI 渲染轨，以及虚拟工具）
+#[allow(clippy::too_many_arguments)]
 async fn execute_agent_tool_call(
     upstream: &Arc<dyn Upstream>,
     credential: &Credential,
@@ -1380,8 +1653,8 @@ async fn execute_agent_tool_call(
         .unwrap_or_default()
         .as_millis() as u64;
 
-    let args_val: serde_json::Value = serde_json::from_str(&tc.arguments)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let args_val: serde_json::Value =
+        serde_json::from_str(&tc.arguments).unwrap_or_else(|_| serde_json::json!({}));
 
     info!(
         tool_name = %tc.name,
@@ -1413,7 +1686,11 @@ async fn execute_agent_tool_call(
                 working_directory,
                 timeout: 60,
                 tool_call_id: tc.id.clone(),
-                simple_commands: if cmd_name.is_empty() { vec![] } else { vec![cmd_name] },
+                simple_commands: if cmd_name.is_empty() {
+                    vec![]
+                } else {
+                    vec![cmd_name]
+                },
                 parsing_result: Some(build_shell_command_parsing_result(&command)),
                 skip_approval: true,
                 description: explanation,
@@ -1424,24 +1701,26 @@ async fn execute_agent_tool_call(
             let started_tc = agent::ToolCall {
                 tool_call_id: Some(tc.id.clone()),
                 started_at_ms: Some(now_ms),
-                tool: Some(agent::tool_call::Tool::ShellToolCall(agent::ShellToolCall {
-                    args: Some(shell_args.clone()),
-                    result: None,
-                    description: None,
-                })),
+                tool: Some(agent::tool_call::Tool::ShellToolCall(
+                    agent::ShellToolCall {
+                        args: Some(shell_args.clone()),
+                        result: None,
+                        description: None,
+                    },
+                )),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             // 2. 本地执行轨：ExecServerMessage
             let exec_server_msg = agent::ExecServerMessage {
                 id: exec_id,
                 exec_id: exec_id.to_string(),
-                message: Some(agent::exec_server_message::Message::ShellArgs(shell_args.clone())),
+                message: Some(agent::exec_server_message::Message::ShellArgs(
+                    shell_args.clone(),
+                )),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&wrap_exec_server_message(
@@ -1453,28 +1732,37 @@ async fn execute_agent_tool_call(
 
             let (output, is_error, completed_shell_result) = match exec_res {
                 Ok(client_msg) => {
-                    if let Some(agent::exec_client_message::Message::ShellResult(sr)) = client_msg.message {
+                    if let Some(agent::exec_client_message::Message::ShellResult(sr)) =
+                        client_msg.message
+                    {
                         let is_err = match &sr.result {
                             Some(agent::shell_result::Result::Success(s)) => s.exit_code != 0,
                             _ => true,
                         };
                         let out_str = match &sr.result {
                             Some(agent::shell_result::Result::Success(s)) => {
-                                if !s.stdout.is_empty() && !s.stderr.is_empty() {
-                                    format!("{}\n{}", s.stdout, s.stderr)
-                                } else if !s.stdout.is_empty() {
-                                    s.stdout.clone()
-                                } else if !s.stderr.is_empty() {
-                                    s.stderr.clone()
-                                } else {
-                                    format!("Process exited with code {}", s.exit_code)
+                                let out = shell_output_text(
+                                    s.interleaved_output.as_deref(),
+                                    &s.stdout,
+                                    &s.stderr,
+                                );
+                                match (out.is_empty(), s.exit_code) {
+                                    (true, code) => format!("Process exited with code {code}"),
+                                    (false, 0) => out,
+                                    (false, code) => format!("{out}\nExit code: {code}"),
                                 }
                             }
+                            // 测试、编译失败的细节多半在 stdout，只给 stderr 模型就看不到哪里错了。
                             Some(agent::shell_result::Result::Failure(f)) => {
-                                if !f.stderr.is_empty() {
-                                    f.stderr.clone()
-                                } else {
+                                let out = shell_output_text(
+                                    f.interleaved_output.as_deref(),
+                                    &f.stdout,
+                                    &f.stderr,
+                                );
+                                if out.is_empty() {
                                     format!("Command failed with exit code {}", f.exit_code)
+                                } else {
+                                    format!("{out}\nCommand failed with exit code {}", f.exit_code)
                                 }
                             }
                             Some(agent::shell_result::Result::Timeout(t)) => {
@@ -1493,74 +1781,35 @@ async fn execute_agent_tool_call(
                         };
                         (out_str, is_err, Some(sr))
                     } else {
-                        ("[Error] Unexpected response type from client".to_string(), true, None)
+                        (
+                            "[Error] Unexpected response type from client".to_string(),
+                            true,
+                            None,
+                        )
                     }
                 }
                 Err(err) => (format!("[Error] {err}"), true, None),
             };
 
-            // 若客户端报错（例如旧会话中出现 SpawnError、PermissionDenied 或连接超时），启动网关本地透明执行兜底
-            let (output, is_error, completed_shell_result) = if is_error && !command.trim().is_empty() {
-                warn!(command = %command, error = %output, "客户端终端响应异常，触发网关本地工作区安全兜底执行");
-                let mut proc = std::process::Command::new("sh");
-                proc.arg("-c").arg(&command);
-                if !shell_args.working_directory.is_empty() {
-                    proc.current_dir(&shell_args.working_directory);
-                }
-                match proc.output() {
-                    Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                        let exit_code = out.status.code().unwrap_or(0);
-                        let combined = if !stdout.is_empty() && !stderr.is_empty() {
-                            format!("{}\n{}", stdout, stderr)
-                        } else if !stdout.is_empty() {
-                            stdout.clone()
-                        } else if !stderr.is_empty() {
-                            stderr.clone()
-                        } else {
-                            format!("Process exited with code {}", exit_code)
-                        };
-                        let fallback_sr = agent::ShellResult {
-                            result: Some(agent::shell_result::Result::Success(agent::ShellSuccess {
-                                command: command.clone(),
-                                working_directory: shell_args.working_directory.clone(),
-                                exit_code,
-                                signal: String::new(),
-                                stdout,
-                                stderr,
-                                execution_time: 10,
-                                output_location: None,
-                                shell_id: None,
-                                interleaved_output: None,
-                                pid: Some(9999),
-                                ms_to_wait: None,
-                                local_execution_time_ms: Some(10),
-                                background_reason: None,
-                                output_head: None,
-                                output_tail: None,
-                                elided_chars: None,
-                            })),
-                            ..Default::default()
-                        };
-                        (combined, exit_code != 0, Some(fallback_sr))
-                    }
-                    Err(_) => (output, is_error, completed_shell_result),
-                }
-            } else {
-                (output, is_error, completed_shell_result)
-            };
+            // 客户端说失败了（非零退出、用户拒绝、权限不够、超时）就照实交给模型。
+            // 以前这里会在网关进程里用 `sh -c` 把命令再跑一遍：失败的命令被执行两次，
+            // 用户明确拒绝、或被 Cursor 拦下的命令也照样执行——那是绕过用户的确认。
+            if is_error {
+                warn!(command = %command, "客户端没有成功执行这条命令，结果原样交给模型");
+            }
 
             // 4. UI 渲染轨：ToolCallCompleted
             let completed_tc = agent::ToolCall {
                 tool_call_id: Some(tc.id.clone()),
                 started_at_ms: Some(now_ms),
                 completed_at_ms: Some(now_ms + 100),
-                tool: Some(agent::tool_call::Tool::ShellToolCall(agent::ShellToolCall {
-                    args: Some(shell_args),
-                    result: completed_shell_result,
-                    description: None,
-                })),
+                tool: Some(agent::tool_call::Tool::ShellToolCall(
+                    agent::ShellToolCall {
+                        args: Some(shell_args),
+                        result: completed_shell_result,
+                        description: None,
+                    },
+                )),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_completed(
@@ -1613,9 +1862,7 @@ async fn execute_agent_tool_call(
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             let exec_server_msg = agent::ExecServerMessage {
@@ -1632,7 +1879,9 @@ async fn execute_agent_tool_call(
 
             let (output, is_error) = match exec_res {
                 Ok(client_msg) => {
-                    if let Some(agent::exec_client_message::Message::ReadResult(rr)) = client_msg.message {
+                    if let Some(agent::exec_client_message::Message::ReadResult(rr)) =
+                        client_msg.message
+                    {
                         match rr.result {
                             Some(agent::read_result::Result::Success(s)) => {
                                 let content = match s.output {
@@ -1662,7 +1911,10 @@ async fn execute_agent_tool_call(
                             None => (format!("Empty read result for {path}"), false),
                         }
                     } else {
-                        ("[Error] Unexpected response type for read_file".to_string(), true)
+                        (
+                            "[Error] Unexpected response type for read_file".to_string(),
+                            true,
+                        )
                     }
                 }
                 Err(err) => (format!("[Error] {err}"), true),
@@ -1695,7 +1947,9 @@ async fn execute_agent_tool_call(
                                 include_line_numbers: Some(true),
                                 related_cursor_rule_paths: Vec::new(),
                                 related_cursor_rules: Vec::new(),
-                                output: Some(agent::read_tool_success::Output::Content(output.clone())),
+                                output: Some(agent::read_tool_success::Output::Content(
+                                    output.clone(),
+                                )),
                             })
                         }),
                     }),
@@ -1717,19 +1971,43 @@ async fn execute_agent_tool_call(
                 .unwrap_or("")
                 .to_string();
             let content_opt = args_val.get("content").and_then(|v| v.as_str());
-            let old_str = args_val.get("old_string").and_then(|v| v.as_str());
+            let old_str = args_val
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
             let new_str = args_val.get("new_string").and_then(|v| v.as_str());
 
-            let file_text = if let Some(content) = content_opt {
-                content.to_string()
-            } else if let (Some(old), Some(new)) = (old_str, new_str) {
-                if let Ok(existing) = std::fs::read_to_string(&path) {
-                    existing.replace(old, new)
-                } else {
-                    new.to_string()
+            // 按片段改：先经 Cursor 读回工作区里的真文件，再替换唯一的那一处。
+            // 以前在网关进程里按相对路径读（GUI 进程的工作目录是 `/`，几乎必然读不到），读不到就把
+            // `new_string` 当成整份文件写回去——一次编辑抹掉整个文件。替换也是全部出现处一起换。
+            let planned = match (content_opt, old_str, new_str) {
+                (Some(content), _, _) => Ok(content.to_string()),
+                (None, Some(old), Some(new)) => {
+                    read_file_via_client(tx, exec_rx, exec_id | READ_FOR_EDIT_BIT, &path)
+                        .await
+                        .and_then(|existing| replace_exactly_once(&existing, old, new, &path))
                 }
-            } else {
-                new_str.unwrap_or("").to_string()
+                // 只给了 new_string：只当新建文件用，文件已经有内容就不覆盖。
+                (None, None, Some(new)) => {
+                    match read_file_via_client(tx, exec_rx, exec_id | READ_FOR_EDIT_BIT, &path)
+                        .await
+                    {
+                        Err(e) if e.starts_with("File not found") => Ok(new.to_string()),
+                        Ok(existing) if existing.trim().is_empty() => Ok(new.to_string()),
+                        Ok(_) => Err(format!(
+                            "{path} already exists. To change it, pass old_string (exact text to replace) \
+                             and new_string, or pass content with the full new file."
+                        )),
+                        Err(e) => Err(e),
+                    }
+                }
+                _ => {
+                    Err("edit_file needs either content, or old_string and new_string.".to_string())
+                }
+            };
+            let file_text = match planned {
+                Ok(text) => text,
+                Err(message) => return (message, true),
             };
 
             let write_args = agent::WriteArgs {
@@ -1754,9 +2032,7 @@ async fn execute_agent_tool_call(
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             let exec_server_msg = agent::ExecServerMessage {
@@ -1773,7 +2049,9 @@ async fn execute_agent_tool_call(
 
             let (output, is_error) = match exec_res {
                 Ok(client_msg) => {
-                    if let Some(agent::exec_client_message::Message::WriteResult(wr)) = client_msg.message {
+                    if let Some(agent::exec_client_message::Message::WriteResult(wr)) =
+                        client_msg.message
+                    {
                         match wr.result {
                             Some(agent::write_result::Result::Success(_)) => {
                                 (format!("File {path} updated successfully."), false)
@@ -1781,9 +2059,10 @@ async fn execute_agent_tool_call(
                             Some(agent::write_result::Result::Error(e)) => {
                                 (format!("Error writing {path}: {}", e.error), true)
                             }
-                            Some(agent::write_result::Result::PermissionDenied(p)) => {
-                                (format!("Permission denied writing {path}: {}", p.error), true)
-                            }
+                            Some(agent::write_result::Result::PermissionDenied(p)) => (
+                                format!("Permission denied writing {path}: {}", p.error),
+                                true,
+                            ),
                             Some(agent::write_result::Result::Rejected(r)) => {
                                 (format!("Write rejected: {}", r.reason), true)
                             }
@@ -1793,7 +2072,10 @@ async fn execute_agent_tool_call(
                             None => (format!("File {path} written."), false),
                         }
                     } else {
-                        ("[Error] Unexpected response type for edit_file".to_string(), true)
+                        (
+                            "[Error] Unexpected response type for edit_file".to_string(),
+                            true,
+                        )
                     }
                 }
                 Err(err) => (format!("[Error] {err}"), true),
@@ -1863,9 +2145,7 @@ async fn execute_agent_tool_call(
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             let exec_server_msg = agent::ExecServerMessage {
@@ -1882,7 +2162,9 @@ async fn execute_agent_tool_call(
 
             let (output, is_error) = match exec_res {
                 Ok(client_msg) => {
-                    if let Some(agent::exec_client_message::Message::LsResult(lr)) = client_msg.message {
+                    if let Some(agent::exec_client_message::Message::LsResult(lr)) =
+                        client_msg.message
+                    {
                         match lr.result {
                             Some(agent::ls_result::Result::Success(s)) => {
                                 let mut entries = Vec::new();
@@ -1981,15 +2263,15 @@ async fn execute_agent_tool_call(
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             let exec_server_msg = agent::ExecServerMessage {
                 id: exec_id,
                 exec_id: exec_id.to_string(),
-                message: Some(agent::exec_server_message::Message::GrepArgs(grep_args.clone())),
+                message: Some(agent::exec_server_message::Message::GrepArgs(
+                    grep_args.clone(),
+                )),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&wrap_exec_server_message(
@@ -2000,7 +2282,9 @@ async fn execute_agent_tool_call(
 
             let (output, is_error) = match exec_res {
                 Ok(client_msg) => {
-                    if let Some(agent::exec_client_message::Message::GrepResult(gr)) = client_msg.message {
+                    if let Some(agent::exec_client_message::Message::GrepResult(gr)) =
+                        client_msg.message
+                    {
                         match gr.result {
                             Some(agent::grep_result::Result::Success(s)) => {
                                 let mut lines = Vec::new();
@@ -2009,7 +2293,10 @@ async fn execute_agent_tool_call(
                                         Some(agent::grep_union_result::Result::Content(cr)) => {
                                             for m in cr.matches {
                                                 for cm in m.matches {
-                                                    lines.push(format!("{}:{}: {}", file_path, cm.line_number, cm.content));
+                                                    lines.push(format!(
+                                                        "{}:{}: {}",
+                                                        file_path, cm.line_number, cm.content
+                                                    ));
                                                 }
                                             }
                                         }
@@ -2033,7 +2320,10 @@ async fn execute_agent_tool_call(
                             None => (format!("No grep matches for {}", pattern), false),
                         }
                     } else {
-                        ("[Error] Unexpected response for grep_search".to_string(), true)
+                        (
+                            "[Error] Unexpected response for grep_search".to_string(),
+                            true,
+                        )
                     }
                 }
                 Err(err) => (format!("[Error] {err}"), true),
@@ -2086,22 +2376,24 @@ async fn execute_agent_tool_call(
             let started_tc = agent::ToolCall {
                 tool_call_id: Some(tc.id.clone()),
                 started_at_ms: Some(now_ms),
-                tool: Some(agent::tool_call::Tool::DeleteToolCall(agent::DeleteToolCall {
-                    args: Some(delete_args.clone()),
-                    result: None,
-                })),
+                tool: Some(agent::tool_call::Tool::DeleteToolCall(
+                    agent::DeleteToolCall {
+                        args: Some(delete_args.clone()),
+                        result: None,
+                    },
+                )),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             let exec_server_msg = agent::ExecServerMessage {
                 id: exec_id,
                 exec_id: exec_id.to_string(),
-                message: Some(agent::exec_server_message::Message::DeleteArgs(delete_args.clone())),
+                message: Some(agent::exec_server_message::Message::DeleteArgs(
+                    delete_args.clone(),
+                )),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&wrap_exec_server_message(
@@ -2112,7 +2404,9 @@ async fn execute_agent_tool_call(
 
             let (output, is_error) = match exec_res {
                 Ok(client_msg) => {
-                    if let Some(agent::exec_client_message::Message::DeleteResult(dr)) = client_msg.message {
+                    if let Some(agent::exec_client_message::Message::DeleteResult(dr)) =
+                        client_msg.message
+                    {
                         match dr.result {
                             Some(agent::delete_result::Result::Success(_)) => {
                                 (format!("File {path} deleted successfully."), false)
@@ -2126,7 +2420,10 @@ async fn execute_agent_tool_call(
                             _ => (format!("Delete request processed for {path}"), false),
                         }
                     } else {
-                        ("[Error] Unexpected response for delete_file".to_string(), true)
+                        (
+                            "[Error] Unexpected response for delete_file".to_string(),
+                            true,
+                        )
                     }
                 }
                 Err(err) => (format!("[Error] {err}"), true),
@@ -2136,24 +2433,26 @@ async fn execute_agent_tool_call(
                 tool_call_id: Some(tc.id.clone()),
                 started_at_ms: Some(now_ms),
                 completed_at_ms: Some(now_ms + 50),
-                tool: Some(agent::tool_call::Tool::DeleteToolCall(agent::DeleteToolCall {
-                    args: Some(delete_args),
-                    result: Some(agent::DeleteResult {
-                        result: Some(if is_error {
-                            agent::delete_result::Result::Error(agent::DeleteError {
-                                path: path.clone(),
-                                error: output.clone(),
-                            })
-                        } else {
-                            agent::delete_result::Result::Success(agent::DeleteSuccess {
-                                path: path.clone(),
-                                deleted_file: path.clone(),
-                                file_size: 0,
-                                prev_content: String::new(),
-                            })
+                tool: Some(agent::tool_call::Tool::DeleteToolCall(
+                    agent::DeleteToolCall {
+                        args: Some(delete_args),
+                        result: Some(agent::DeleteResult {
+                            result: Some(if is_error {
+                                agent::delete_result::Result::Error(agent::DeleteError {
+                                    path: path.clone(),
+                                    error: output.clone(),
+                                })
+                            } else {
+                                agent::delete_result::Result::Success(agent::DeleteSuccess {
+                                    path: path.clone(),
+                                    deleted_file: path.clone(),
+                                    file_size: 0,
+                                    prev_content: String::new(),
+                                })
+                            }),
                         }),
-                    }),
-                })),
+                    },
+                )),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_completed(
@@ -2176,21 +2475,6 @@ async fn execute_agent_tool_call(
                 .unwrap_or(".")
                 .to_string();
 
-            // 转化为 find 终端指令由 ClientExecController 执行
-            let cmd = format!("find {} -name '*{}*' -maxdepth 5", path, query);
-            let cmd_name = cmd.split_whitespace().next().unwrap_or("find").to_string();
-            let shell_args = agent::ShellArgs {
-                command: cmd.clone(),
-                working_directory: String::new(),
-                timeout: 30,
-                tool_call_id: tc.id.clone(),
-                simple_commands: vec![cmd_name],
-                parsing_result: Some(build_shell_command_parsing_result(&cmd)),
-                skip_approval: true,
-                description: Some(format!("Search files matching {query}")),
-                ..Default::default()
-            };
-
             let started_tc = agent::ToolCall {
                 tool_call_id: Some(tc.id.clone()),
                 started_at_ms: Some(now_ms),
@@ -2204,40 +2488,28 @@ async fn execute_agent_tool_call(
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
-            let exec_server_msg = agent::ExecServerMessage {
-                id: exec_id,
-                exec_id: exec_id.to_string(),
-                message: Some(agent::exec_server_message::Message::ShellArgs(shell_args)),
-                ..Default::default()
+            let found = if cfg!(windows) {
+                // Windows 上 Cursor 的终端是 PowerShell / cmd，那里的 `find` 是在文件里搜文本的
+                // 另一个程序。改让 Cursor 列出目录树，在这边按文件名过滤。
+                list_tree_via_client(tx, exec_rx, exec_id, &path, &tc.id)
+                    .await
+                    .map(|root| {
+                        let mut files = Vec::new();
+                        collect_matching_files(&root, &query, &mut files);
+                        files.join("\n")
+                    })
+            } else {
+                find_files_via_shell(tx, exec_rx, exec_id, &path, &query, &tc.id).await
             };
-            let _ = tx.send(Ok(encode_agent_server_message(&wrap_exec_server_message(
-                exec_server_msg,
-            ))));
-
-            let exec_res = wait_for_exec_result(exec_rx, exec_id, Duration::from_secs(30)).await;
-
-            let (output, is_error) = match exec_res {
-                Ok(client_msg) => {
-                    if let Some(agent::exec_client_message::Message::ShellResult(sr)) = client_msg.message {
-                        if let Some(agent::shell_result::Result::Success(s)) = sr.result {
-                            if s.stdout.trim().is_empty() {
-                                (format!("No files found matching '{}'", query), false)
-                            } else {
-                                (s.stdout, false)
-                            }
-                        } else {
-                            (format!("Search failed for '{}'", query), true)
-                        }
-                    } else {
-                        ("[Error] Unexpected response for file_search".to_string(), true)
-                    }
+            let (output, is_error) = match found {
+                Ok(list) if list.trim().is_empty() => {
+                    (format!("No files found matching '{query}'"), false)
                 }
-                Err(err) => (format!("[Error] {err}"), true),
+                Ok(list) => (list, false),
+                Err(err) => (err, true),
             };
 
             let completed_tc = agent::ToolCall {
@@ -2323,32 +2595,39 @@ async fn execute_agent_tool_call(
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             // 下发 InteractionQuery 驱动前端弹出选项卡
             let query = agent::InteractionQuery {
                 id: exec_id,
-                query: Some(agent::interaction_query::Query::AskQuestionInteractionQuery(
-                    agent::AskQuestionInteractionQuery {
-                        args: Some(ask_args.clone()),
-                        tool_call_id: tc.id.clone(),
-                    },
-                )),
+                query: Some(
+                    agent::interaction_query::Query::AskQuestionInteractionQuery(
+                        agent::AskQuestionInteractionQuery {
+                            args: Some(ask_args.clone()),
+                            tool_call_id: tc.id.clone(),
+                        },
+                    ),
+                ),
             };
             let _ = tx.send(Ok(encode_agent_server_message(&wrap_interaction_query(
                 query,
             ))));
 
             // 等待用户选择答案（最长等待 180 秒）
-            let resp_res = wait_for_interaction_response(interaction_rx, exec_id, Duration::from_secs(180)).await;
+            let resp_res =
+                wait_for_interaction_response(interaction_rx, exec_id, Duration::from_secs(180))
+                    .await;
 
             let answer_text = match resp_res {
                 Ok(resp) => {
-                    if let Some(agent::interaction_response::Result::AskQuestionInteractionResponse(ar)) = resp.result {
-                        if let Some(agent::ask_question_result::Result::Success(s)) = ar.result.and_then(|r| r.result) {
+                    if let Some(
+                        agent::interaction_response::Result::AskQuestionInteractionResponse(ar),
+                    ) = resp.result
+                    {
+                        if let Some(agent::ask_question_result::Result::Success(s)) =
+                            ar.result.and_then(|r| r.result)
+                        {
                             let mut chosen = Vec::new();
                             for ans in s.answers {
                                 if !ans.freeform_text.trim().is_empty() {
@@ -2376,7 +2655,9 @@ async fn execute_agent_tool_call(
                         "Interaction response received".to_string()
                     }
                 }
-                Err(_) => "User did not answer within 180s, continuing with default approach".to_string(),
+                Err(_) => {
+                    "User did not answer within 180s, continuing with default approach".to_string()
+                }
             };
 
             let completed_tc = agent::ToolCall {
@@ -2459,9 +2740,7 @@ async fn execute_agent_tool_call(
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
             let completed_tc = agent::ToolCall {
@@ -2487,7 +2766,10 @@ async fn execute_agent_tool_call(
                 completed_tc,
             ))));
 
-            ("Plan updated and displayed in Composer UI.".to_string(), false)
+            (
+                "Plan updated and displayed in Composer UI.".to_string(),
+                false,
+            )
         }
         "dispatch_subagent" | "task" | "subagent" | "run_subagent" => {
             let description = args_val
@@ -2510,63 +2792,79 @@ async fn execute_agent_tool_call(
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| s.trim().to_string());
 
-            let effective_resume = resume_param.or_else(|| {
-                let lower_prompt = prompt.to_lowercase();
-                let lower_desc = description.to_lowercase();
-                if lower_prompt.contains("上一个")
-                    || lower_prompt.contains("刚才")
-                    || lower_prompt.contains("previous")
-                    || lower_prompt.contains("last subagent")
-                    || lower_desc.contains("上一个")
-                    || lower_desc.contains("刚才")
-                    || lower_desc.contains("previous")
-                {
-                    if let Some(cid) = conv_id {
-                        COMPOSER_CONVERSATION_HISTORY.read().ok().and_then(|h| {
-                            h.get(cid).and_then(|rec| rec.last_subagent_id.clone())
-                        })
+            let effective_resume = resume_param
+                .or_else(|| {
+                    let lower_prompt = prompt.to_lowercase();
+                    let lower_desc = description.to_lowercase();
+                    if lower_prompt.contains("上一个")
+                        || lower_prompt.contains("刚才")
+                        || lower_prompt.contains("previous")
+                        || lower_prompt.contains("last subagent")
+                        || lower_desc.contains("上一个")
+                        || lower_desc.contains("刚才")
+                        || lower_desc.contains("previous")
+                    {
+                        if let Some(cid) = conv_id {
+                            COMPOSER_CONVERSATION_HISTORY.read().ok().and_then(|h| {
+                                h.get(cid).and_then(|rec| rec.last_subagent_id.clone())
+                            })
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
-                } else {
-                    None
-                }
-            }).map(|id| {
-                if id == "last" || id == "latest" {
-                    if let Some(cid) = conv_id {
-                        COMPOSER_CONVERSATION_HISTORY.read().ok().and_then(|h| {
-                            h.get(cid).and_then(|rec| rec.last_subagent_id.clone())
-                        }).unwrap_or(id)
+                })
+                .map(|id| {
+                    if id == "last" || id == "latest" {
+                        if let Some(cid) = conv_id {
+                            COMPOSER_CONVERSATION_HISTORY
+                                .read()
+                                .ok()
+                                .and_then(|h| {
+                                    h.get(cid).and_then(|rec| rec.last_subagent_id.clone())
+                                })
+                                .unwrap_or(id)
+                        } else {
+                            id
+                        }
                     } else {
                         id
                     }
-                } else {
-                    id
-                }
-            });
+                });
 
-            let (subagent_id, mut sub_messages, mut sub_conversation_steps, is_resumed) = if let Some(ref rid) = effective_resume {
-                if let Some(existing) = SUBAGENT_SESSIONS.read().unwrap().get(rid).cloned() {
-                    let mut msgs = existing.messages;
-                    let follow_up = if prompt.trim().is_empty() { description.clone() } else { prompt.clone() };
-                    msgs.push(Message::text(Role::User, follow_up));
-                    (rid.clone(), msgs, existing.conversation_steps, true)
-                } else {
-                    let new_id = format!("subagent_{}", uuid::Uuid::new_v4().simple());
-                    let msgs = vec![
+            let (subagent_id, mut sub_messages, mut sub_conversation_steps, is_resumed) =
+                if let Some(ref rid) = effective_resume {
+                    if let Some(existing) = SUBAGENT_SESSIONS
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(rid)
+                        .cloned()
+                    {
+                        let mut msgs = existing.messages;
+                        let follow_up = if prompt.trim().is_empty() {
+                            description.clone()
+                        } else {
+                            prompt.clone()
+                        };
+                        msgs.push(Message::text(Role::User, follow_up));
+                        (rid.clone(), msgs, existing.conversation_steps, true)
+                    } else {
+                        let new_id = format!("subagent_{}", uuid::Uuid::new_v4().simple());
+                        let msgs = vec![
                         Message::text(
                             Role::System,
                             format!(
-                                "You are an autonomous subagent for Cursor. Your objective is: {description}\nDetailed instructions: {prompt}\nInvestigate or execute thoroughly using your tools and provide a structured, comprehensive summary of your findings and conclusions."
+                                "You are an autonomous subagent for Cursor. Your objective is: {description}\nDetailed instructions: {prompt}\nInvestigate thoroughly with your read-only tools (read_file, list_dir, grep_search, file_search). You cannot run commands or change files. Finish with a structured, comprehensive summary of your findings and conclusions."
                             ),
                         ),
                         Message::text(Role::User, if prompt.trim().is_empty() { description.clone() } else { prompt.clone() }),
                     ];
-                    (new_id, msgs, Vec::new(), false)
-                }
-            } else {
-                let new_id = format!("subagent_{}", uuid::Uuid::new_v4().simple());
-                let msgs = vec![
+                        (new_id, msgs, Vec::new(), false)
+                    }
+                } else {
+                    let new_id = format!("subagent_{}", uuid::Uuid::new_v4().simple());
+                    let msgs = vec![
                     Message::text(
                         Role::System,
                         format!(
@@ -2575,15 +2873,19 @@ async fn execute_agent_tool_call(
                     ),
                     Message::text(Role::User, if prompt.trim().is_empty() { description.clone() } else { prompt.clone() }),
                 ];
-                (new_id, msgs, Vec::new(), false)
-            };
+                    (new_id, msgs, Vec::new(), false)
+                };
 
             let task_args = agent::TaskArgs {
                 description: description.clone(),
                 prompt: prompt.clone(),
                 subagent_type: None,
                 model: None,
-                resume: if is_resumed { Some(subagent_id.clone()) } else { None },
+                resume: if is_resumed {
+                    Some(subagent_id.clone())
+                } else {
+                    None
+                },
                 agent_id: Some(subagent_id.clone()),
                 attachments: Vec::new(),
                 mode: 0,
@@ -2595,30 +2897,33 @@ async fn execute_agent_tool_call(
             let started_tc = agent::ToolCall {
                 tool_call_id: Some(tc.id.clone()),
                 started_at_ms: Some(now_ms),
-                tool: Some(agent::tool_call::Tool::TaskToolCall(
-                    agent::TaskToolCall {
-                        args: Some(task_args.clone()),
-                        result: None,
-                        cloud_agent_bc_id: None,
-                    },
-                )),
+                tool: Some(agent::tool_call::Tool::TaskToolCall(agent::TaskToolCall {
+                    args: Some(task_args.clone()),
+                    result: None,
+                    cloud_agent_bc_id: None,
+                })),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_started(
-                &tc.id,
-                &tc.id,
-                started_tc,
+                &tc.id, &tc.id, started_tc,
             ))));
 
-            eprintln!("[NEXUS-SUBAGENT] Start (id={}, resumed={}): desc={description}, prompt_len={}", subagent_id, is_resumed, prompt.len());
+            debug!(
+                "Start (id={}, resumed={}): desc={description}, prompt_len={}",
+                subagent_id,
+                is_resumed,
+                prompt.len()
+            );
 
             // 构造子代理执行轨迹记录，以便用户点击子代理卡片时查看到真实的子任务过程
             if is_resumed {
                 sub_conversation_steps.push(agent::ConversationStep {
                     message: Some(agent::conversation_step::Message::AssistantMessage(
                         agent::AssistantMessage {
-                            text: format!("**追加指令 (继续会话 `{}`)**: {}\n{}", subagent_id, description, prompt),
-                            ..Default::default()
+                            text: format!(
+                                "**追加指令 (继续会话 `{}`)**: {}\n{}",
+                                subagent_id, description, prompt
+                            ),
                         },
                     )),
                 });
@@ -2631,29 +2936,33 @@ async fn execute_agent_tool_call(
                             } else {
                                 format!("**子代理任务目标**: {}\n{}", description, prompt)
                             },
-                            ..Default::default()
                         },
                     )),
                 });
             }
 
             // 子代理多步工具循环（上限 5 步）
+            let mut sub_exec_seq: u32 = 0;
             let sub_start = std::time::Instant::now();
             let mut final_summary = String::new();
             let mut sub_is_err = false;
 
             for sub_step in 0..5 {
-                eprintln!("[NEXUS-SUBAGENT] step={sub_step}, messages_count={}", sub_messages.len());
+                debug!("step={sub_step}, messages_count={}", sub_messages.len());
                 let sub_chat_req = ChatRequest {
                     model: target_model.to_string(),
                     messages: sub_messages.clone(),
                     tools: default_cursor_agent_tools()
                         .into_iter()
-                        .filter(|t| t.name != "dispatch_subagent" && t.name != "task" && t.name != "subagent")
+                        .filter(|t| SUBAGENT_TOOLS.contains(&t.name.as_str()))
                         .collect(),
                     tool_choice: ToolChoice::Auto,
                     sampling: Sampling::default(),
-                    conversation_id: Some(format!("{}_sub_{}", conv_id.unwrap_or("conv"), subagent_id)),
+                    conversation_id: Some(format!(
+                        "{}_sub_{}",
+                        conv_id.unwrap_or("conv"),
+                        subagent_id
+                    )),
                     raw_responses: None,
                     raw_inbound: None,
                     client_headers: HashMap::new(),
@@ -2662,24 +2971,27 @@ async fn execute_agent_tool_call(
                 // 在子任务执行期间向前端发送思考增量保活，避免 HTTP 连接空闲超时
                 let tx_sub = tx.clone();
                 let mut step_text = String::new();
-                let mut on_sub_delta = |delta: Delta| {
-                    match delta {
-                        Delta::Text(t) => {
-                            step_text.push_str(&t);
-                        }
-                        Delta::Thinking(th) => {
-                            if !th.is_empty() {
-                                let _ = tx_sub.send(Ok(encode_agent_server_message(&build_thinking_delta(th))));
-                            }
-                        }
-                        _ => {}
+                let mut on_sub_delta = |delta: Delta| match delta {
+                    Delta::Text(t) => {
+                        step_text.push_str(&t);
                     }
+                    Delta::Thinking(th) if !th.is_empty() => {
+                        let _ =
+                            tx_sub.send(Ok(encode_agent_server_message(&build_thinking_delta(th))));
+                    }
+                    _ => {}
                 };
 
-                let sub_res = upstream.stream(credential, &sub_chat_req, &mut on_sub_delta).await;
+                let sub_res = upstream
+                    .stream(credential, &sub_chat_req, &mut on_sub_delta)
+                    .await;
                 match sub_res {
                     Ok(comp) => {
-                        eprintln!("[NEXUS-SUBAGENT] step={sub_step} comp tool_calls={} text_len={}", comp.tool_calls.len(), comp.text.len());
+                        debug!(
+                            "step={sub_step} comp tool_calls={} text_len={}",
+                            comp.tool_calls.len(),
+                            comp.text.len()
+                        );
                         if comp.tool_calls.is_empty() {
                             final_summary = if !comp.text.is_empty() {
                                 comp.text
@@ -2702,12 +3014,45 @@ async fn execute_agent_tool_call(
                         });
 
                         for sub_tc in &comp.tool_calls {
-                            let (tool_out, is_err) = execute_subagent_tool_locally(sub_tc);
+                            // 子代理的工具也交给 Cursor 在工作区里执行，和主代理同一条路：
+                            // 路径按工作区解析、权限按 Cursor 的规则走。以前在网关进程里直接
+                            // `sh -c`，工作目录是 GUI 进程的 `/`，还不经过任何确认。
+                            sub_exec_seq = sub_exec_seq.wrapping_add(1);
+                            let sub_exec_id = SUBAGENT_EXEC_BIT
+                                | (exec_id.wrapping_mul(64).wrapping_add(sub_exec_seq)
+                                    & (SUBAGENT_EXEC_BIT - 1));
+                            let (tool_out, is_err) = if SUBAGENT_TOOLS
+                                .contains(&sub_tc.name.as_str())
+                            {
+                                execute_subagent_tool_call(
+                                    upstream,
+                                    credential,
+                                    target_model,
+                                    conv_id,
+                                    tx,
+                                    exec_rx,
+                                    interaction_rx,
+                                    sub_tc,
+                                    sub_exec_id,
+                                )
+                                .await
+                            } else {
+                                (
+                                        format!(
+                                            "{} is not available to subagents. Subagents can only read and search \
+                                             (read_file, list_dir, grep_search, file_search); report findings back instead.",
+                                            sub_tc.name
+                                        ),
+                                        true,
+                                    )
+                            };
                             sub_conversation_steps.push(agent::ConversationStep {
                                 message: Some(agent::conversation_step::Message::AssistantMessage(
                                     agent::AssistantMessage {
-                                        text: format!("🛠️ 调用工具: `{}`\n```json\n{}\n```", sub_tc.name, sub_tc.arguments),
-                                        ..Default::default()
+                                        text: format!(
+                                            "🛠️ 调用工具: `{}`\n```json\n{}\n```",
+                                            sub_tc.name, sub_tc.arguments
+                                        ),
                                     },
                                 )),
                             });
@@ -2729,7 +3074,7 @@ async fn execute_agent_tool_call(
                         }
                     }
                     Err(err) => {
-                        eprintln!("[NEXUS-SUBAGENT] upstream.stream error: {err}");
+                        debug!("upstream.stream error: {err}");
                         warn!(error = %err, "子代理执行出错");
                         final_summary = format!("Subagent error: {}", err);
                         sub_is_err = true;
@@ -2750,14 +3095,33 @@ async fn execute_agent_tool_call(
                 message: Some(agent::conversation_step::Message::AssistantMessage(
                     agent::AssistantMessage {
                         text: sub_summary.clone(),
-                        ..Default::default()
                     },
                 )),
             });
-            SUBAGENT_SESSIONS.write().unwrap().insert(subagent_id.clone(), SubagentSession {
-                messages: sub_messages,
-                conversation_steps: sub_conversation_steps.clone(),
-            });
+            {
+                let mut sessions = SUBAGENT_SESSIONS.write().unwrap_or_else(|e| e.into_inner());
+                sessions.retain(|_, s| s.touched.is_some_and(|t| t.elapsed() < HISTORY_TTL));
+                while sessions.len() >= MAX_CACHED_CONVERSATIONS
+                    && !sessions.contains_key(&subagent_id)
+                {
+                    let Some(oldest) = sessions
+                        .iter()
+                        .min_by_key(|(_, s)| s.touched)
+                        .map(|(k, _)| k.clone())
+                    else {
+                        break;
+                    };
+                    sessions.remove(&oldest);
+                }
+                sessions.insert(
+                    subagent_id.clone(),
+                    SubagentSession {
+                        messages: sub_messages,
+                        conversation_steps: sub_conversation_steps.clone(),
+                        touched: Some(Instant::now()),
+                    },
+                );
+            }
             if let Some(cid) = conv_id {
                 if let Ok(mut cache) = COMPOSER_CONVERSATION_HISTORY.write() {
                     if let Some(rec) = cache.get_mut(cid) {
@@ -2772,25 +3136,21 @@ async fn execute_agent_tool_call(
                 tool_call_id: Some(tc.id.clone()),
                 started_at_ms: Some(now_ms),
                 completed_at_ms: Some(now_ms + duration_ms),
-                tool: Some(agent::tool_call::Tool::TaskToolCall(
-                    agent::TaskToolCall {
-                        args: Some(task_args),
-                        result: Some(agent::TaskResult {
-                            result: Some(agent::task_result::Result::Success(
-                                agent::TaskSuccess {
-                                    conversation_steps: sub_conversation_steps,
-                                    agent_id: Some(subagent_id.clone()),
-                                    is_background: false,
-                                    duration_ms: Some(duration_ms),
-                                    result_suffix: Some(sub_summary.clone()),
-                                    background_reason: 0,
-                                    transcript_path: None,
-                                },
-                            )),
-                        }),
-                        cloud_agent_bc_id: None,
-                    },
-                )),
+                tool: Some(agent::tool_call::Tool::TaskToolCall(agent::TaskToolCall {
+                    args: Some(task_args),
+                    result: Some(agent::TaskResult {
+                        result: Some(agent::task_result::Result::Success(agent::TaskSuccess {
+                            conversation_steps: sub_conversation_steps,
+                            agent_id: Some(subagent_id.clone()),
+                            is_background: false,
+                            duration_ms: Some(duration_ms),
+                            result_suffix: Some(sub_summary.clone()),
+                            background_reason: 0,
+                            transcript_path: None,
+                        })),
+                    }),
+                    cloud_agent_bc_id: None,
+                })),
                 ..Default::default()
             };
             let _ = tx.send(Ok(encode_agent_server_message(&build_tool_call_completed(
@@ -2799,7 +3159,10 @@ async fn execute_agent_tool_call(
                 completed_tc,
             ))));
 
-            (format!("Subagent [{}] output:\n{}", subagent_id, sub_summary), is_err)
+            (
+                format!("Subagent [{}] output:\n{}", subagent_id, sub_summary),
+                is_err,
+            )
         }
         unknown => {
             warn!(tool_name = %unknown, "未识别的 Agent 工具调用，返回占位错误");
@@ -2847,17 +3210,27 @@ async fn drive_agent_turn(
     if !chat_req.model.contains('/') {
         let m_lower = chat_req.model.to_ascii_lowercase();
         if m_lower.starts_with("kiro-") {
-            if gw.channels.get("mesh").is_some_and(|c| c.gate.owns(crate::channel::Capability::Chat, &chat_req.model)) {
+            if gw.channels.get("mesh").is_some_and(|c| {
+                c.gate
+                    .owns(crate::channel::Capability::Chat, &chat_req.model)
+            }) {
                 // 由 MeshGate 直接认领
             } else if gw.channels.get("kiro").is_some() {
                 chat_req.model = format!("kiro/{}", chat_req.model);
             }
-        } else if m_lower.contains("gpt-5") || m_lower.contains("gpt-4") || m_lower.starts_with("o1") || m_lower.starts_with("o3") {
+        } else if m_lower.contains("gpt-5")
+            || m_lower.contains("gpt-4")
+            || m_lower.starts_with("o1")
+            || m_lower.starts_with("o3")
+        {
             if gw.channels.get("chatgpt").is_some() {
                 chat_req.model = format!("chatgpt/{}", chat_req.model);
             }
         } else if m_lower.contains("claude-") {
-            if gw.channels.get("mesh").is_some_and(|c| c.gate.owns(crate::channel::Capability::Chat, &chat_req.model)) {
+            if gw.channels.get("mesh").is_some_and(|c| {
+                c.gate
+                    .owns(crate::channel::Capability::Chat, &chat_req.model)
+            }) {
                 // 由 MeshGate 直接认领
             } else if gw.channels.get("claude").is_some() {
                 chat_req.model = format!("claude/{}", chat_req.model);
@@ -2872,7 +3245,10 @@ async fn drive_agent_turn(
         tools_count = chat_req.tools.len(),
         "开始执行 Agent 多步推理循环"
     );
-    eprintln!("[NEXUS-AGENT] Starting agent loop: request_id={request_id}, model={}", chat_req.model);
+    debug!(
+        "Starting agent loop: request_id={request_id}, model={}",
+        chat_req.model
+    );
 
     // 3. 通道寻路与可用性门禁
     let route = gw.route(&chat_req.model, Capability::Chat);
@@ -2948,16 +3324,34 @@ async fn drive_agent_turn(
         };
 
         debug!(step = step, "启动 Agentic 单步推理");
-        let stream_res = upstream.stream(&credential, &chat_req, &mut on_delta).await;
+        let stream_res = tokio::select! {
+            r = upstream.stream(&credential, &chat_req, &mut on_delta) => r,
+            // Cursor 那头停了（点了 Stop、关了窗口）：丢掉上游这一轮，别替它把剩下的步骤跑完。
+            _ = tx.closed() => {
+                info!(request_id = %request_id, step = step, "Cursor 已断开，停止这一轮");
+                GLOBAL_SESSIONS.remove(&request_id, conv_id.as_deref());
+                return;
+            }
+        };
 
         match stream_res {
             Ok(completion) => {
                 let elapsed = started.elapsed();
-                total_usage.input_tokens = total_usage.input_tokens.saturating_add(completion.usage.input_tokens);
-                total_usage.output_tokens = total_usage.output_tokens.saturating_add(completion.usage.output_tokens);
-                total_usage.cache_read_tokens = total_usage.cache_read_tokens.saturating_add(completion.usage.cache_read_tokens);
-                total_usage.cache_write_tokens = total_usage.cache_write_tokens.saturating_add(completion.usage.cache_write_tokens);
-                total_usage.reasoning_tokens = total_usage.reasoning_tokens.saturating_add(completion.usage.reasoning_tokens);
+                total_usage.input_tokens = total_usage
+                    .input_tokens
+                    .saturating_add(completion.usage.input_tokens);
+                total_usage.output_tokens = total_usage
+                    .output_tokens
+                    .saturating_add(completion.usage.output_tokens);
+                total_usage.cache_read_tokens = total_usage
+                    .cache_read_tokens
+                    .saturating_add(completion.usage.cache_read_tokens);
+                total_usage.cache_write_tokens = total_usage
+                    .cache_write_tokens
+                    .saturating_add(completion.usage.cache_write_tokens);
+                total_usage.reasoning_tokens = total_usage
+                    .reasoning_tokens
+                    .saturating_add(completion.usage.reasoning_tokens);
 
                 if has_thinking.load(Ordering::Relaxed) {
                     let th_done = build_thinking_completed(elapsed.as_millis() as i32);
@@ -3003,6 +3397,12 @@ async fn drive_agent_turn(
 
                 // 逐一执行工具并回传结果
                 for tc in &completion.tool_calls {
+                    // 下行已经关了：执行结果不会再回来，别一个个工具干等到超时。
+                    if tx.is_closed() {
+                        info!(request_id = %request_id, "Cursor 已断开，不再执行剩下的工具");
+                        GLOBAL_SESSIONS.remove(&request_id, conv_id.as_deref());
+                        return;
+                    }
                     let exec_id = exec_id_counter;
                     exec_id_counter = exec_id_counter.saturating_add(1);
 
@@ -3023,7 +3423,8 @@ async fn drive_agent_turn(
                             &mut interaction_rx,
                             tc,
                             exec_id,
-                        ).await
+                        )
+                        .await
                     };
 
                     // 16KB 上限截断保护
@@ -3105,9 +3506,17 @@ async fn drive_agent_turn(
         }
 
         if let Ok(mut cache) = COMPOSER_CONVERSATION_HISTORY.write() {
-            if cache.len() > 100 {
-                let now = Instant::now();
-                cache.retain(|_, v| now.duration_since(v.last_updated).as_secs() < 86400);
+            // 每条记录是一整段对话（含读过的文件内容）。过期的先清，超过上限就丢最久没碰的。
+            cache.retain(|_, v| v.last_updated.elapsed() < HISTORY_TTL);
+            while cache.len() >= MAX_CACHED_CONVERSATIONS && !cache.contains_key(cid) {
+                let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, v)| v.last_updated)
+                    .map(|(k, _)| k.clone())
+                else {
+                    break;
+                };
+                cache.remove(&oldest);
             }
             let prev_last_subagent = cache.get(cid).and_then(|r| r.last_subagent_id.clone());
             cache.insert(
@@ -3151,7 +3560,11 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
     if let Some(ref t) = tc.tool {
         match t {
             agent::tool_call::Tool::TaskToolCall(task) => {
-                let desc = task.args.as_ref().map(|a| a.description.as_str()).unwrap_or("");
+                let desc = task
+                    .args
+                    .as_ref()
+                    .map(|a| a.description.as_str())
+                    .unwrap_or("");
                 let prompt = task.args.as_ref().map(|a| a.prompt.as_str()).unwrap_or("");
                 let resume = task.args.as_ref().and_then(|a| a.resume.as_deref());
                 (
@@ -3160,18 +3573,24 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                         "description": desc,
                         "prompt": prompt,
                         "resume": resume,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::ShellToolCall(s) => {
                 let cmd = s.args.as_ref().map(|a| a.command.as_str()).unwrap_or("");
-                let cwd = s.args.as_ref().map(|a| a.working_directory.as_str()).unwrap_or("");
+                let cwd = s
+                    .args
+                    .as_ref()
+                    .map(|a| a.working_directory.as_str())
+                    .unwrap_or("");
                 (
                     "run_terminal_command".to_string(),
                     serde_json::json!({
                         "command": cmd,
                         "working_directory": cwd,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::ReadToolCall(r) => {
@@ -3180,7 +3599,8 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                     "read_file".to_string(),
                     serde_json::json!({
                         "path": path,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::EditToolCall(e) => {
@@ -3189,7 +3609,8 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                     "edit_file".to_string(),
                     serde_json::json!({
                         "path": path,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::LsToolCall(l) => {
@@ -3198,7 +3619,8 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                     "list_dir".to_string(),
                     serde_json::json!({
                         "path": path,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::GrepToolCall(g) => {
@@ -3207,16 +3629,22 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                     "grep_search".to_string(),
                     serde_json::json!({
                         "pattern": pattern,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::GlobToolCall(g) => {
-                let pattern = g.args.as_ref().map(|a| a.glob_pattern.as_str()).unwrap_or("");
+                let pattern = g
+                    .args
+                    .as_ref()
+                    .map(|a| a.glob_pattern.as_str())
+                    .unwrap_or("");
                 (
                     "file_search".to_string(),
                     serde_json::json!({
                         "pattern": pattern,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::DeleteToolCall(d) => {
@@ -3225,7 +3653,8 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                     "delete_file".to_string(),
                     serde_json::json!({
                         "path": path,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::AskQuestionToolCall(q) => {
@@ -3234,7 +3663,8 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                     "ask_question".to_string(),
                     serde_json::json!({
                         "question": question,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             agent::tool_call::Tool::CreatePlanToolCall(p) => {
@@ -3243,7 +3673,8 @@ fn extract_tool_info(tc: &agent::ToolCall) -> (String, String) {
                     "update_plan".to_string(),
                     serde_json::json!({
                         "plan": plan,
-                    }).to_string(),
+                    })
+                    .to_string(),
                 )
             }
             _ => ("unknown".to_string(), "{}".to_string()),
@@ -3280,14 +3711,20 @@ fn parse_json_message(val: &serde_json::Value) -> Option<Message> {
     let mut tool_calls = Vec::new();
     if let Some(tc_arr) = val.get("tool_calls").and_then(|v| v.as_array()) {
         for tc in tc_arr {
-            let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let name = tc.get("function")
+            let id = tc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let name = tc
+                .get("function")
                 .and_then(|f| f.get("name"))
                 .and_then(|v| v.as_str())
                 .or_else(|| tc.get("name").and_then(|v| v.as_str()))
                 .unwrap_or_default()
                 .to_string();
-            let args = tc.get("function")
+            let args = tc
+                .get("function")
                 .and_then(|f| f.get("arguments"))
                 .and_then(|v| v.as_str())
                 .or_else(|| tc.get("arguments").and_then(|v| v.as_str()))
@@ -3305,13 +3742,24 @@ fn parse_json_message(val: &serde_json::Value) -> Option<Message> {
 
     let mut tool_results = Vec::new();
     if role == Role::Tool {
-        let tc_id = val.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let name = val.get("name").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let tc_id = val
+            .get("tool_call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let name = val
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
         tool_results.push(crate::normalized::ToolResult {
             tool_call_id: tc_id,
             tool_name: name,
             text: text.clone(),
-            is_error: val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
+            is_error: val
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             images: Vec::new(),
         });
         text.clear();
@@ -3446,7 +3894,9 @@ fn decode_turn_bytes(turn_bytes: &[u8]) -> Option<Vec<Message>> {
 
     // 1. 尝试按 ConversationTurnStructure 解码
     if let Ok(turn_struct) = agent::ConversationTurnStructure::decode(turn_bytes) {
-        if let Some(agent::conversation_turn_structure::Turn::AgentConversationTurn(act)) = turn_struct.turn {
+        if let Some(agent::conversation_turn_structure::Turn::AgentConversationTurn(act)) =
+            turn_struct.turn
+        {
             return Some(decode_agent_turn_structure(act));
         }
     }
@@ -3509,7 +3959,10 @@ fn decode_conversation_history_messages(history: &agent::ConversationHistory) ->
                 agent::conversation_history_message::Message::User(u) => {
                     let mut user_text = String::new();
                     for part in &u.content {
-                        if let Some(agent::conversation_history_user_content::Content::Text(ref t)) = part.content {
+                        if let Some(agent::conversation_history_user_content::Content::Text(
+                            ref t,
+                        )) = part.content
+                        {
                             user_text.push_str(&t.text);
                         }
                     }
@@ -3523,17 +3976,27 @@ fn decode_conversation_history_messages(history: &agent::ConversationHistory) ->
                     let mut reasoning = Vec::new();
                     for part in &a.content {
                         match &part.content {
-                            Some(agent::conversation_history_assistant_content::Content::Text(t)) => {
+                            Some(agent::conversation_history_assistant_content::Content::Text(
+                                t,
+                            )) => {
                                 asst_text.push_str(&t.text);
                             }
-                            Some(agent::conversation_history_assistant_content::Content::Reasoning(r)) => {
+                            Some(
+                                agent::conversation_history_assistant_content::Content::Reasoning(
+                                    r,
+                                ),
+                            ) => {
                                 reasoning.push(crate::normalized::Reasoning {
                                     text: r.text.clone(),
                                     signature: r.signature.clone(),
                                     redacted: None,
                                 });
                             }
-                            Some(agent::conversation_history_assistant_content::Content::ToolCall(tc)) => {
+                            Some(
+                                agent::conversation_history_assistant_content::Content::ToolCall(
+                                    tc,
+                                ),
+                            ) => {
                                 tool_calls.push(crate::normalized::ToolCall {
                                     id: tc.tool_call_id.clone(),
                                     name: tc.tool_name.clone(),
@@ -3557,7 +4020,10 @@ fn decode_conversation_history_messages(history: &agent::ConversationHistory) ->
                 agent::conversation_history_message::Message::Tool(t) => {
                     let mut result_text = String::new();
                     for part in &t.content {
-                        if let Some(agent::conversation_history_tool_result_content::Content::Text(ref txt)) = part.content {
+                        if let Some(
+                            agent::conversation_history_tool_result_content::Content::Text(ref txt),
+                        ) = part.content
+                        {
                             result_text.push_str(&txt.text);
                         }
                     }
@@ -3590,8 +4056,8 @@ pub fn build_chat_request_from_run(
     let conv_id = run_req
         .conversation_id
         .as_deref()
-        .or_else(|| run_req.agent_session_id.as_deref())
-        .or_else(|| run_req.conversation_group_id.as_deref());
+        .or(run_req.agent_session_id.as_deref())
+        .or(run_req.conversation_group_id.as_deref());
 
     // 1. 提取自选模型名
     let raw_model = run_req
@@ -3640,7 +4106,9 @@ pub fn build_chat_request_from_run(
     // 优先级 2: 从 action.user_action.conversation_history 解码（若客户端提供了显式结构化历史）
     if history_messages.is_empty() {
         if let Some(ref action_wrapper) = run_req.action {
-            if let Some(agent::conversation_action::Action::UserMessageAction(ref user_action)) = action_wrapper.action {
+            if let Some(agent::conversation_action::Action::UserMessageAction(ref user_action)) =
+                action_wrapper.action
+            {
                 if let Some(ref history) = user_action.conversation_history {
                     history_messages = decode_conversation_history_messages(history);
                 }
@@ -3665,6 +4133,7 @@ pub fn build_chat_request_from_run(
     }
 
     // 3. 处理当前 Action 与输入
+    #[allow(clippy::collapsible_match)]
     if let Some(ref action_wrapper) = run_req.action {
         if let Some(ref action) = action_wrapper.action {
             if let agent::conversation_action::Action::UserMessageAction(ref user_action) = action {
@@ -3701,7 +4170,8 @@ pub fn build_chat_request_from_run(
                         for r in &ctx.cursor_rules {
                             if let Some(ref rule) = r.rule {
                                 if !rule.content.trim().is_empty() {
-                                    ctx_block.push_str(&format!("\n--- Rule ---\n{}\n", rule.content));
+                                    ctx_block
+                                        .push_str(&format!("\n--- Rule ---\n{}\n", rule.content));
                                 }
                             }
                         }
@@ -3822,7 +4292,9 @@ mod tests {
         assert_eq!(len, frame.len() - 5);
 
         let decoded = agent::AgentServerMessage::decode(&frame[5..]).expect("valid decode");
-        if let Some(agent::agent_server_message::Message::InteractionUpdate(update)) = decoded.message {
+        if let Some(agent::agent_server_message::Message::InteractionUpdate(update)) =
+            decoded.message
+        {
             if let Some(agent::interaction_update::Message::TextDelta(delta)) = update.message {
                 assert_eq!(delta.text, "Hello Cursor Agent");
             } else {
@@ -3837,7 +4309,8 @@ mod tests {
     fn test_end_stream_envelope() {
         let end_frame = encode_end_stream();
         assert_eq!(end_frame[0], CONNECT_END_STREAM_FLAG);
-        let len = u32::from_be_bytes([end_frame[1], end_frame[2], end_frame[3], end_frame[4]]) as usize;
+        let len =
+            u32::from_be_bytes([end_frame[1], end_frame[2], end_frame[3], end_frame[4]]) as usize;
         assert_eq!(len, 2);
         assert_eq!(&end_frame[5..], b"{}");
     }
@@ -3921,7 +4394,10 @@ mod tests {
                 _credential: &'a crate::lane::Credential,
                 _request: &'a crate::normalized::ChatRequest,
                 _on_delta: crate::upstream::DeltaSink<'a>,
-            ) -> crate::lane::BoxFuture<'a, Result<crate::normalized::Completion, crate::error::UpstreamError>> {
+            ) -> crate::lane::BoxFuture<
+                'a,
+                Result<crate::normalized::Completion, crate::error::UpstreamError>,
+            > {
                 Box::pin(async { unimplemented!() })
             }
         }
@@ -3938,7 +4414,10 @@ mod tests {
 
         let res = handle_run_sse(State(gw.clone()), headers, body).await;
         assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(res.headers().get("content-type").unwrap(), "text/event-stream");
+        assert_eq!(
+            res.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
         assert_eq!(res.headers().get("connect-protocol-version").unwrap(), "1");
 
         // 2. 模拟服务端推送 ThinkingDelta, TextDelta, TurnEnded, EndStream
@@ -3951,7 +4430,8 @@ mod tests {
         tx.send(Ok(encode_agent_server_message(&text))).unwrap();
 
         let turn_ended = build_turn_ended(None);
-        tx.send(Ok(encode_agent_server_message(&turn_ended))).unwrap();
+        tx.send(Ok(encode_agent_server_message(&turn_ended)))
+            .unwrap();
 
         tx.send(Ok(encode_end_stream())).unwrap();
         drop(tx);
@@ -4061,21 +4541,23 @@ mod tests {
         // 模拟客户端通过 BidiAppend 按 req_id 投递 InteractionResponse
         let inter_resp = agent::InteractionResponse {
             id: 101,
-            result: Some(agent::interaction_response::Result::AskQuestionInteractionResponse(
-                agent::AskQuestionInteractionResponse {
-                    result: Some(agent::AskQuestionResult {
-                        result: Some(agent::ask_question_result::Result::Success(
-                            agent::AskQuestionSuccess {
-                                answers: vec![agent::ask_question_success::Answer {
-                                    question_id: "q1".into(),
-                                    selected_option_ids: vec!["opt_0".into()],
-                                    freeform_text: "Proceed with Option A".into(),
-                                }],
-                            },
-                        )),
-                    }),
-                },
-            )),
+            result: Some(
+                agent::interaction_response::Result::AskQuestionInteractionResponse(
+                    agent::AskQuestionInteractionResponse {
+                        result: Some(agent::AskQuestionResult {
+                            result: Some(agent::ask_question_result::Result::Success(
+                                agent::AskQuestionSuccess {
+                                    answers: vec![agent::ask_question_success::Answer {
+                                        question_id: "q1".into(),
+                                        selected_option_ids: vec!["opt_0".into()],
+                                        freeform_text: "Proceed with Option A".into(),
+                                    }],
+                                },
+                            )),
+                        }),
+                    },
+                ),
+            ),
         };
 
         registry.dispatch_interaction(req_id, inter_resp.clone());
@@ -4107,11 +4589,13 @@ mod tests {
                 message: Some(agent::conversation_history_message::Message::Assistant(
                     agent::ConversationHistoryAssistantMessage {
                         content: vec![agent::ConversationHistoryAssistantContent {
-                            content: Some(agent::conversation_history_assistant_content::Content::Text(
-                                agent::ConversationHistoryTextContent {
-                                    text: format!("Assistant answer {}", i),
-                                },
-                            )),
+                            content: Some(
+                                agent::conversation_history_assistant_content::Content::Text(
+                                    agent::ConversationHistoryTextContent {
+                                        text: format!("Assistant answer {}", i),
+                                    },
+                                ),
+                            ),
                         }],
                     },
                 )),
@@ -4144,24 +4628,30 @@ mod tests {
         assert_eq!(chat_req.messages[0].role, Role::System);
         assert_eq!(chat_req.messages[1].text, "User question 0");
         assert_eq!(chat_req.messages[32].text, "Assistant answer 15");
-        assert_eq!(chat_req.messages.last().unwrap().text, "Final latest prompt");
+        assert_eq!(
+            chat_req.messages.last().unwrap().text,
+            "Final latest prompt"
+        );
     }
 
     #[test]
     fn test_multi_turn_history_restoration_from_session_cache() {
         let conv_id = "conv-cache-test-999";
         // 模拟第 1 轮结束后存入网关会话池
-        COMPOSER_CONVERSATION_HISTORY.write().unwrap().insert(
-            conv_id.to_string(),
-            ComposerConversationRecord {
-                last_updated: Instant::now(),
-                messages: vec![
-                    Message::text(Role::User, "Hello assistant!"),
-                    Message::text(Role::Assistant, "Hello! I am your AI assistant."),
-                ],
-                last_subagent_id: Some("subagent_test_42".to_string()),
-            },
-        );
+        COMPOSER_CONVERSATION_HISTORY
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                conv_id.to_string(),
+                ComposerConversationRecord {
+                    last_updated: Instant::now(),
+                    messages: vec![
+                        Message::text(Role::User, "Hello assistant!"),
+                        Message::text(Role::Assistant, "Hello! I am your AI assistant."),
+                    ],
+                    last_subagent_id: Some("subagent_test_42".to_string()),
+                },
+            );
 
         // 模拟 Cursor 第 2 轮请求（包含 prepend_user_messages 和当前问题）
         let run_req = agent::AgentRunRequest {
@@ -4225,13 +4715,15 @@ mod tests {
         asst_step.encode(&mut asst_step_bytes).unwrap();
 
         let turn_struct = agent::ConversationTurnStructure {
-            turn: Some(agent::conversation_turn_structure::Turn::AgentConversationTurn(
-                agent::AgentConversationTurnStructure {
-                    user_message: user_msg_bytes,
-                    steps: vec![asst_step_bytes],
-                    ..Default::default()
-                },
-            )),
+            turn: Some(
+                agent::conversation_turn_structure::Turn::AgentConversationTurn(
+                    agent::AgentConversationTurnStructure {
+                        user_message: user_msg_bytes,
+                        steps: vec![asst_step_bytes],
+                        ..Default::default()
+                    },
+                ),
+            ),
         };
         let mut turn_struct_bytes = Vec::new();
         turn_struct.encode(&mut turn_struct_bytes).unwrap();
@@ -4263,10 +4755,98 @@ mod tests {
         assert_eq!(chat_req.messages.len(), 4);
         assert_eq!(chat_req.messages[0].role, Role::System);
         assert_eq!(chat_req.messages[1].role, Role::User);
-        assert_eq!(chat_req.messages[1].text, "Explain quantum computing in one sentence.");
+        assert_eq!(
+            chat_req.messages[1].text,
+            "Explain quantum computing in one sentence."
+        );
         assert_eq!(chat_req.messages[2].role, Role::Assistant);
         assert!(chat_req.messages[2].text.contains("exponentially faster"));
         assert_eq!(chat_req.messages[3].role, Role::User);
         assert_eq!(chat_req.messages[3].text, "Give me an example.");
+    }
+
+    #[test]
+    fn edits_only_land_when_the_snippet_matches_exactly_once() {
+        let file = "fn a() {}\nfn b() {}\nfn a() {}\n";
+        assert_eq!(
+            replace_exactly_once(file, "fn b() {}", "fn c() {}", "x.rs").unwrap(),
+            "fn a() {}\nfn c() {}\nfn a() {}\n"
+        );
+        assert!(replace_exactly_once(file, "fn a() {}", "", "x.rs")
+            .unwrap_err()
+            .contains("2 times"));
+        assert!(replace_exactly_once(file, "fn z()", "", "x.rs")
+            .unwrap_err()
+            .contains("not found"));
+
+        assert!(looks_line_numbered("1|use std;\n2|fn main() {}\n"));
+        assert!(looks_line_numbered(
+            "     1\tuse std;\n     2\tfn main() {}\n"
+        ));
+        assert!(!looks_line_numbered("use std;\n\nfn main() {}\n"));
+        assert!(
+            !looks_line_numbered("2024 was a year\n"),
+            "只有一行不下结论"
+        );
+    }
+
+    #[test]
+    fn file_search_on_a_directory_tree_works_like_find_name() {
+        use agent::ls_directory_tree_node::File;
+        let file = |name: &str| File {
+            name: name.into(),
+            terminal_metadata: None,
+        };
+        let root = agent::LsDirectoryTreeNode {
+            abs_path: "/w".into(),
+            children_files: vec![file("Cargo.toml"), file("README.md")],
+            children_dirs: vec![agent::LsDirectoryTreeNode {
+                abs_path: "/w/src".into(),
+                children_files: vec![file("main.rs"), file("Main.ts"), file("lib.rs")],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let search = |q: &str| {
+            let mut out = Vec::new();
+            collect_matching_files(&root, q, &mut out);
+            out.iter().map(|p| p.replace('\\', "/")).collect::<Vec<_>>()
+        };
+        assert_eq!(search("main"), ["/w/src/main.rs", "/w/src/Main.ts"]);
+        assert_eq!(search("*.rs"), ["/w/src/main.rs", "/w/src/lib.rs"]);
+        assert_eq!(search("?ain.t"), ["/w/src/Main.ts"]);
+        assert!(search("nothing").is_empty());
+        assert_eq!(search("").len(), 5);
+    }
+
+    #[test]
+    fn file_search_paths_can_only_be_a_starting_point_for_find() {
+        assert_eq!(
+            find_command("-delete", "x"),
+            "find './-delete' -maxdepth 5 -name '*x*' -not -path '*/.git/*' -not -path '*/node_modules/*'"
+        );
+        assert!(find_command("!", "x").starts_with("find './!' "));
+        assert!(find_command("src", "x").starts_with("find './src' "));
+        assert!(find_command(".", "x").starts_with("find '.' "));
+        assert!(find_command("/abs/dir", "x").starts_with("find '/abs/dir' "));
+        assert!(find_command("../up", "x").starts_with("find '../up' "));
+        assert!(
+            find_command(".", "'; rm -rf ~; '").contains(r"-name '*'\''; rm -rf ~; '\''*'"),
+            "查询词只是 -name 的一个参数"
+        );
+    }
+
+    #[test]
+    fn failed_commands_hand_the_model_their_stdout_too() {
+        assert_eq!(
+            shell_output_text(None, "test x ... FAILED", "error: 1 test failed"),
+            "test x ... FAILED\nerror: 1 test failed"
+        );
+        assert_eq!(
+            shell_output_text(Some("in order"), "out", "err"),
+            "in order"
+        );
+        assert_eq!(shell_output_text(Some("  "), "", "err"), "err");
+        assert_eq!(shell_output_text(None, "", ""), "");
     }
 }

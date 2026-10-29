@@ -1,6 +1,6 @@
+use nexus_crsr::inject;
 use std::fs;
 use std::path::Path;
-use nexus_crsr::inject;
 
 fn main() {
     let files = [

@@ -7,12 +7,12 @@
 use crate::commands::sand_remote::RemoteSandHub;
 use nexus_accounts::{AccountsService, OauthSession};
 use nexus_antigravity::AntigravityService;
-use nexus_gemini_web::GeminiWebService;
 use nexus_chatgpt::ChatGptService;
 use nexus_claude::ClaudeService;
 use nexus_crsr::CrsrService;
 use nexus_cursor::{Cursor, CursorControl};
 use nexus_gateway::{GatewayService, SubscriptionServices};
+use nexus_gemini_web::GeminiWebService;
 use nexus_grok::GrokService;
 use nexus_grokbot::GrokBotService;
 use nexus_kiro::KiroService;
@@ -123,14 +123,18 @@ impl AppState {
         let claude = Arc::new(ClaudeService::new(db.clone(), secrets.clone()));
         let antigravity = Arc::new(AntigravityService::new(db.clone(), secrets.clone()));
         let gemini_web = Arc::new(GeminiWebService::new(db.clone(), secrets.clone()));
-        let mesh_cfg = nexus_store::settings::get_or(&db, "mesh.config", nexus_mesh::MeshConfig::default());
+        let mesh_cfg =
+            nexus_store::settings::get_or(&db, "mesh.config", nexus_mesh::MeshConfig::default());
         let db_mesh = db.clone();
         let on_mesh_save: nexus_mesh::MeshSaveHook = Arc::new(move |cfg| {
             if let Err(e) = nexus_store::settings::set(&db_mesh, "mesh.config", cfg) {
                 tracing::warn!(error = ?e, "Failed to persist mesh config to sqlite");
             }
         });
-        let mesh = Arc::new(nexus_mesh::MeshService::with_persistence(mesh_cfg, Some(on_mesh_save)));
+        let mesh = Arc::new(nexus_mesh::MeshService::with_persistence(
+            mesh_cfg,
+            Some(on_mesh_save),
+        ));
         let gateway = Arc::new(GatewayService::with_services(
             db.clone(),
             secrets.clone(),
