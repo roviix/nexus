@@ -63,7 +63,7 @@ impl EmbeddedBroker {
         let providers = self.providers.read().await;
 
         // 1. 精确匹配 node_id
-        for (id, _) in providers.iter() {
+        for id in providers.keys() {
             let id_str = id.0.to_ascii_lowercase();
             if id_str == clean || id_str.starts_with(&clean) || clean.starts_with(&id_str) {
                 return Some(id.clone());
